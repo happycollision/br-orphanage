@@ -78,9 +78,74 @@ require_work_tree() {
 
 # --- Subcommand stubs (implemented in later tasks) ------------------------------
 
+# The augmented init body, shared by cmd_init and (later) the sync bootstrap
+# path. Runs the real init, reverts any top-level .gitignore changes, and
+# ensures a worktree-safe '.beads/' exclude entry.
+run_augmented_init() {
+    local repo_root gitignore had_gitignore exclude_file
+    repo_root=$(git rev-parse --show-toplevel)
+    cd "${repo_root}"
+
+    # Snapshot .gitignore. Empirically (real br v0.2.16) `br init` does NOT
+    # touch a top-level .gitignore — this is a safety net in case a future
+    # version reintroduces the old Go bd behavior.
+    # NOTE: _snapshot is deliberately not `local` — the EXIT trap fires after
+    # this function returns, when locals are out of scope (set -u pitfall).
+    gitignore="${repo_root}/.gitignore"
+    had_gitignore=0
+    _snapshot=""
+    if [[ -f "${gitignore}" ]]; then
+        had_gitignore=1
+        _snapshot=$(mktemp)
+        trap 'rm -f "${_snapshot:-}"' EXIT
+        cp "${gitignore}" "${_snapshot}"
+    fi
+
+    "${REAL_BR}" init "$@"
+
+    if [[ "${had_gitignore}" -eq 1 ]]; then
+        if ! cmp -s "${_snapshot}" "${gitignore}" 2>/dev/null; then
+            cp "${_snapshot}" "${gitignore}"
+            echo "br-orphanage: reverted .gitignore changes made by 'br init'"
+        fi
+    elif [[ -f "${gitignore}" ]]; then
+        rm "${gitignore}"
+        echo "br-orphanage: removed .gitignore created by 'br init'"
+    fi
+
+    # --git-path resolves correctly in worktrees/submodules.
+    exclude_file=$(git rev-parse --git-path info/exclude)
+    mkdir -p "$(dirname "${exclude_file}")"
+    if ! grep -qxF '.beads/' "${exclude_file}" 2>/dev/null; then
+        # shellcheck disable=SC2312 # tail failure worst case adds a blank line
+        if [[ -s "${exclude_file}" ]] && [[ "$(tail -c 1 "${exclude_file}")" != "" ]]; then
+            printf '\n' >> "${exclude_file}"
+        fi
+        printf '.beads/\n' >> "${exclude_file}"
+        echo "br-orphanage: added '.beads/' to ${exclude_file}"
+    fi
+}
+
 cmd_init() {
-    echo "br-orphanage: error: 'init' not implemented yet" >&2
-    exit 1
+    require_work_tree
+    local target="" passthru=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --target)
+                [[ $# -ge 2 ]] || { echo "br-orphanage: error: --target requires a value" >&2; exit 1; }
+                target="$2"
+                shift 2 ;;
+            *)
+                passthru+=("$1")
+                shift ;;
+        esac
+    done
+
+    run_augmented_init ${passthru[@]+"${passthru[@]}"}
+
+    if [[ -n "${target}" ]]; then
+        cmd_target "${target}"
+    fi
 }
 
 # Prints "<owner>\t<project>" derived from the origin remote URL, falling

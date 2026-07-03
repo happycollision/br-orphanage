@@ -435,6 +435,69 @@ NOORIGIN_DIRNAME=$(basename "${NOORIGIN_TGT_PROJ}")
 assert_contains "no-origin fallback branch is orphanage/local/<dirname>" \
     "${NOORIGIN_PRINT}" "branch: orphanage/local/${NOORIGIN_DIRNAME}"
 
+# --- br orphanage init: gitignore preservation, exclude entry, --target ----------
+
+section "br orphanage init: pre-existing .gitignore is byte-identical afterward"
+
+OINIT1="${WORK}/proj-oinit-gitignore"
+make_project_repo "${OINIT1}" yes "oinit-gitignore"
+printf 'node_modules/\n*.log\n' > "${OINIT1}/.gitignore"
+cp "${OINIT1}/.gitignore" "${WORK}/oinit-gitignore-snapshot"
+
+(cd "${OINIT1}" && br orphanage init -q)
+
+if cmp -s "${WORK}/oinit-gitignore-snapshot" "${OINIT1}/.gitignore"; then
+    pass ".gitignore byte-identical after 'br orphanage init'"
+else
+    fail ".gitignore CHANGED after 'br orphanage init'"
+fi
+
+section "br orphanage init: no .gitignore before -> none after; exclude idempotent"
+
+OINIT2="${WORK}/proj-oinit-clean"
+make_project_repo "${OINIT2}" yes "oinit-clean"
+
+(cd "${OINIT2}" && br orphanage init -q)
+
+assert_file_absent "no .gitignore created" "${OINIT2}/.gitignore"
+assert_dir_exists ".beads/ created" "${OINIT2}/.beads"
+OINIT2_EXCLUDE=$(abs_git_path "${OINIT2}" info/exclude)
+count_oinit2_excl() { grep -cxF '.beads/' "${OINIT2_EXCLUDE}" 2>/dev/null || true; }
+assert_eq "exclude has exactly one '.beads/' line" "1" "$(count_oinit2_excl)"
+
+# Repeat init (real br needs --force on an initialized workspace).
+(cd "${OINIT2}" && br orphanage init -q --force)
+(cd "${OINIT2}" && br orphanage init -q --force)
+assert_eq "still exactly one '.beads/' line after repeated forced inits" "1" "$(count_oinit2_excl)"
+assert_file_absent "still no .gitignore after repeated inits" "${OINIT2}/.gitignore"
+
+section "br orphanage init --target: inline target set"
+
+OINIT3="${WORK}/proj-oinit-target"
+make_project_repo "${OINIT3}" yes "oinit-target"
+
+(cd "${OINIT3}" && br orphanage init -q --target origin)
+
+OINIT3_TGT=$(git -C "${OINIT3}" config --get beadsOrphanage.target)
+assert_eq "--target stored in git config" "origin" "${OINIT3_TGT}"
+assert_dir_exists "--target didn't break the real init" "${OINIT3}/.beads"
+
+section "br orphanage init: worktree resolves the shared info/exclude"
+
+WT_MAIN="${WORK}/proj-worktree-main"
+make_project_repo "${WT_MAIN}" yes "worktree-demo"
+WT_LINKED="${WORK}/proj-worktree-linked"
+git -C "${WT_MAIN}" worktree add -q -b wt-feature-branch "${WT_LINKED}"
+
+(cd "${WT_LINKED}" && br orphanage init -q)
+
+COMMON_EXCLUDE=$(abs_git_path "${WT_MAIN}" info/exclude)
+if grep -qxF '.beads/' "${COMMON_EXCLUDE}" 2>/dev/null; then
+    pass "'.beads/' landed in the shared/common info/exclude from a linked worktree"
+else
+    fail "'.beads/' did NOT land in the shared info/exclude (${COMMON_EXCLUDE})"
+fi
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
