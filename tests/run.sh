@@ -547,7 +547,6 @@ SYNC_PROJ="${WORK}/proj-sync"
 make_project_repo "${SYNC_PROJ}" yes "sync-demo"
 SYNC_ORIGIN_BARE="${WORK}/origins/sync-demo.git"
 (cd "${SYNC_PROJ}" && br orphanage init -q --target origin)
-# shellcheck disable=SC2034 # captured only to consume 'br q's id output; the issue's presence is asserted via issues.jsonl below
 SYNC_ISSUE_ID=$(cd "${SYNC_PROJ}" && br q "orphan roundtrip issue")
 
 SYNC_OUT1=$(cd "${SYNC_PROJ}" && br orphanage sync)
@@ -775,6 +774,77 @@ assert_true "machine B kept its local config" \
     grep -qF "# conflict-from-B" "${DIV_B}/.beads/config.yaml"
 DIV_REMOTE_CONFIG=$(git -C "${DIV_BARE}" show "refs/heads/${DIV_BRANCH}:config.yaml")
 assert_contains "B's (local-wins) config was published" "${DIV_REMOTE_CONFIG}" "# conflict-from-B"
+
+# --- Bootstrap: fresh clone converges from the orphan branch ----------------------
+
+section "bootstrap: fresh clone + target + sync restores the workspace"
+
+# Reuse the sync-demo project from the outbound-core section: clone it fresh.
+git -C "${SYNC_PROJ}" push -q origin HEAD:refs/heads/main
+BOOT_PROJ="${WORK}/proj-bootstrap"
+git clone -q "${SYNC_ORIGIN_BARE}" "${BOOT_PROJ}"
+assert_file_absent "fresh clone has no .beads/" "${BOOT_PROJ}/.beads"
+
+(cd "${BOOT_PROJ}" && br orphanage target origin)
+BOOT_OUT=$(cd "${BOOT_PROJ}" && br orphanage sync)
+assert_contains "bootstrap reports success" "${BOOT_OUT}" "Bootstrapped sync-demo"
+
+assert_dir_exists "workspace bootstrapped: .beads/ exists" "${BOOT_PROJ}/.beads"
+assert_file_exists "issues.jsonl restored" "${BOOT_PROJ}/.beads/issues.jsonl"
+BOOT_EXCLUDE=$(abs_git_path "${BOOT_PROJ}" info/exclude)
+assert_true "bootstrap's init added '.beads/' to info/exclude" \
+    grep -qxF '.beads/' "${BOOT_EXCLUDE}"
+
+BOOT_LIST=$(cd "${BOOT_PROJ}" && br list)
+assert_contains "issue visible via 'br list' after bootstrap" "${BOOT_LIST}" "orphan roundtrip issue"
+BOOT_SHOW=$(cd "${BOOT_PROJ}" && br show "${SYNC_ISSUE_ID}")
+assert_contains "issue visible via 'br show <id>' after bootstrap" "${BOOT_SHOW}" "orphan roundtrip issue"
+
+BOOT_PUSHED=$(git -C "${BOOT_PROJ}" rev-parse refs/orphanage/pushed)
+BOOT_REMOTE_TIP=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+assert_eq "bootstrap set refs/orphanage/pushed to the remote tip" "${BOOT_REMOTE_TIP}" "${BOOT_PUSHED}"
+
+set +e
+BOOT_NOOP=$(cd "${BOOT_PROJ}" && br orphanage sync 2>&1)
+BOOT_NOOP_EXIT=$?
+set -e
+assert_eq "post-bootstrap sync exits 0" "0" "${BOOT_NOOP_EXIT}"
+assert_contains "post-bootstrap sync is a no-op" "${BOOT_NOOP}" "Already in sync"
+
+section "bootstrap: never-synced branch is a clear error"
+
+NEVER_PROJ="${WORK}/proj-never-synced"
+make_project_repo "${NEVER_PROJ}" yes "never-synced"
+NEVER_CLONE="${WORK}/proj-never-synced-clone"
+git -C "${NEVER_PROJ}" push -q origin HEAD:refs/heads/main
+git clone -q "${WORK}/origins/never-synced.git" "${NEVER_CLONE}"
+(cd "${NEVER_CLONE}" && br orphanage target origin)
+set +e
+NEVER_OUT=$(cd "${NEVER_CLONE}" && br orphanage sync 2>&1)
+NEVER_EXIT=$?
+set -e
+if [[ "${NEVER_EXIT}" -ne 0 ]]; then
+    pass "sync against a never-synced branch exits nonzero (${NEVER_EXIT})"
+else
+    fail "sync against a never-synced branch unexpectedly exited 0"
+fi
+assert_contains "never-synced error suggests 'br orphanage init'" "${NEVER_OUT}" "br orphanage init"
+
+section "retargeting: new empty target receives a fresh orphan root"
+
+RETGT_BARE="${WORK}/targets/retarget-home.git"
+git init -q --bare "${RETGT_BARE}"
+(cd "${SYNC_PROJ}" && br orphanage target "${RETGT_BARE}")
+RETGT_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync)
+assert_contains "retargeted sync reports success" "${RETGT_OUT}" "Beads synced for sync-demo"
+RETGT_TIP=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+RETGT_PARENTS=$(git -C "${RETGT_BARE}" cat-file -p "${RETGT_TIP}" | grep -c '^parent ' || true)
+assert_eq "retargeted commit is a fresh orphan root (no parents)" "0" "${RETGT_PARENTS}"
+RETGT_ISSUES=$(git -C "${RETGT_BARE}" show "${RETGT_TIP}:issues.jsonl")
+assert_contains "full current state landed at the new target" "${RETGT_ISSUES}" "orphan roundtrip issue"
+# Point sync-demo back at origin for any later sections.
+(cd "${SYNC_PROJ}" && br orphanage target origin)
+(cd "${SYNC_PROJ}" && br orphanage sync >/dev/null 2>&1)
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 

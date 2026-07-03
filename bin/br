@@ -518,11 +518,49 @@ merge_inbound() {
     done
 }
 
-# Bootstrap a fresh workspace from the orphan branch. Stub — implemented in
-# the bootstrap task.
+# Bootstrap: no .beads/ yet (fresh clone / new machine). Requires the orphan
+# branch to already exist at the target; a brand-new project should run
+# `br orphanage init` instead. Exits (not returns) — only reachable from the
+# single-project cmd_sync path.
 sync_bootstrap() {
-    echo "br-orphanage: error: no ${BEADS_DIR}/ here (bootstrap not implemented yet)" >&2
-    exit 1
+    local name url branch lsout tip f extracted=0
+    name=$(project_name)
+    # shellcheck disable=SC2310 # failure handled by the || exit
+    url=$(resolve_target_url) || exit 1
+    # shellcheck disable=SC2310 # failure handled by the || exit
+    branch=$(branch_name) || exit 1
+
+    if ! lsout=$(git ls-remote "${url}" "refs/heads/${branch}"); then
+        echo "br-orphanage: error: could not contact target ${url}" >&2
+        exit 1
+    fi
+    if [[ -z "${lsout}" ]]; then
+        echo "br-orphanage: error: no ${BEADS_DIR}/ here and no '${branch}' branch at the target." >&2
+        echo "br-orphanage: for a brand-new project, run 'br orphanage init' first, then sync." >&2
+        exit 1
+    fi
+
+    run_augmented_init
+
+    # Fetch into the dedicated ref (see FETCHED_REF) rather than FETCH_HEAD.
+    git fetch --quiet "${url}" "+refs/heads/${branch}:${FETCHED_REF}"
+    tip=$(git rev-parse -q --verify "${FETCHED_REF}")
+    for f in "${TRACKED_FILES[@]}"; do
+        if git cat-file -e "${tip}:${f}" 2>/dev/null; then
+            git cat-file blob "${tip}:${f}" > "${BEADS_DIR}/${f}"
+            extracted=$((extracted + 1))
+        fi
+    done
+    if [[ "${extracted}" -eq 0 ]]; then
+        echo "br-orphanage: error: nothing restorable on '${branch}' at ${url}" >&2
+        exit 1
+    fi
+
+    "${REAL_BR}" sync --import-only
+    git update-ref "${PUSHED_REF}" "${tip}"
+    # shellcheck disable=SC2310 # failure handled by the || exit
+    record_index_entry "${name}" || exit 1
+    echo "Bootstrapped ${name} from ${branch} (${extracted} file(s)) and imported into the database."
 }
 
 # Core single-project sync, run from the project toplevel with .beads/
