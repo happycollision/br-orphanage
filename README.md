@@ -11,6 +11,10 @@ Project repos never see `.beads/` — it's excluded locally via
 bin/br        wrapper around the real br binary (see below)
 install.sh    one-time machine setup
 projects/     one subdirectory per project (issues.jsonl etc.)
+tests/        end-to-end test harness (tests/run.sh)
+.gitignore    this repo's own .gitignore, keeping the machine-local
+              .project-paths index out of git (unrelated to the
+              per-project .gitignore the wrapper preserves)
 ```
 
 ## New machine setup
@@ -23,7 +27,9 @@ git clone git@github.com:YOURUSER/beads-sync.git ~/.local/share/beads-sync
 
 This prepends `bin/` to PATH so the wrapper shadows the real `br`. The
 wrapper resolves the real binary at runtime (scanning PATH, skipping
-itself), so `br upgrade` and reinstalls keep working.
+itself), so `br upgrade` and reinstalls keep working. `install.sh` also
+runs `chmod +x` on `bin/br` as a runtime defense-in-depth repair, on top
+of git already tracking the executable bit (mode 100755).
 
 ## Usage
 
@@ -31,7 +37,7 @@ Inside any project repo:
 
 | Command         | What it does                                                          |
 | --------------- | --------------------------------------------------------------------- |
-| `br init`       | Real init, then reverts any `.gitignore` changes and adds `.beads/` to `.git/info/exclude` |
+| `br init`       | Real init, then reverts any `.gitignore` changes and adds `.beads/` to the repo's git exclude file (info/exclude, resolved worktree-safely) |
 | `br push`       | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
 | `br push --all` | Pull this repo once, then push every project with a known local path  |
 | `br restore`    | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |

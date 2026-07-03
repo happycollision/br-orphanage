@@ -8,7 +8,8 @@ set -euo pipefail
 #
 # Intercepted commands:
 #   br init [...]   Run real `br init`, revert any .gitignore changes it
-#                   made, and add `.beads/` to .git/info/exclude so nothing
+#                   made, and add `.beads/` to the repo's git exclude file
+#                   (info/exclude, resolved worktree-safely) so nothing
 #                   beads-related ever appears in the project repo.
 #   br push         Flush DB -> JSONL, copy into this repo's projects/<name>/,
 #                   commit, and push. Also fast-forwards the sync repo first,
@@ -300,6 +301,9 @@ cmd_push() {
         exit 1
     fi
 
+    # Stray non-option positional args (e.g. `br push somejunk`) are
+    # intentionally ignored rather than rejected: only `--*` typos are
+    # guarded against above.
     require_work_tree
     # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
     cd "$(git rev-parse --show-toplevel)"
