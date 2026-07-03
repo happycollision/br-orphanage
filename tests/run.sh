@@ -565,21 +565,30 @@ FAILPUSH_PROJ="${WORK}/proj-all-fail"
 make_project_repo "${FAILPUSH_PROJ}" yes "push-all-fail"
 (cd "${FAILPUSH_PROJ}" && br init -q)
 (cd "${FAILPUSH_PROJ}" && br q "issue before induced failure" >/dev/null)
-(cd "${FAILPUSH_PROJ}" && br push >/dev/null)
 
-# Induce a real per-project push failure: remove every trackable beads file
-# so push_one's "no trackable beads files found" guard fires and it returns
-# nonzero, without touching anything outside this throwaway project.
-rm -f "${FAILPUSH_PROJ}"/.beads/config.yaml \
-      "${FAILPUSH_PROJ}"/.beads/interactions.jsonl \
-      "${FAILPUSH_PROJ}"/.beads/issues.jsonl \
-      "${FAILPUSH_PROJ}"/.beads/metadata.json \
-      "${FAILPUSH_PROJ}"/.beads/README.md
+# Give this project an index entry directly (same format push_one writes),
+# without ever running a successful 'br push' from it, then induce a real
+# per-project push failure that push --all must hit and report. Note:
+# `br sync --flush-only` regenerates issues.jsonl etc. from beads.db on
+# every run, so simply deleting tracked files wouldn't reproduce a failure
+# (they'd just get re-exported and re-copied). Instead, pre-create
+# projects/push-all-fail/ as a directory with NO write permission -- cp
+# can't create new files in a read-only directory, `copied` stays 0, and
+# push_one hits its "no trackable beads files found" guard and returns
+# nonzero. Scoped to this one throwaway project only.
+FAILPUSH_PROJ_REAL=$(cd "${FAILPUSH_PROJ}" && pwd -P)
+printf 'push-all-fail\t%s\n' "${FAILPUSH_PROJ_REAL}" >> "${SYNC_CLONE}/.project-paths"
+mkdir -p "${SYNC_CLONE}/projects/push-all-fail"
+chmod 555 "${SYNC_CLONE}/projects/push-all-fail"
 
 set +e
 FAIL_ALL_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
 FAIL_ALL_EXIT=$?
 set -e
+
+# Restore write permission immediately so the harness's own cleanup trap
+# (rm -rf "${WORK}") can remove this directory tree without leftover cruft.
+chmod 755 "${SYNC_CLONE}/projects/push-all-fail"
 
 if [[ "${FAIL_ALL_EXIT}" -ne 0 ]]; then
     pass "'br push --all' exits nonzero when a known project's push actually fails"

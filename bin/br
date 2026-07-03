@@ -196,13 +196,29 @@ push_one() {
     name=$(project_name)
     project_dir="${PROJECTS_DIR}/${name}"
 
-    "${REAL_BR}" sync --flush-only
+    if ! "${REAL_BR}" sync --flush-only; then
+        echo "br-wrapper: error: 'br sync --flush-only' failed for ${name:-this project}" >&2
+        return 1
+    fi
 
-    mkdir -p "${project_dir}"
+    # NOTE: mkdir/cp exit statuses are checked explicitly rather than relying
+    # on `set -e` to abort on failure. push_one() is invoked from
+    # cmd_push_all() as `if ( cd "${path}" && push_one ); then ...` — and
+    # bash disables `-e` enforcement inside a subshell that is itself used
+    # directly as an `if`/`&&`/`||` condition, so a failing cp there would
+    # otherwise be silently ignored instead of being caught below.
+    if ! mkdir -p "${project_dir}"; then
+        echo "br-wrapper: error: could not create ${project_dir}" >&2
+        return 1
+    fi
     for f in "${TRACKED_FILES[@]}"; do
         if [[ -f "${BEADS_DIR}/${f}" ]]; then
-            cp "${BEADS_DIR}/${f}" "${project_dir}/${f}"
-            copied=$((copied + 1))
+            if cp "${BEADS_DIR}/${f}" "${project_dir}/${f}"; then
+                copied=$((copied + 1))
+            else
+                echo "br-wrapper: error: failed to copy ${f} to ${project_dir}" >&2
+                return 1
+            fi
         fi
     done
     if [[ "${copied}" -eq 0 ]]; then
@@ -215,13 +231,22 @@ push_one() {
 
     # Scope the add to this project only — local edits to the wrapper/scripts
     # should be committed deliberately, not swept up in a sync.
-    git -C "${SYNC_REPO}" add "projects/${name}"
+    if ! git -C "${SYNC_REPO}" add "projects/${name}"; then
+        echo "br-wrapper: error: 'git add' failed for ${name}" >&2
+        return 1
+    fi
     if git -C "${SYNC_REPO}" diff --cached --quiet; then
         echo "No beads changes to commit for ${name}."
         return 0
     fi
-    git -C "${SYNC_REPO}" commit -m "sync beads: ${name}"
-    git -C "${SYNC_REPO}" push
+    if ! git -C "${SYNC_REPO}" commit -m "sync beads: ${name}"; then
+        echo "br-wrapper: error: 'git commit' failed for ${name}" >&2
+        return 1
+    fi
+    if ! git -C "${SYNC_REPO}" push; then
+        echo "br-wrapper: error: 'git push' failed for ${name}" >&2
+        return 1
+    fi
     # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
     echo "Beads pushed for ${name} -> $(git -C "${SYNC_REPO}" rev-parse --short HEAD)"
 }
