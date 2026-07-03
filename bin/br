@@ -116,7 +116,9 @@ record_project_path() {
     local name="$1" path="$2" tmp
     tmp=$(mktemp "${SYNC_REPO}/.project-paths.XXXXXX")
     if [[ -f "${PROJECT_PATHS_FILE}" ]]; then
-        grep -v "^${name}$(printf '\t')" "${PROJECT_PATHS_FILE}" > "${tmp}" || true
+        # awk (not grep -v with an interpolated pattern) so a project name
+        # containing regex metacharacters (e.g. a dot) is matched literally.
+        awk -F'\t' -v n="${name}" '$1 != n' "${PROJECT_PATHS_FILE}" > "${tmp}"
     fi
     printf '%s\t%s\n' "${name}" "${path}" >> "${tmp}"
     mv "${tmp}" "${PROJECT_PATHS_FILE}"
