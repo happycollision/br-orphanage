@@ -400,6 +400,41 @@ fi
 BARE_HEAD=$(git -C "${BARE_REMOTE}" rev-parse main 2>/dev/null || git -C "${BARE_REMOTE}" rev-parse HEAD)
 assert_eq "push reached the fake central bare remote" "${POST_PUSH_HEAD}" "${BARE_HEAD}"
 
+# --- Scenario: br push records a machine-local index entry, uncommitted -------
+
+section "br push: machine-local project-path index is written but never committed"
+
+INDEX_FILE="${SYNC_CLONE}/.project-paths"
+assert_file_exists "index file (.project-paths) created by 'br push'" "${INDEX_FILE}"
+
+PUSH_PROJ_REAL=$(cd "${PUSH_PROJ}" && pwd -P)
+INDEX_FILE_CONTENTS=$(cat "${INDEX_FILE}")
+if grep -qF "$(printf 'push-demo\t%s' "${PUSH_PROJ_REAL}")" "${INDEX_FILE}"; then
+    pass "index file records 'push-demo' -> its absolute project path"
+else
+    fail "index file does not contain expected 'push-demo <TAB> path' entry (got: ${INDEX_FILE_CONTENTS})"
+fi
+
+# It must never be part of the commit the push just made, nor tracked at all.
+if printf '%s\n' "${CHANGED_PATHS}" | grep -qF '.project-paths'; then
+    fail "push commit unexpectedly included .project-paths"
+else
+    pass "push commit did NOT include .project-paths"
+fi
+
+set +e
+git -C "${SYNC_CLONE}" ls-files --error-unmatch .project-paths >/dev/null 2>&1
+INDEX_TRACKED_EXIT=$?
+set -e
+if [[ "${INDEX_TRACKED_EXIT}" -ne 0 ]]; then
+    pass ".project-paths is not tracked by git in the sync clone"
+else
+    fail ".project-paths is unexpectedly tracked by git"
+fi
+
+INDEX_STATUS=$(git -C "${SYNC_CLONE}" status --porcelain --ignored .project-paths)
+assert_contains "'git status --ignored' reports .project-paths as ignored (!! prefix)" "${INDEX_STATUS}" "!!"
+
 # --- Scenario: br push again with no changes is a clean no-op -----------------
 
 section "br push: second push with no changes is a clean no-op"
@@ -413,6 +448,148 @@ assert_eq "no-op push exits 0" "0" "${NOOP_EXIT}"
 assert_contains "no-op push reports no changes" "${NOOP_OUT}" "No beads changes to commit"
 HEAD_AFTER_NOOP=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
 assert_eq "no-op push does not create a new commit" "${HEAD_BEFORE_NOOP}" "${HEAD_AFTER_NOOP}"
+
+# --- Scenario: re-pushing the same project doesn't duplicate its index entry --
+
+section "br push: re-push does not duplicate the index entry"
+
+INDEX_LINE_COUNT=$(grep -cF "$(printf 'push-demo\t')" "${INDEX_FILE}" || true)
+assert_eq "exactly one index line for 'push-demo' after two pushes" "1" "${INDEX_LINE_COUNT}"
+
+# --- Scenario: br push --all pushes multiple known projects in one run --------
+
+section "br push --all: pushes changes from two known projects in one run"
+
+ALLPUSH_PROJ_A="${WORK}/proj-all-a"
+ALLPUSH_PROJ_B="${WORK}/proj-all-b"
+make_project_repo "${ALLPUSH_PROJ_A}" yes "push-all-a"
+make_project_repo "${ALLPUSH_PROJ_B}" yes "push-all-b"
+(cd "${ALLPUSH_PROJ_A}" && br init -q)
+(cd "${ALLPUSH_PROJ_B}" && br init -q)
+(cd "${ALLPUSH_PROJ_A}" && br q "issue in project A" >/dev/null)
+(cd "${ALLPUSH_PROJ_B}" && br q "issue in project B" >/dev/null)
+
+# Establish each project's index entry the same way a real machine would:
+# one plain 'br push' from each project first.
+(cd "${ALLPUSH_PROJ_A}" && br push >/dev/null)
+(cd "${ALLPUSH_PROJ_B}" && br push >/dev/null)
+
+# Now make a further change in each, so --all has real work to do.
+(cd "${ALLPUSH_PROJ_A}" && br q "second issue in project A" >/dev/null)
+(cd "${ALLPUSH_PROJ_B}" && br q "second issue in project B" >/dev/null)
+
+HEAD_BEFORE_ALL=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
+set +e
+ALLPUSH_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
+ALLPUSH_EXIT=$?
+set -e
+
+assert_eq "'br push --all' exits 0 when all known projects push cleanly" "0" "${ALLPUSH_EXIT}"
+assert_contains "'br push --all' reports pushing push-all-a" "${ALLPUSH_OUT}" "pushing 'push-all-a'"
+assert_contains "'br push --all' reports pushing push-all-b" "${ALLPUSH_OUT}" "pushing 'push-all-b'"
+
+HEAD_AFTER_ALL=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
+if [[ "${HEAD_BEFORE_ALL}" != "${HEAD_AFTER_ALL}" ]]; then
+    pass "'br push --all' created new commit(s) in the sync clone"
+else
+    fail "'br push --all' did not create any new commits"
+fi
+
+if grep -qF "second issue in project A" "${SYNC_CLONE}/projects/push-all-a/issues.jsonl"; then
+    pass "push-all-a's second issue landed in the sync clone"
+else
+    fail "push-all-a's second issue missing from the sync clone"
+fi
+if grep -qF "second issue in project B" "${SYNC_CLONE}/projects/push-all-b/issues.jsonl"; then
+    pass "push-all-b's second issue landed in the sync clone"
+else
+    fail "push-all-b's second issue missing from the sync clone"
+fi
+
+# And did both land in the fake central bare remote (not just the local clone)?
+BARE_HEAD_AFTER_ALL=$(git -C "${BARE_REMOTE}" rev-parse main 2>/dev/null || git -C "${BARE_REMOTE}" rev-parse HEAD)
+BARE_HAS_A=$(git -C "${BARE_REMOTE}" show "${BARE_HEAD_AFTER_ALL}:projects/push-all-a/issues.jsonl" 2>/dev/null || true)
+BARE_HAS_B=$(git -C "${BARE_REMOTE}" show "${BARE_HEAD_AFTER_ALL}:projects/push-all-b/issues.jsonl" 2>/dev/null || true)
+assert_contains "fake central remote has push-all-a's second issue" "${BARE_HAS_A}" "second issue in project A"
+assert_contains "fake central remote has push-all-b's second issue" "${BARE_HAS_B}" "second issue in project B"
+
+# --- Scenario: br push --all skips a projects/ dir with no index entry --------
+
+section "br push --all: unknown project dir (no index entry) is skipped with a warning, run still succeeds"
+
+# Simulate a projects/<name>/ directory that exists (e.g. pushed from another
+# machine) but has no entry in THIS machine's index.
+mkdir -p "${SYNC_CLONE}/projects/orphan-no-index"
+printf '{}\n' > "${SYNC_CLONE}/projects/orphan-no-index/issues.jsonl"
+git -C "${SYNC_CLONE}" add projects/orphan-no-index
+git -C "${SYNC_CLONE}" commit -q -m "seed orphan project with no local index entry"
+git -C "${SYNC_CLONE}" push -q
+
+set +e
+ORPHAN_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
+ORPHAN_EXIT=$?
+set -e
+
+assert_eq "'br push --all' still exits 0 with an unknown/no-index project present" "0" "${ORPHAN_EXIT}"
+assert_contains "'br push --all' warns about skipping the no-index project" "${ORPHAN_OUT}" "skipping 'orphan-no-index'"
+
+# --- Scenario: br push --all skips a stale index path (deleted project dir) ---
+
+section "br push --all: stale index path (deleted project dir) is skipped with a warning"
+
+STALE_PROJ="${WORK}/proj-stale"
+make_project_repo "${STALE_PROJ}" yes "push-stale"
+(cd "${STALE_PROJ}" && br init -q)
+(cd "${STALE_PROJ}" && br q "stale project issue" >/dev/null)
+(cd "${STALE_PROJ}" && br push >/dev/null)
+
+assert_dir_exists "push-stale has a projects/ dir before it's deleted" "${SYNC_CLONE}/projects/push-stale"
+
+# Now delete the source project entirely, so its index entry goes stale.
+rm -rf "${STALE_PROJ}"
+
+set +e
+STALE_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
+STALE_EXIT=$?
+set -e
+
+assert_eq "'br push --all' still exits 0 with a stale index entry present" "0" "${STALE_EXIT}"
+assert_contains "'br push --all' warns about skipping the stale-path project" "${STALE_OUT}" "skipping 'push-stale'"
+assert_contains "stale-path warning mentions the path no longer exists" "${STALE_OUT}" "no longer exists"
+
+# --- Scenario: br push --all reports nonzero when a real per-project push fails
+
+section "br push --all: exits nonzero when a known project's push actually fails"
+
+FAILPUSH_PROJ="${WORK}/proj-all-fail"
+make_project_repo "${FAILPUSH_PROJ}" yes "push-all-fail"
+(cd "${FAILPUSH_PROJ}" && br init -q)
+(cd "${FAILPUSH_PROJ}" && br q "issue before induced failure" >/dev/null)
+(cd "${FAILPUSH_PROJ}" && br push >/dev/null)
+
+# Induce a real per-project push failure: remove every trackable beads file
+# so push_one's "no trackable beads files found" guard fires and it returns
+# nonzero, without touching anything outside this throwaway project.
+rm -f "${FAILPUSH_PROJ}"/.beads/config.yaml \
+      "${FAILPUSH_PROJ}"/.beads/interactions.jsonl \
+      "${FAILPUSH_PROJ}"/.beads/issues.jsonl \
+      "${FAILPUSH_PROJ}"/.beads/metadata.json \
+      "${FAILPUSH_PROJ}"/.beads/README.md
+
+set +e
+FAIL_ALL_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
+FAIL_ALL_EXIT=$?
+set -e
+
+if [[ "${FAIL_ALL_EXIT}" -ne 0 ]]; then
+    pass "'br push --all' exits nonzero when a known project's push actually fails"
+else
+    fail "'br push --all' unexpectedly exited 0 despite an induced per-project push failure"
+fi
+assert_contains "'br push --all' warns about the failed push" "${FAIL_ALL_OUT}" "push failed for 'push-all-fail'"
+# The failure of one project must not have blocked the others from pushing;
+# push-all-a/b should still be reported as pushed in the same run.
+assert_contains "'br push --all' still pushes healthy projects despite one failure" "${FAIL_ALL_OUT}" "pushing 'push-all-a'"
 
 # --- Scenario: br restore into a fresh clone (round-trip) ----------------------
 

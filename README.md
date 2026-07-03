@@ -29,17 +29,44 @@ itself), so `br upgrade` and reinstalls keep working.
 
 Inside any project repo:
 
-| Command      | What it does                                                          |
-| ------------ | --------------------------------------------------------------------- |
-| `br init`    | Real init, then reverts any `.gitignore` changes and adds `.beads/` to `.git/info/exclude` |
-| `br push`    | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
-| `br restore` | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |
-| anything else| Passed through untouched to the real `br`                             |
+| Command         | What it does                                                          |
+| --------------- | --------------------------------------------------------------------- |
+| `br init`       | Real init, then reverts any `.gitignore` changes and adds `.beads/` to `.git/info/exclude` |
+| `br push`       | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
+| `br push --all` | Pull this repo once, then push every project with a known local path |
+| `br restore`    | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |
+| anything else   | Passed through untouched to the real `br`                             |
 
 `<name>` comes from the origin remote's repo name, falling back to the
 project's directory name. If you ever have two repos with the same name
 under different owners, switch `project_name()` in `bin/br` to an
 owner-qualified form (e.g. `owner__repo`).
+
+### `br push --all` and the machine-local project index
+
+Every successful `br push` records this project's absolute path (from `git
+rev-parse --show-toplevel`) in `.project-paths` at the root of this repo,
+keyed by project name (`name<TAB>absolute-path`, one line per project,
+updated in place on re-push — no duplicates, and a moved/renamed project's
+entry is simply overwritten the next time you push from its new location).
+
+This file is **machine-local and never committed** — it's listed in this
+repo's own tracked `.gitignore` (not to be confused with the per-project
+`.gitignore` preservation `br init` does inside project repos, which is a
+separate thing). A tracked `.gitignore` was chosen over
+`.git/info/exclude` deliberately: `info/exclude` lives inside `.git/` and
+doesn't survive a fresh clone, so every new machine would see the index as
+untracked-but-unignored clutter. A tracked `.gitignore` entry comes along
+for free on every clone instead.
+
+`br push --all` walks every directory under `projects/`, looks up each
+one's recorded path in the index, and pushes from there — pulling this repo
+only once up front rather than once per project. A project with no index
+entry (never pushed from this machine) or a stale one (the recorded path
+was deleted, moved, or is no longer a git repo) is skipped with a warning;
+it does not fail the whole run. The command exits `0` if every known
+project pushed cleanly (no-op pushes count as clean) and nonzero if any
+known project's push actually failed.
 
 ## Multi-machine habits
 
@@ -72,11 +99,15 @@ It covers `br init` (`.gitignore` preservation, idempotent `.beads/` exclude
 entry, repeated/forced re-init, worktree exclude-file resolution),
 passthrough of real commands (`--version`, `list`, `ready`, `--json`, exit
 code transparency), `br push` (tracked files land in `projects/<name>/`,
-scoped commit, no-op on no changes, reaches the fake remote), `br restore`
-(bootstraps a fresh clone and round-trips an issue end-to-end), project-name
-fallback when there's no `origin` remote, and the Task 1 executable-bit
-regression check. It also runs `shellcheck` on `bin/br`, `install.sh`, and
-itself when `shellcheck` is available.
+scoped commit, no-op on no changes, reaches the fake remote, machine-local
+index file gets written and stays untracked/uncommitted, re-push doesn't
+duplicate index entries), `br push --all` (pushes multiple known projects in
+one pull, skips unknown/stale index entries with a warning instead of
+failing the run, exit code reflects whether any known project's push
+actually failed), `br restore` (bootstraps a fresh clone and round-trips an
+issue end-to-end), project-name fallback when there's no `origin` remote,
+and the Task 1 executable-bit regression check. It also runs `shellcheck` on
+`bin/br`, `install.sh`, and itself when `shellcheck` is available.
 
 **Empirical finding:** as of real `br` v0.2.16, `br init` does **not**
 create or modify a top-level `.gitignore` at all — it only creates

@@ -12,7 +12,13 @@ set -euo pipefail
 #                   beads-related ever appears in the project repo.
 #   br push         Flush DB -> JSONL, copy into this repo's projects/<name>/,
 #                   commit, and push. Also fast-forwards the sync repo first,
-#                   which keeps these scripts themselves up to date.
+#                   which keeps these scripts themselves up to date. Records
+#                   this project's absolute path in a machine-local index
+#                   (see PROJECT_PATHS_FILE below) so `push --all` can find it.
+#   br push --all   Pull the sync repo once, then walk every projects/<name>/
+#                   directory and push each one whose path is known from the
+#                   index. Unknown/stale entries are skipped with a warning
+#                   rather than failing the whole run.
 #   br restore      Pull the sync repo, copy projects/<name>/ back into
 #                   .beads/, and `br sync --import-only`. Runs the augmented
 #                   init first if the project has no .beads/ yet.
@@ -25,6 +31,19 @@ SELF=$(readlink -f "${BASH_SOURCE[0]}")
 SYNC_REPO=$(cd "$(dirname "${SELF}")/.." && pwd)
 PROJECTS_DIR="${SYNC_REPO}/projects"
 BEADS_DIR=".beads"
+
+# Machine-local index of "project name -> absolute source path", so
+# `br push --all` knows where each projects/<name>/ directory came from.
+# This file is intentionally NEVER committed: it's specific to this machine's
+# filesystem layout. It's kept OUTSIDE of any git-tracked content by being
+# listed in the sync repo's own tracked .gitignore (SYNC_REPO/.gitignore,
+# not to be confused with the per-project .gitignore invariants enforced by
+# cmd_init above). A tracked .gitignore was chosen over `.git/info/exclude`
+# because info/exclude lives in .git/ and does NOT survive a fresh clone —
+# every new machine would see the index file as untracked-but-unignored
+# clutter. A tracked .gitignore entry, by contrast, comes along for free on
+# every clone.
+PROJECT_PATHS_FILE="${SYNC_REPO}/.project-paths"
 
 # Files worth versioning centrally. Deliberately excludes:
 #   beads.db      — SQLite is local state; JSONL is the git source of truth
@@ -89,6 +108,28 @@ sync_repo_pull() {
     git -C "${SYNC_REPO}" pull --ff-only
 }
 
+# Record (or update) this machine's absolute path for a project name in the
+# index file. Idempotent: re-pushing the same project replaces its line
+# rather than duplicating it; a renamed/moved project's entry is updated in
+# place. Format: one "name<TAB>absolute-path" pair per line.
+record_project_path() {
+    local name="$1" path="$2" tmp
+    tmp=$(mktemp "${SYNC_REPO}/.project-paths.XXXXXX")
+    if [[ -f "${PROJECT_PATHS_FILE}" ]]; then
+        grep -v "^${name}$(printf '\t')" "${PROJECT_PATHS_FILE}" > "${tmp}" || true
+    fi
+    printf '%s\t%s\n' "${name}" "${path}" >> "${tmp}"
+    mv "${tmp}" "${PROJECT_PATHS_FILE}"
+}
+
+# Look up a project's recorded absolute path. Prints the path and returns 0
+# if found, otherwise prints nothing and returns 1.
+lookup_project_path() {
+    local name="$1"
+    [[ -f "${PROJECT_PATHS_FILE}" ]] || return 1
+    awk -F'\t' -v n="${name}" '$1 == n { print $2; found=1 } END { exit !found }' "${PROJECT_PATHS_FILE}"
+}
+
 # --- Command: init ------------------------------------------------------------
 
 cmd_init() {
@@ -143,21 +184,18 @@ cmd_init() {
 
 # --- Command: push ------------------------------------------------------------
 
-cmd_push() {
-    require_work_tree
-    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
-    cd "$(git rev-parse --show-toplevel)"
-
-    if [[ ! -d "${BEADS_DIR}" ]]; then
-        echo "br-wrapper: error: no ${BEADS_DIR} here (run 'br init' first)" >&2
-        exit 1
-    fi
-
+# Core single-project push, run from inside the target project's work tree
+# (cwd is already the project root; BEADS_DIR is confirmed present). Does NOT
+# pull the sync repo itself — callers are responsible for that, so
+# `push --all` can pull once up front instead of once per project. Returns 0
+# on success (including the no-op "nothing to commit" case) and 1 on failure,
+# rather than exiting the whole process, so `push --all` can keep going after
+# one project's push fails.
+push_one() {
     local name project_dir copied=0 f
     name=$(project_name)
     project_dir="${PROJECTS_DIR}/${name}"
 
-    sync_repo_pull
     "${REAL_BR}" sync --flush-only
 
     mkdir -p "${project_dir}"
@@ -169,8 +207,11 @@ cmd_push() {
     done
     if [[ "${copied}" -eq 0 ]]; then
         echo "br-wrapper: error: no trackable beads files found" >&2
-        exit 1
+        return 1
     fi
+
+    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
+    record_project_path "${name}" "$(git rev-parse --show-toplevel)"
 
     # Scope the add to this project only — local edits to the wrapper/scripts
     # should be committed deliberately, not swept up in a sync.
@@ -183,6 +224,81 @@ cmd_push() {
     git -C "${SYNC_REPO}" push
     # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
     echo "Beads pushed for ${name} -> $(git -C "${SYNC_REPO}" rev-parse --short HEAD)"
+}
+
+cmd_push() {
+    if [[ "${1:-}" == "--all" ]]; then
+        cmd_push_all
+        return $?
+    fi
+
+    require_work_tree
+    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
+    cd "$(git rev-parse --show-toplevel)"
+
+    if [[ ! -d "${BEADS_DIR}" ]]; then
+        echo "br-wrapper: error: no ${BEADS_DIR} here (run 'br init' first)" >&2
+        exit 1
+    fi
+
+    sync_repo_pull
+    # shellcheck disable=SC2310 # failure is handled explicitly by the || block below (exit 1); set -e need not apply here
+    push_one || exit 1
+}
+
+# `br push --all`: pull the sync repo once, then walk every projects/<name>/
+# directory, look up its recorded absolute path, and push from there. A
+# project with no index entry, or whose recorded path no longer exists / is
+# no longer a git repo, is skipped with a warning rather than failing the
+# whole run. Exit 0 iff every known project pushed cleanly (no-ops count as
+# clean); nonzero if any known project's push actually failed.
+cmd_push_all() {
+    sync_repo_pull
+
+    if [[ ! -d "${PROJECTS_DIR}" ]]; then
+        echo "br-wrapper: no projects/ directory yet; nothing to push."
+        return 0
+    fi
+
+    local dir name path any_failed=0 pushed=0 skipped=0
+    for dir in "${PROJECTS_DIR}"/*/; do
+        [[ -d "${dir}" ]] || continue
+        name=$(basename "${dir}")
+
+        # shellcheck disable=SC2310 # failure is handled explicitly below (skip + warn); set -e need not apply here
+        if ! path=$(lookup_project_path "${name}"); then
+            echo "br-wrapper: warning: skipping '${name}' (no recorded path; run 'br push' from it once on this machine)" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ ! -d "${path}" ]]; then
+            echo "br-wrapper: warning: skipping '${name}' (recorded path no longer exists: ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if ! git -C "${path}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "br-wrapper: warning: skipping '${name}' (recorded path is not a git repo: ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ ! -d "${path}/${BEADS_DIR}" ]]; then
+            echo "br-wrapper: warning: skipping '${name}' (no ${BEADS_DIR} at recorded path: ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        echo "br-wrapper: pushing '${name}' (${path})..."
+        # shellcheck disable=SC2310 # failure is handled explicitly below (warn + aggregate); set -e need not apply here
+        if ( cd "${path}" && push_one ); then
+            pushed=$((pushed + 1))
+        else
+            echo "br-wrapper: warning: push failed for '${name}'" >&2
+            any_failed=1
+        fi
+    done
+
+    echo "br-wrapper: push --all summary: ${pushed} pushed, ${skipped} skipped, exit-worthy failures: ${any_failed}"
+    [[ "${any_failed}" -eq 0 ]]
 }
 
 # --- Command: restore ---------------------------------------------------------
