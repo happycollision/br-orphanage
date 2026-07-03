@@ -22,8 +22,8 @@ set -euo pipefail
 # --- Locate ourselves and the sync repo --------------------------------------
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
-SYNC_REPO=$(cd "$(dirname "$SELF")/.." && pwd)
-PROJECTS_DIR="$SYNC_REPO/projects"
+SYNC_REPO=$(cd "$(dirname "${SELF}")/.." && pwd)
+PROJECTS_DIR="${SYNC_REPO}/projects"
 BEADS_DIR=".beads"
 
 # Files worth versioning centrally. Deliberately excludes:
@@ -43,17 +43,20 @@ TRACKED_FILES=(
 find_real_br() {
     local dir cand
     local IFS=':'
+    # shellcheck disable=SC2250 # deliberately unbraced/unquoted: word-splits PATH on the IFS=':' set above to scan each entry
     for dir in $PATH; do
-        [ -n "$dir" ] || continue
-        cand="$dir/br"
-        [ -x "$cand" ] && [ -f "$cand" ] || continue
-        [ "$(readlink -f "$cand")" = "$SELF" ] && continue
-        printf '%s\n' "$cand"
+        [[ -n "${dir}" ]] || continue
+        cand="${dir}/br"
+        [[ -x "${cand}" ]] && [[ -f "${cand}" ]] || continue
+        # shellcheck disable=SC2312 # readlink failure just falls through to "not self"; no return value worth capturing separately
+        [[ "$(readlink -f "${cand}")" = "${SELF}" ]] && continue
+        printf '%s\n' "${cand}"
         return 0
     done
     return 1
 }
 
+# shellcheck disable=SC2310 # failure is handled explicitly by the || block below (exit 1); set -e need not apply here
 REAL_BR=$(find_real_br) || {
     echo "br-wrapper: error: real 'br' binary not found in PATH" >&2
     echo "br-wrapper: install it first: https://github.com/Dicklesworthstone/beads_rust" >&2
@@ -74,15 +77,16 @@ project_name() {
     # For owner-qualified names (avoids fork/name collisions), see README.
     local url
     if url=$(git remote get-url origin 2>/dev/null); then
-        basename "$url" .git
+        basename "${url}" .git
     else
+        # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
         basename "$(git rev-parse --show-toplevel)"
     fi
 }
 
 sync_repo_pull() {
     # --ff-only: fail loudly on divergence rather than creating merge commits.
-    git -C "$SYNC_REPO" pull --ff-only
+    git -C "${SYNC_REPO}" pull --ff-only
 }
 
 # --- Command: init ------------------------------------------------------------
@@ -91,43 +95,44 @@ cmd_init() {
     require_work_tree
     local repo_root gitignore had_gitignore exclude_file
     repo_root=$(git rev-parse --show-toplevel)
-    cd "$repo_root"
+    cd "${repo_root}"
 
     # Snapshot .gitignore. The Rust br claims to only touch .beads/, but the
     # original Go bd modified the repo .gitignore on init; guard either way.
     # NOTE: _snapshot is deliberately not `local` — the EXIT trap fires after
     # this function returns, when locals are already out of scope.
-    gitignore="$repo_root/.gitignore"
+    gitignore="${repo_root}/.gitignore"
     had_gitignore=0
     _snapshot=""
-    if [ -f "$gitignore" ]; then
+    if [[ -f "${gitignore}" ]]; then
         had_gitignore=1
         _snapshot=$(mktemp)
         trap 'rm -f "${_snapshot:-}"' EXIT
-        cp "$gitignore" "$_snapshot"
+        cp "${gitignore}" "${_snapshot}"
     fi
 
-    "$REAL_BR" init "$@"
+    "${REAL_BR}" init "$@"
 
-    if [ "$had_gitignore" -eq 1 ]; then
-        if ! cmp -s "$_snapshot" "$gitignore" 2>/dev/null; then
-            cp "$_snapshot" "$gitignore"
+    if [[ "${had_gitignore}" -eq 1 ]]; then
+        if ! cmp -s "${_snapshot}" "${gitignore}" 2>/dev/null; then
+            cp "${_snapshot}" "${gitignore}"
             echo "br-wrapper: reverted .gitignore changes made by 'br init'"
         fi
-    elif [ -f "$gitignore" ]; then
-        rm "$gitignore"
+    elif [[ -f "${gitignore}" ]]; then
+        rm "${gitignore}"
         echo "br-wrapper: removed .gitignore created by 'br init'"
     fi
 
     # --git-path resolves correctly in worktrees/submodules.
     exclude_file=$(git rev-parse --git-path info/exclude)
-    mkdir -p "$(dirname "$exclude_file")"
-    if ! grep -qxF '.beads/' "$exclude_file" 2>/dev/null; then
-        if [ -s "$exclude_file" ] && [ "$(tail -c 1 "$exclude_file")" != "" ]; then
-            printf '\n' >> "$exclude_file"
+    mkdir -p "$(dirname "${exclude_file}")"
+    if ! grep -qxF '.beads/' "${exclude_file}" 2>/dev/null; then
+        # shellcheck disable=SC2312 # tail failure here is inconsequential: worst case is an extra blank line before the appended entry
+        if [[ -s "${exclude_file}" ]] && [[ "$(tail -c 1 "${exclude_file}")" != "" ]]; then
+            printf '\n' >> "${exclude_file}"
         fi
-        printf '.beads/\n' >> "$exclude_file"
-        echo "br-wrapper: added '.beads/' to $exclude_file"
+        printf '.beads/\n' >> "${exclude_file}"
+        echo "br-wrapper: added '.beads/' to ${exclude_file}"
     fi
 }
 
@@ -135,79 +140,82 @@ cmd_init() {
 
 cmd_push() {
     require_work_tree
+    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
     cd "$(git rev-parse --show-toplevel)"
 
-    if [ ! -d "$BEADS_DIR" ]; then
-        echo "br-wrapper: error: no $BEADS_DIR here (run 'br init' first)" >&2
+    if [[ ! -d "${BEADS_DIR}" ]]; then
+        echo "br-wrapper: error: no ${BEADS_DIR} here (run 'br init' first)" >&2
         exit 1
     fi
 
     local name project_dir copied=0 f
     name=$(project_name)
-    project_dir="$PROJECTS_DIR/$name"
+    project_dir="${PROJECTS_DIR}/${name}"
 
     sync_repo_pull
-    "$REAL_BR" sync --flush-only
+    "${REAL_BR}" sync --flush-only
 
-    mkdir -p "$project_dir"
+    mkdir -p "${project_dir}"
     for f in "${TRACKED_FILES[@]}"; do
-        if [ -f "$BEADS_DIR/$f" ]; then
-            cp "$BEADS_DIR/$f" "$project_dir/$f"
+        if [[ -f "${BEADS_DIR}/${f}" ]]; then
+            cp "${BEADS_DIR}/${f}" "${project_dir}/${f}"
             copied=$((copied + 1))
         fi
     done
-    if [ "$copied" -eq 0 ]; then
+    if [[ "${copied}" -eq 0 ]]; then
         echo "br-wrapper: error: no trackable beads files found" >&2
         exit 1
     fi
 
     # Scope the add to this project only — local edits to the wrapper/scripts
     # should be committed deliberately, not swept up in a sync.
-    git -C "$SYNC_REPO" add "projects/$name"
-    if git -C "$SYNC_REPO" diff --cached --quiet; then
-        echo "No beads changes to commit for $name."
+    git -C "${SYNC_REPO}" add "projects/${name}"
+    if git -C "${SYNC_REPO}" diff --cached --quiet; then
+        echo "No beads changes to commit for ${name}."
         return 0
     fi
-    git -C "$SYNC_REPO" commit -m "sync beads: $name"
-    git -C "$SYNC_REPO" push
-    echo "Beads pushed for $name -> $(git -C "$SYNC_REPO" rev-parse --short HEAD)"
+    git -C "${SYNC_REPO}" commit -m "sync beads: ${name}"
+    git -C "${SYNC_REPO}" push
+    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
+    echo "Beads pushed for ${name} -> $(git -C "${SYNC_REPO}" rev-parse --short HEAD)"
 }
 
 # --- Command: restore ---------------------------------------------------------
 
 cmd_restore() {
     require_work_tree
+    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
     cd "$(git rev-parse --show-toplevel)"
 
     local name project_dir restored=0 f
     name=$(project_name)
-    project_dir="$PROJECTS_DIR/$name"
+    project_dir="${PROJECTS_DIR}/${name}"
 
     sync_repo_pull
 
-    if [ ! -d "$project_dir" ]; then
-        echo "br-wrapper: error: no 'projects/$name' in sync repo" >&2
+    if [[ ! -d "${project_dir}" ]]; then
+        echo "br-wrapper: error: no 'projects/${name}' in sync repo" >&2
         exit 1
     fi
 
     # No workspace yet (fresh clone / new machine): run the augmented init.
-    if [ ! -d "$BEADS_DIR" ]; then
+    if [[ ! -d "${BEADS_DIR}" ]]; then
         cmd_init
     fi
 
     for f in "${TRACKED_FILES[@]}"; do
-        if [ -f "$project_dir/$f" ]; then
-            cp "$project_dir/$f" "$BEADS_DIR/$f"
+        if [[ -f "${project_dir}/${f}" ]]; then
+            cp "${project_dir}/${f}" "${BEADS_DIR}/${f}"
             restored=$((restored + 1))
         fi
     done
-    if [ "$restored" -eq 0 ]; then
-        echo "br-wrapper: error: nothing restorable in projects/$name" >&2
+    if [[ "${restored}" -eq 0 ]]; then
+        echo "br-wrapper: error: nothing restorable in projects/${name}" >&2
         exit 1
     fi
 
-    "$REAL_BR" sync --import-only
-    echo "Restored $restored file(s) for $name and imported into the database."
+    "${REAL_BR}" sync --import-only
+    echo "Restored ${restored} file(s) for ${name} and imported into the database."
 }
 
 # --- Dispatch -------------------------------------------------------------------
@@ -216,5 +224,5 @@ case "${1:-}" in
     init)    shift; cmd_init "$@" ;;
     push)    shift; cmd_push "$@" ;;
     restore) shift; cmd_restore "$@" ;;
-    *)       exec "$REAL_BR" "$@" ;;
+    *)       exec "${REAL_BR}" "$@" ;;
 esac
