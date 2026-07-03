@@ -20,7 +20,8 @@ set -euo pipefail
 
 # --- Locate repo under test ---------------------------------------------------
 
-TESTS_DIR=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+TESTS_DIR=$(cd "$(dirname "${SELF}")" && pwd)
 REPO_UNDER_TEST=$(cd "${TESTS_DIR}/.." && pwd)
 
 # --- Sandbox: temp dir + trap cleanup -----------------------------------------
@@ -56,6 +57,7 @@ export GIT_COMMITTER_EMAIL=test@test.invalid
 find_real_br_on_path() {
     local dir cand
     local IFS=':'
+    # shellcheck disable=SC2250 # deliberately unbraced/unquoted: word-splits PATH on the IFS=':' set above to scan each entry
     for dir in $PATH; do
         [[ -n "${dir}" ]] || continue
         cand="${dir}/br"
@@ -66,6 +68,7 @@ find_real_br_on_path() {
     return 1
 }
 
+# shellcheck disable=SC2310 # failure is handled explicitly by the || block below (exit 1); set -e need not apply here
 REAL_BR=$(find_real_br_on_path) || {
     echo "FATAL: no real 'br' binary found on PATH; install beads_rust first." >&2
     exit 1
@@ -175,7 +178,9 @@ assert_file_exists "clone contains bin/br" "${WRAPPER_BR}"
 export PATH="${SYNC_CLONE}/bin:${REAL_BR_DIR}:${PATH}"
 
 BR_RESOLVED=$(command -v br)
-assert_eq "PATH resolves 'br' to the clone's wrapper" "$(readlink -f "${WRAPPER_BR}")" "$(readlink -f "${BR_RESOLVED}")"
+WRAPPER_BR_CANON=$(readlink -f "${WRAPPER_BR}")
+BR_RESOLVED_CANON=$(readlink -f "${BR_RESOLVED}")
+assert_eq "PATH resolves 'br' to the clone's wrapper" "${WRAPPER_BR_CANON}" "${BR_RESOLVED_CANON}"
 
 # --- Regression check (Task 1): executable bits survive a fresh clone --------
 
@@ -261,7 +266,8 @@ section "br init: .beads/ appears in info/exclude exactly once (idempotent)"
 EXCLUDE_FILE=$(abs_git_path "${PROJ2}" info/exclude)
 count_beads_lines() { grep -cxF '.beads/' "${EXCLUDE_FILE}" 2>/dev/null || true; }
 
-assert_eq "exclude has exactly one '.beads/' line after 1st init" "1" "$(count_beads_lines)"
+BEADS_LINE_COUNT=$(count_beads_lines)
+assert_eq "exclude has exactly one '.beads/' line after 1st init" "1" "${BEADS_LINE_COUNT}"
 
 # NOTE: the real `br init` (v0.2.16) is NOT idempotent on an already-
 # initialized .beads/ — it exits nonzero ("Already initialized ... Use
@@ -272,7 +278,8 @@ assert_eq "exclude has exactly one '.beads/' line after 1st init" "1" "$(count_b
 (cd "${PROJ2}" && br init -q --force)
 (cd "${PROJ2}" && br init -q --force)
 
-assert_eq "exclude still has exactly one '.beads/' line after 3 total (forced) inits" "1" "$(count_beads_lines)"
+BEADS_LINE_COUNT=$(count_beads_lines)
+assert_eq "exclude still has exactly one '.beads/' line after 3 total (forced) inits" "1" "${BEADS_LINE_COUNT}"
 
 # Re-check gitignore damage didn't creep back in across repeated inits either.
 assert_file_absent "still no .gitignore after repeated (forced) inits" "${PROJ2}/.gitignore"
@@ -294,7 +301,8 @@ else
 fi
 assert_eq "wrapper's re-init exit code matches real binary's for the same invocation" "${REAL_REINIT_EXIT}" "${WRAPPER_REINIT_EXIT}"
 # And the exclude file must still be untouched/correct after that failed attempt.
-assert_eq "exclude line count unaffected by the failed bare re-init" "1" "$(count_beads_lines)"
+BEADS_LINE_COUNT=$(count_beads_lines)
+assert_eq "exclude line count unaffected by the failed bare re-init" "1" "${BEADS_LINE_COUNT}"
 
 # --- Scenario: passthrough of real commands -------------------------------------
 
@@ -310,11 +318,18 @@ pass "'br list' passes through without error"
 (cd "${PROJ2}" && br ready >/dev/null)
 pass "'br ready' passes through without error"
 
+# Pass JSON_OUT positionally ($1 via the "_" placeholder for $0) rather than
+# splicing it into the -c string: embedding data as shell source would break
+# on awkward quote sequences in the JSON.
 JSON_OUT=$(cd "${PROJ2}" && br list --json)
 if command -v jq >/dev/null 2>&1; then
-    assert_true "'br list --json' output parses as JSON (jq)" bash -c "printf '%s' '${JSON_OUT//\'/\'\\\'\'}' | jq . >/dev/null"
+    # shellcheck disable=SC2016 # deliberately single-quoted: $1 must be expanded by the inner bash, not spliced in as shell source here
+    assert_true "'br list --json' output parses as JSON (jq)" \
+        bash -c 'printf "%s" "$1" | jq . >/dev/null' _ "${JSON_OUT}"
 else
-    assert_true "'br list --json' output parses as JSON (python3 json.tool)" bash -c "printf '%s' '${JSON_OUT//\'/\'\\\'\'}' | python3 -m json.tool >/dev/null"
+    # shellcheck disable=SC2016 # deliberately single-quoted: $1 must be expanded by the inner bash, not spliced in as shell source here
+    assert_true "'br list --json' output parses as JSON (python3 json.tool)" \
+        bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' _ "${JSON_OUT}"
 fi
 
 # Exit-code transparency: a failing command's exit code passes through
@@ -409,7 +424,8 @@ git clone -q "${PUSH_PROJ}" "${RESTORE_PROJ}"
 # The clone's origin now points at PUSH_PROJ's local path, not the fake
 # "origin" bare repo PUSH_PROJ itself uses — reset it to the same origin
 # PUSH_PROJ has, so project_name() resolves identically ("push-demo").
-git -C "${RESTORE_PROJ}" remote set-url origin "$(git -C "${PUSH_PROJ}" remote get-url origin)"
+PUSH_PROJ_ORIGIN=$(git -C "${PUSH_PROJ}" remote get-url origin)
+git -C "${RESTORE_PROJ}" remote set-url origin "${PUSH_PROJ_ORIGIN}"
 
 assert_file_absent "fresh clone has no .beads/ before restore" "${RESTORE_PROJ}/.beads"
 
@@ -459,7 +475,9 @@ git -C "${WT_MAIN}" worktree add -q -b wt-feature-branch "${WT_LINKED}"
 
 COMMON_EXCLUDE=$(abs_git_path "${WT_MAIN}" info/exclude)
 LINKED_EXCLUDE_AS_SEEN=$(abs_git_path "${WT_LINKED}" info/exclude)
-assert_eq "worktree's --git-path info/exclude resolves to the main repo's shared exclude file" "$(readlink -f "${COMMON_EXCLUDE}")" "$(readlink -f "${LINKED_EXCLUDE_AS_SEEN}")"
+COMMON_EXCLUDE_CANON=$(readlink -f "${COMMON_EXCLUDE}")
+LINKED_EXCLUDE_CANON=$(readlink -f "${LINKED_EXCLUDE_AS_SEEN}")
+assert_eq "worktree's --git-path info/exclude resolves to the main repo's shared exclude file" "${COMMON_EXCLUDE_CANON}" "${LINKED_EXCLUDE_CANON}"
 
 (cd "${WT_LINKED}" && br init -q)
 
