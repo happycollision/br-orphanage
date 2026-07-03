@@ -662,6 +662,106 @@ else
 fi
 assert_contains "'sync --bogus' names the unknown option" "${BOGUS_OUT}" "unknown sync option '--bogus'"
 
+# --- Divergence: two machines, one target ----------------------------------------
+
+section "divergence: two clones alternate syncs; issues merge to the union"
+
+# "Machine A" = a project + its origin bare (also the sync target).
+DIV_A="${WORK}/proj-div-a"
+make_project_repo "${DIV_A}" yes "div-demo"
+DIV_BARE="${WORK}/origins/div-demo.git"
+# Push code so machine B can clone the project like a real second machine.
+git -C "${DIV_A}" push -q origin HEAD:refs/heads/main
+(cd "${DIV_A}" && br orphanage init -q --target origin)
+(cd "${DIV_A}" && br q "issue from machine A" >/dev/null)
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+
+# "Machine B" = a fresh clone with its own empty workspace (bootstrap-by-init;
+# the dedicated bootstrap path is exercised in its own section later).
+DIV_B="${WORK}/proj-div-b"
+git clone -q "${DIV_BARE}" "${DIV_B}"
+(cd "${DIV_B}" && br orphanage init -q --target origin)
+(cd "${DIV_B}" && br q "issue from machine B" >/dev/null)
+set +e
+(cd "${DIV_B}" && br orphanage sync >/dev/null 2>&1)
+DIV_B_SYNC_EXIT=$?
+set -e
+assert_eq "machine B's divergent sync exits 0" "0" "${DIV_B_SYNC_EXIT}"
+
+DIV_BRANCH="orphanage/origins/div-demo"
+DIV_REMOTE_ISSUES=$(git -C "${DIV_BARE}" show "refs/heads/${DIV_BRANCH}:issues.jsonl")
+assert_contains "union contains machine A's issue" "${DIV_REMOTE_ISSUES}" "issue from machine A"
+assert_contains "union contains machine B's issue" "${DIV_REMOTE_ISSUES}" "issue from machine B"
+
+DIV_B_LIST=$(cd "${DIV_B}" && br list)
+assert_contains "machine B's DB gained machine A's issue" "${DIV_B_LIST}" "issue from machine A"
+
+# History stayed linear: B's commit has A's commit as parent, no force.
+DIV_TIP=$(git -C "${DIV_BARE}" rev-parse "refs/heads/${DIV_BRANCH}")
+DIV_TIP_PARENTS=$(git -C "${DIV_BARE}" cat-file -p "${DIV_TIP}" | grep -c '^parent ' || true)
+assert_eq "merged commit has exactly one parent (linear history)" "1" "${DIV_TIP_PARENTS}"
+
+section "divergence: A picks up B's issue; deletion propagates via tombstone"
+
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+DIV_A_LIST=$(cd "${DIV_A}" && br list)
+assert_contains "machine A's DB gained machine B's issue" "${DIV_A_LIST}" "issue from machine B"
+
+# A deletes its own issue; sync; B syncs; the issue must be gone on B and
+# must NOT resurrect on any later sync from either side.
+DIV_A_DEL_ID=$(cd "${DIV_A}" && br list --json | jq -r '.issues[] | select(.title | contains("issue from machine A")) | .id' | head -n 1)
+(cd "${DIV_A}" && br delete "${DIV_A_DEL_ID}" >/dev/null)
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_B}" && br orphanage sync >/dev/null)
+DIV_B_LIST2=$(cd "${DIV_B}" && br list)
+if [[ "${DIV_B_LIST2}" == *"issue from machine A"* ]]; then
+    fail "deleted issue still visible on machine B after sync"
+else
+    pass "deletion propagated to machine B"
+fi
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+DIV_A_LIST2=$(cd "${DIV_A}" && br list)
+if [[ "${DIV_A_LIST2}" == *"issue from machine A"* ]]; then
+    fail "deleted issue RESURRECTED on machine A (tombstone not honored)"
+else
+    pass "no resurrection on machine A after another sync round"
+fi
+
+section "divergence: three-way non-issue files (converge, no flap, both-changed)"
+
+# A edits config.yaml; the edit must reach B and then settle (no flapping).
+printf '\n# marker-from-A\n' >> "${DIV_A}/.beads/config.yaml"
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_B}" && br orphanage sync >/dev/null 2>&1)
+assert_true "A's config edit reached machine B" \
+    grep -qF "# marker-from-A" "${DIV_B}/.beads/config.yaml"
+
+set +e
+DIV_SETTLE_OUT=$(cd "${DIV_B}" && br orphanage sync 2>&1)
+set -e
+assert_contains "B's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_OUT}" "Already in sync"
+set +e
+DIV_SETTLE_A=$(cd "${DIV_A}" && br orphanage sync 2>&1)
+set -e
+assert_contains "A's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_A}" "Already in sync"
+
+# Both-changed: A and B edit config.yaml differently; syncing machine keeps
+# local and warns with the recovery command.
+printf '\n# conflict-from-A\n' >> "${DIV_A}/.beads/config.yaml"
+printf '\n# conflict-from-B\n' >> "${DIV_B}/.beads/config.yaml"
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+set +e
+DIV_CONFLICT_OUT=$(cd "${DIV_B}" && br orphanage sync 2>&1)
+DIV_CONFLICT_EXIT=$?
+set -e
+assert_eq "both-changed sync still exits 0" "0" "${DIV_CONFLICT_EXIT}"
+assert_contains "both-changed warns" "${DIV_CONFLICT_OUT}" "both local and remote changed config.yaml"
+assert_contains "warning includes the recovery command" "${DIV_CONFLICT_OUT}" "git cat-file blob"
+assert_true "machine B kept its local config" \
+    grep -qF "# conflict-from-B" "${DIV_B}/.beads/config.yaml"
+DIV_REMOTE_CONFIG=$(git -C "${DIV_BARE}" show "refs/heads/${DIV_BRANCH}:config.yaml")
+assert_contains "B's (local-wins) config was published" "${DIV_REMOTE_CONFIG}" "# conflict-from-B"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"

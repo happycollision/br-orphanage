@@ -48,6 +48,21 @@ TRACKED_FILES=(
     README.md
 )
 
+# Non-issue files resolved by the three-way rule during inbound merge.
+# issues.jsonl is merged by the real br's import instead (per-issue,
+# newest-wins, tombstone-protected).
+# Empirical (br 0.2.16): `br sync --import-only` / `--flush-only` never
+# touch interactions.jsonl at all (confirmed by truncating it to empty and
+# running both — it stayed empty; no regeneration, no merge). That file is
+# written only by `br audit record`, entirely separate from the issue DB.
+# So it stays on the three-way path below, same as config.yaml/metadata.json.
+THREEWAY_FILES=(
+    config.yaml
+    interactions.jsonl
+    metadata.json
+    README.md
+)
+
 # --- Find the real br binary (skip ourselves; no recursion) -------------------
 
 find_real_br() {
@@ -383,10 +398,120 @@ build_tree() {
     printf '%s' "${entries}" | git mktree
 }
 
-# Inbound merge on divergence. Stub — implemented in the divergence task.
-# shellcheck disable=SC2317 # reached via sync_one once divergence occurs
+# Inbound merge: the remote branch has commits this machine hasn't merged.
+# $1 = remote tip SHA, $2 = merge base SHA (may be empty: first sync from
+# this machine against an existing branch).
+#
+# Issues merge through the real br (import is per-issue, newest-wins, and
+# tombstone-protected — deletions are records, not absences, so they
+# propagate and never resurrect; verified against br 0.2.16).
+#
+# Non-issue files use a per-file three-way by blob SHA with base =
+# refs/orphanage/pushed. Local wins on both-changed because recoverability
+# is asymmetric: the remote version stays in branch history forever, while
+# the local edit exists only in .beads/ (excluded from the project's git)
+# and would be destroyed with no undo.
 merge_inbound() {
-    return 0
+    local tip="$1" base="$2" f local_sha base_sha remote_sha
+    local import_out local_ids remote_ids
+    if git cat-file -e "${tip}:issues.jsonl" 2>/dev/null; then
+        if ! git cat-file blob "${tip}:issues.jsonl" > "${BEADS_DIR}/issues.jsonl"; then
+            echo "br-orphanage: error: could not extract remote issues.jsonl" >&2
+            return 1
+        fi
+        # Capture the import report: it is still shown to the user, and it
+        # doubles as the no-change detector for the byte-convergence
+        # adoption further below.
+        if ! import_out=$("${REAL_BR}" sync --import-only 2>&1); then
+            printf '%s\n' "${import_out}" >&2
+            echo "br-orphanage: error: 'br sync --import-only' failed during inbound merge" >&2
+            return 1
+        fi
+        printf '%s\n' "${import_out}"
+        # --force: flush-only's dirty-tracking short-circuits to a no-op when
+        # nothing changed since the last export, which would leave the file
+        # we just clobbered with the remote's issues.jsonl (above) missing
+        # any local issues that were already flushed (and thus non-dirty)
+        # before this merge — --force makes this a full DB -> JSONL export
+        # regardless of dirty state, so the file reflects the FULL post-merge
+        # DB (remote issues just imported + pre-existing local ones).
+        if ! "${REAL_BR}" sync --flush-only --force; then
+            echo "br-orphanage: error: 'br sync --flush-only' failed after inbound merge" >&2
+            return 1
+        fi
+
+        # Byte-convergence adoption. br's import/export round-trip is not
+        # byte-stable across machines: e.g. (br 0.2.16, diagnosed here) a
+        # tombstone exported by the machine that DELETED the issue carries
+        # no closed_at field, but a machine that imports that tombstone
+        # back-fills closed_at on its forced export — while the originating
+        # machine's import leaves its own row untouched ("Tombstone
+        # protected") and so re-exports WITHOUT closed_at. Publishing our
+        # force-flushed bytes on such rounds would flap the tree hash
+        # between machines forever. When (a) the import changed nothing in
+        # the DB and (b) both files contain exactly the same issue-id set,
+        # the two files are semantically identical and differ only in
+        # serialization — adopt the remote bytes verbatim so both machines
+        # publish identical trees and the flap terminates. Every guard
+        # failure below degrades to keeping the force-flushed bytes:
+        # correct union, at worst one extra commit, never data loss.
+        #
+        # No-change detection: br omits/zeroes the Created/Updated report
+        # lines when nothing changed. If br's wording ever changes so these
+        # lines vanish entirely, this check could misread a changed round
+        # as unchanged — the id-set equality below still gates adoption,
+        # bounding the residual risk.
+        if ! grep -qE 'Created: [1-9]' <<< "${import_out}" \
+            && ! grep -qE 'Updated: [1-9]' <<< "${import_out}"; then
+            # br serializes "id" as the first key of every JSONL line. If
+            # that format assumption ever breaks, the extracted sets simply
+            # won't match and we keep the force-flushed bytes (safe).
+            local_ids=$(sed -n 's/^{"id":"\([^"]*\)".*/\1/p' "${BEADS_DIR}/issues.jsonl" 2>/dev/null | sort) || local_ids=""
+            remote_ids=$(git cat-file blob "${tip}:issues.jsonl" 2>/dev/null | sed -n 's/^{"id":"\([^"]*\)".*/\1/p' | sort) || remote_ids=""
+            if [[ -n "${local_ids}" && "${local_ids}" == "${remote_ids}" ]]; then
+                if ! git cat-file blob "${tip}:issues.jsonl" > "${BEADS_DIR}/issues.jsonl"; then
+                    echo "br-orphanage: error: could not re-extract remote issues.jsonl" >&2
+                    return 1
+                fi
+                echo "br-orphanage: adopted remote serialization of issues.jsonl (no content changes)"
+            fi
+        fi
+    fi
+
+    for f in "${THREEWAY_FILES[@]}"; do
+        local_sha=""
+        base_sha=""
+        remote_sha=""
+        if [[ -f "${BEADS_DIR}/${f}" ]]; then
+            if ! local_sha=$(git hash-object "${BEADS_DIR}/${f}"); then
+                echo "br-orphanage: error: hash-object failed for ${f}" >&2
+                return 1
+            fi
+        fi
+        if [[ -n "${base}" ]]; then
+            base_sha=$(git rev-parse -q --verify "${base}:${f}" 2>/dev/null || true)
+        fi
+        remote_sha=$(git rev-parse -q --verify "${tip}:${f}" 2>/dev/null || true)
+
+        # Already identical (including both absent): nothing to do.
+        [[ "${remote_sha}" == "${local_sha}" ]] && continue
+
+        if [[ "${local_sha}" == "${base_sha}" ]]; then
+            # Local unchanged since last publish -> adopt the remote state.
+            if [[ -n "${remote_sha}" ]]; then
+                if ! git cat-file blob "${tip}:${f}" > "${BEADS_DIR}/${f}"; then
+                    echo "br-orphanage: error: could not extract remote ${f}" >&2
+                    return 1
+                fi
+            else
+                rm -f "${BEADS_DIR}/${f}"
+            fi
+        elif [[ "${remote_sha}" == "${base_sha}" ]]; then
+            : # Remote unchanged -> keep local; it will publish with this sync.
+        else
+            echo "br-orphanage: warning: both local and remote changed ${f}; kept local. Remote version preserved at ${tip} — view it with: git cat-file blob ${tip}:${f}" >&2
+        fi
+    done
 }
 
 # Bootstrap a fresh workspace from the orphan branch. Stub — implemented in
