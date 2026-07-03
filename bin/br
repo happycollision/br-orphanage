@@ -93,6 +93,10 @@ run_augmented_init() {
     # this function returns, when locals are out of scope (set -u pitfall).
     gitignore="${repo_root}/.gitignore"
     had_gitignore=0
+    # A previous call's snapshot (bootstrap path may re-enter): sweep it now,
+    # BEFORE the reset below clobbers its path, since installing our trap
+    # further down would overwrite the one guarding it.
+    [[ -n "${_snapshot:-}" ]] && rm -f "${_snapshot}"
     _snapshot=""
     if [[ -f "${gitignore}" ]]; then
         had_gitignore=1
@@ -144,7 +148,13 @@ cmd_init() {
     run_augmented_init ${passthru[@]+"${passthru[@]}"}
 
     if [[ -n "${target}" ]]; then
-        cmd_target "${target}"
+        # Subshell: cmd_target calls `exit 1` on validation failure rather than
+        # returning, which would skip our note below — the subshell contains
+        # that exit so we can report that init itself already succeeded.
+        if ! ( cmd_target "${target}" ); then
+            echo "br-orphanage: note: init succeeded; the sync target was NOT set — fix and re-run: br orphanage target ${target}" >&2
+            exit 1
+        fi
     fi
 }
 

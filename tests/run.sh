@@ -471,6 +471,23 @@ assert_eq "exclude has exactly one '.beads/' line" "1" "$(count_oinit2_excl)"
 assert_eq "still exactly one '.beads/' line after repeated forced inits" "1" "$(count_oinit2_excl)"
 assert_file_absent "still no .gitignore after repeated inits" "${OINIT2}/.gitignore"
 
+section "br orphanage init: double init without --force fails like the real binary"
+
+set +e
+(cd "${OINIT2}" && br orphanage init -q >/dev/null 2>&1)
+DBLINIT_WRAPPER_EXIT=$?
+(cd "${OINIT2}" && "${REAL_BR_RESOLVED}" init -q >/dev/null 2>&1)
+DBLINIT_REAL_EXIT=$?
+set -e
+if [[ "${DBLINIT_WRAPPER_EXIT}" -ne 0 ]]; then
+    pass "double init without --force exits nonzero (${DBLINIT_WRAPPER_EXIT})"
+else
+    fail "double init without --force unexpectedly exited 0"
+fi
+assert_eq "wrapper double-init exit code matches the real binary's" \
+    "${DBLINIT_REAL_EXIT}" "${DBLINIT_WRAPPER_EXIT}"
+assert_eq "exclude still has exactly one '.beads/' line after failed double init" "1" "$(count_oinit2_excl)"
+
 section "br orphanage init --target: inline target set"
 
 OINIT3="${WORK}/proj-oinit-target"
@@ -481,6 +498,28 @@ make_project_repo "${OINIT3}" yes "oinit-target"
 OINIT3_TGT=$(git -C "${OINIT3}" config --get beadsOrphanage.target)
 assert_eq "--target stored in git config" "origin" "${OINIT3_TGT}"
 assert_dir_exists "--target didn't break the real init" "${OINIT3}/.beads"
+
+section "br orphanage init --target: failing target still leaves a successful init"
+
+OINIT4="${WORK}/proj-oinit-badtarget"
+make_project_repo "${OINIT4}" yes "oinit-badtarget"
+
+set +e
+BADTGT_OUT=$(cd "${OINIT4}" && br orphanage init -q --target bogus-nonexistent 2>&1)
+BADTGT_EXIT=$?
+set -e
+if [[ "${BADTGT_EXIT}" -ne 0 ]]; then
+    pass "failing --target exits nonzero (${BADTGT_EXIT})"
+else
+    fail "failing --target unexpectedly exited 0"
+fi
+assert_contains "output notes init succeeded but target was not set" "${BADTGT_OUT}" "init succeeded"
+assert_dir_exists "real init still completed (.beads/ exists)" "${OINIT4}/.beads"
+if git -C "${OINIT4}" config --get beadsOrphanage.target >/dev/null 2>&1; then
+    fail "beadsOrphanage.target wrongly set after rejected --target"
+else
+    pass "beadsOrphanage.target left unset after rejected --target"
+fi
 
 section "br orphanage init: worktree resolves the shared info/exclude"
 
