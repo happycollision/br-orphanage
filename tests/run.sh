@@ -537,6 +537,120 @@ else
     fail "'.beads/' did NOT land in the shared info/exclude (${COMMON_EXCLUDE})"
 fi
 
+# --- br orphanage sync: outbound core --------------------------------------------
+
+INDEX_FILE="${INSTALL_DIR}/project-paths"
+
+section "br orphanage sync: first sync creates the orphan root at the target"
+
+SYNC_PROJ="${WORK}/proj-sync"
+make_project_repo "${SYNC_PROJ}" yes "sync-demo"
+SYNC_ORIGIN_BARE="${WORK}/origins/sync-demo.git"
+(cd "${SYNC_PROJ}" && br orphanage init -q --target origin)
+# shellcheck disable=SC2034 # captured only to consume 'br q's id output; the issue's presence is asserted via issues.jsonl below
+SYNC_ISSUE_ID=$(cd "${SYNC_PROJ}" && br q "orphan roundtrip issue")
+
+SYNC_OUT1=$(cd "${SYNC_PROJ}" && br orphanage sync)
+assert_contains "first sync reports success" "${SYNC_OUT1}" "Beads synced for sync-demo"
+
+SYNC_BRANCH="orphanage/origins/sync-demo"
+SYNC_TIP1=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+if [[ -n "${SYNC_TIP1}" ]]; then
+    pass "orphan branch exists at the target (${SYNC_BRANCH})"
+else
+    fail "orphan branch missing at the target"
+fi
+
+PARENT_COUNT=$(git -C "${SYNC_ORIGIN_BARE}" cat-file -p "${SYNC_TIP1}" | grep -c '^parent ' || true)
+assert_eq "first sync commit is an orphan root (no parents)" "0" "${PARENT_COUNT}"
+
+SYNC_TREE_LS=$(git -C "${SYNC_ORIGIN_BARE}" ls-tree --name-only "${SYNC_TIP1}")
+assert_contains "branch tree contains issues.jsonl" "${SYNC_TREE_LS}" "issues.jsonl"
+assert_contains "branch tree contains config.yaml" "${SYNC_TREE_LS}" "config.yaml"
+if printf '%s\n' "${SYNC_TREE_LS}" | grep -qx 'beads.db'; then
+    fail "beads.db leaked into the branch tree"
+else
+    pass "beads.db NOT in the branch tree"
+fi
+REMOTE_ISSUES=$(git -C "${SYNC_ORIGIN_BARE}" show "${SYNC_TIP1}:issues.jsonl")
+assert_contains "synced issues.jsonl contains the created issue" "${REMOTE_ISSUES}" "orphan roundtrip issue"
+
+LOCAL_PUSHED=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/pushed)
+assert_eq "local refs/orphanage/pushed matches the remote tip" "${SYNC_TIP1}" "${LOCAL_PUSHED}"
+
+section "br orphanage sync: index entry, second sync chains, no-op"
+
+assert_file_exists "machine-local index created" "${INDEX_FILE}"
+SYNC_PROJ_REAL=$(cd "${SYNC_PROJ}" && pwd -P)
+assert_true "index records sync-demo -> its absolute path" \
+    grep -qF "$(printf 'sync-demo\t%s' "${SYNC_PROJ_REAL}")" "${INDEX_FILE}"
+
+(cd "${SYNC_PROJ}" && br q "second orphan issue" >/dev/null)
+SYNC_OUT2=$(cd "${SYNC_PROJ}" && br orphanage sync)
+assert_contains "second sync reports success" "${SYNC_OUT2}" "Beads synced for sync-demo"
+SYNC_TIP2=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+SYNC_TIP2_PARENT=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "${SYNC_TIP2}^")
+assert_eq "second sync commit's parent is the first sync commit" "${SYNC_TIP1}" "${SYNC_TIP2_PARENT}"
+
+INDEX_LINES=$(grep -cF "$(printf 'sync-demo\t')" "${INDEX_FILE}" || true)
+assert_eq "re-sync does not duplicate the index entry" "1" "${INDEX_LINES}"
+
+set +e
+NOOP_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync 2>&1)
+NOOP_EXIT=$?
+set -e
+assert_eq "no-op sync exits 0" "0" "${NOOP_EXIT}"
+assert_contains "no-op sync reports already in sync" "${NOOP_OUT}" "Already in sync for sync-demo"
+SYNC_TIP3=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+assert_eq "no-op sync created no new commit" "${SYNC_TIP2}" "${SYNC_TIP3}"
+
+section "br orphanage sync: external (non-origin) target"
+
+EXT_PROJ="${WORK}/proj-sync-external"
+make_project_repo "${EXT_PROJ}" yes "sync-external"
+EXT_BARE="${WORK}/targets/private-issues.git"
+mkdir -p "$(dirname "${EXT_BARE}")"
+git init -q --bare "${EXT_BARE}"
+(cd "${EXT_PROJ}" && br orphanage init -q --target "${EXT_BARE}")
+(cd "${EXT_PROJ}" && br q "external target issue" >/dev/null)
+(cd "${EXT_PROJ}" && br orphanage sync >/dev/null)
+EXT_BRANCH="orphanage/origins/sync-external"
+EXT_ISSUES=$(git -C "${EXT_BARE}" show "refs/heads/${EXT_BRANCH}:issues.jsonl")
+assert_contains "issue landed at the external target" "${EXT_ISSUES}" "external target issue"
+EXT_ORIGIN_BRANCHES=$(git -C "${WORK}/origins/sync-external.git" for-each-ref --format='%(refname)' refs/heads)
+if [[ "${EXT_ORIGIN_BRANCHES}" == *orphanage* ]]; then
+    fail "external-target sync leaked an orphan branch to the project's origin"
+else
+    pass "project origin has no orphan branch (data went only to the external target)"
+fi
+
+section "br orphanage sync: errors (unset target, unknown option)"
+
+NOTGT_PROJ="${WORK}/proj-sync-no-target"
+make_project_repo "${NOTGT_PROJ}" yes "sync-no-target"
+(cd "${NOTGT_PROJ}" && br orphanage init -q)
+set +e
+NOTGT_OUT=$(cd "${NOTGT_PROJ}" && br orphanage sync 2>&1)
+NOTGT_EXIT=$?
+set -e
+if [[ "${NOTGT_EXIT}" -ne 0 ]]; then
+    pass "sync without a target exits nonzero (${NOTGT_EXIT})"
+else
+    fail "sync without a target unexpectedly exited 0"
+fi
+assert_contains "unset-target error names the fix" "${NOTGT_OUT}" "br orphanage target <remote-or-url>"
+
+set +e
+BOGUS_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync --bogus 2>&1)
+BOGUS_EXIT=$?
+set -e
+if [[ "${BOGUS_EXIT}" -ne 0 ]]; then
+    pass "'sync --bogus' exits nonzero (${BOGUS_EXIT})"
+else
+    fail "'sync --bogus' unexpectedly exited 0"
+fi
+assert_contains "'sync --bogus' names the unknown option" "${BOGUS_OUT}" "unknown sync option '--bogus'"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
