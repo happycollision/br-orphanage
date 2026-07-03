@@ -174,7 +174,7 @@ assert_true "rc file got the marked PATH line" grep -qF "# br-orphanage" "${FAKE
 
 REINSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
 assert_contains "re-install does not duplicate the rc line" "${REINSTALL_OUT}" "already configured"
-RC_LINE_COUNT=$(grep -cF "# br-orphanage" "${FAKE_HOME}/.bashrc")
+RC_LINE_COUNT=$(grep -cF "# br-orphanage" "${FAKE_HOME}/.bashrc" || true)
 assert_eq "exactly one marked PATH line after two installs" "1" "${RC_LINE_COUNT}"
 
 # Upgrade reporting: fake an older installed version, re-run installer.
@@ -222,9 +222,17 @@ pass "'br list' passes through without error"
 pass "'br ready' passes through without error"
 
 JSON_OUT=$(cd "${PASSTHRU_PROJ}" && br list --json)
-# shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
-assert_true "'br list --json' output parses as JSON" \
-    bash -c 'printf "%s" "$1" | jq empty' _ "${JSON_OUT}"
+if command -v jq >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
+    assert_true "'br list --json' output parses as JSON" \
+        bash -c 'printf "%s" "$1" | jq empty' _ "${JSON_OUT}"
+elif command -v python3 >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
+    assert_true "'br list --json' output parses as JSON" \
+        bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' _ "${JSON_OUT}"
+else
+    echo "  jq/python3 not installed; skipping JSON parse check."
+fi
 
 set +e
 (cd "${PASSTHRU_PROJ}" && br show definitely-not-a-real-id >/dev/null 2>&1)
