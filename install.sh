@@ -1,37 +1,64 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# install.sh — one-time setup after cloning the beads-sync repo.
+# install.sh — Beads Orphanage installer.
 #
-#   git clone git@github.com:YOURUSER/beads-sync.git ~/.local/share/beads-sync
-#   ~/.local/share/beads-sync/install.sh
+# Normal install (no clone needed):
+#   curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 #
-# The clone location above is only a suggestion — this script and the
-# wrapper resolve everything relative to their own (readlink -f'd) paths,
-# so any directory works. It just has to stay put: the PATH line written
-# below records the absolute path at install time, so if the clone moves,
-# remove the stale line from your rc files and re-run this script.
+# Local dev mode: when run from a checkout of this repo (bin/br sits next to
+# this script), the local wrapper is copied instead of downloaded, so
+# contributors and the test harness exercise the local source.
 #
-# Puts this repo's bin/ at the FRONT of PATH so the `br` wrapper shadows the
-# real binary. The wrapper finds the real binary at runtime by scanning PATH
-# and skipping itself, so it keeps working when `br upgrade` replaces the
-# real binary or you reinstall it elsewhere.
+# There is NO auto-update. To update the wrapper, re-run this installer.
 
-SELF=$(readlink -f "${BASH_SOURCE[0]}")
-REPO=$(cd "$(dirname "${SELF}")" && pwd)
-BIN_DIR="${REPO}/bin"
-MARKER="# beads-sync wrapper"
+RAW_BASE="https://raw.githubusercontent.com/happycollision/br-orphanage/master"
+DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/br-orphanage"
+BIN_DIR="${DATA_DIR}/bin"
+WRAPPER="${BIN_DIR}/br"
+MARKER="# br-orphanage"
 LINE="export PATH=\"${BIN_DIR}:\$PATH\"  ${MARKER}"
 
-chmod +x "${BIN_DIR}/br"
+wrapper_version() {
+    sed -n 's/^VERSION="\(.*\)"$/\1/p' "$1" | head -n 1
+}
+
+old_version=""
+if [[ -f "${WRAPPER}" ]]; then
+    old_version=$(wrapper_version "${WRAPPER}")
+fi
+
+mkdir -p "${BIN_DIR}"
+
+# Local dev mode detection: BASH_SOURCE is unset when piped via `curl | bash`.
+script_dir=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" ]]; then
+    script_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+fi
+
+if [[ -n "${script_dir}" && -f "${script_dir}/bin/br" ]]; then
+    cp "${script_dir}/bin/br" "${WRAPPER}"
+    echo "installed from local checkout: ${script_dir}/bin/br"
+else
+    curl -fsSL "${RAW_BASE}/bin/br" -o "${WRAPPER}"
+    echo "downloaded wrapper from ${RAW_BASE}/bin/br"
+fi
+chmod +x "${WRAPPER}"
+
+new_version=$(wrapper_version "${WRAPPER}")
+if [[ -n "${old_version}" && "${old_version}" != "${new_version}" ]]; then
+    echo "br-orphanage: updated ${old_version} -> ${new_version}"
+else
+    echo "br-orphanage: installed version ${new_version}"
+fi
 
 # Warn (don't fail) if the real br isn't installed yet.
 found_real=0
 IFS=':' read -ra dirs <<< "${PATH}"
 for d in "${dirs[@]}"; do
     [[ -x "${d}/br" ]] || continue
-    # shellcheck disable=SC2312 # readlink failure just falls through to "not real"; no return value worth capturing separately
-    [[ "$(readlink -f "${d}/br")" = "$(readlink -f "${BIN_DIR}/br")" ]] && continue
+    # shellcheck disable=SC2312 # readlink failure just falls through to "not real"
+    [[ "$(readlink -f "${d}/br")" = "$(readlink -f "${WRAPPER}")" ]] && continue
     found_real=1
     break
 done
@@ -56,6 +83,6 @@ done
 if [[ "${updated}" -eq 1 ]]; then
     echo
     echo "Open a new shell (or 'source' your rc file), then verify:"
-    echo "  command -v br   # should print ${BIN_DIR}/br"
-    echo "  br version      # should pass through to the real binary"
+    echo "  command -v br              # should print ${WRAPPER}"
+    echo "  br orphanage --version     # wrapper version"
 fi
