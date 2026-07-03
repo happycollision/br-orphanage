@@ -680,10 +680,53 @@ sync_one() {
     echo "Beads synced for ${name} -> $(git rev-parse --short "${commit}") (${branch})"
 }
 
-# sync --all. Stub — implemented in the sync-all task.
+# Iterate the machine-local index and sync each recorded project. Unlike the
+# single-project path this is runnable from anywhere (no require_work_tree).
+# Skips warn; only real per-project sync failures make the run exit nonzero.
+# The index is read on fd 3 so nothing in the loop (the real br, git) can
+# eat the loop's input from stdin.
 cmd_sync_all() {
-    echo "br-orphanage: error: 'sync --all' not implemented yet" >&2
-    exit 1
+    if [[ ! -f "${PROJECT_PATHS_FILE}" ]]; then
+        echo "br-orphanage: no project index yet; nothing to sync."
+        return 0
+    fi
+
+    local name path failed=0 synced=0 skipped=0
+    while IFS=$'\t' read -r -u 3 name path; do
+        [[ -n "${name}" ]] || continue
+        if [[ ! -d "${path}" ]]; then
+            echo "br-orphanage: warning: skipping '${name}' (recorded path no longer exists: ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if ! git -C "${path}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "br-orphanage: warning: skipping '${name}' (recorded path is not a git repo: ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if [[ ! -d "${path}/${BEADS_DIR}" ]]; then
+            echo "br-orphanage: warning: skipping '${name}' (no ${BEADS_DIR} at recorded path: ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+        if ! git -C "${path}" config --get beadsOrphanage.target >/dev/null 2>&1; then
+            echo "br-orphanage: warning: skipping '${name}' (no sync target configured at ${path})" >&2
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        echo "br-orphanage: syncing '${name}' (${path})..."
+        # shellcheck disable=SC2310 # failure handled explicitly below (warn + aggregate)
+        if ( cd "${path}" && sync_one ); then
+            synced=$((synced + 1))
+        else
+            echo "br-orphanage: warning: sync failed for '${name}'" >&2
+            failed=$((failed + 1))
+        fi
+    done 3< "${PROJECT_PATHS_FILE}"
+
+    echo "br-orphanage: sync --all summary: ${synced} synced, ${skipped} skipped, ${failed} failed"
+    [[ "${failed}" -eq 0 ]]
 }
 
 cmd_sync() {
@@ -693,9 +736,7 @@ cmd_sync() {
             echo "br-orphanage: error: unexpected arguments after --all: $*" >&2
             exit 1
         fi
-        # shellcheck disable=SC2317 # unreachable only because today's stub always exits; the sync-all task makes cmd_sync_all return normally
         cmd_sync_all
-        # shellcheck disable=SC2317 # see above
         return $?
     fi
     # Reject unknown options loudly rather than silently running a sync the

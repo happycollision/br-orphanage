@@ -894,6 +894,95 @@ assert_contains "full current state landed at the new target" "${RETGT_ISSUES}" 
 RETGT_TIP_AFTER=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 assert_eq "old retarget target left untouched after repointing to origin" "${RETGT_TIP}" "${RETGT_TIP_AFTER}"
 
+# --- sync --all: iterate the machine-local index ----------------------------------
+
+section "sync --all: syncs multiple projects with different targets in one run"
+
+ALL_A="${WORK}/proj-all-a"
+ALL_B="${WORK}/proj-all-b"
+make_project_repo "${ALL_A}" yes "all-a"
+make_project_repo "${ALL_B}" yes "all-b"
+ALL_B_TARGET="${WORK}/targets/all-b-private.git"
+git init -q --bare "${ALL_B_TARGET}"
+(cd "${ALL_A}" && br orphanage init -q --target origin)
+(cd "${ALL_B}" && br orphanage init -q --target "${ALL_B_TARGET}")
+(cd "${ALL_A}" && br q "first in all-a" >/dev/null)
+(cd "${ALL_B}" && br q "first in all-b" >/dev/null)
+(cd "${ALL_A}" && br orphanage sync >/dev/null)
+(cd "${ALL_B}" && br orphanage sync >/dev/null)
+
+(cd "${ALL_A}" && br q "second in all-a" >/dev/null)
+(cd "${ALL_B}" && br q "second in all-b" >/dev/null)
+
+# Runnable from anywhere, including outside any git repo.
+set +e
+ALL_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+ALL_EXIT=$?
+set -e
+assert_eq "'sync --all' exits 0 when all known projects sync cleanly" "0" "${ALL_EXIT}"
+assert_contains "reports syncing all-a" "${ALL_OUT}" "syncing 'all-a'"
+assert_contains "reports syncing all-b" "${ALL_OUT}" "syncing 'all-b'"
+assert_contains "prints a summary" "${ALL_OUT}" "sync --all summary:"
+
+ALL_A_REMOTE=$(git -C "${WORK}/origins/all-a.git" show "refs/heads/orphanage/origins/all-a:issues.jsonl")
+assert_contains "all-a's second issue reached its target" "${ALL_A_REMOTE}" "second in all-a"
+ALL_B_REMOTE=$(git -C "${ALL_B_TARGET}" show "refs/heads/orphanage/origins/all-b:issues.jsonl")
+assert_contains "all-b's second issue reached its (different) target" "${ALL_B_REMOTE}" "second in all-b"
+
+section "sync --all: skips (with warnings) without failing the run"
+
+# Stale path: recorded project deleted from disk.
+STALE_ALL="${WORK}/proj-all-stale"
+make_project_repo "${STALE_ALL}" yes "all-stale"
+(cd "${STALE_ALL}" && br orphanage init -q --target origin)
+(cd "${STALE_ALL}" && br q "stale issue" >/dev/null)
+(cd "${STALE_ALL}" && br orphanage sync >/dev/null)
+rm -rf "${STALE_ALL}"
+
+# No-target project: synced once (so it's in the index), then target unset.
+NOTGT_ALL="${WORK}/proj-all-no-target"
+make_project_repo "${NOTGT_ALL}" yes "all-no-target"
+(cd "${NOTGT_ALL}" && br orphanage init -q --target origin)
+(cd "${NOTGT_ALL}" && br q "no-target issue" >/dev/null)
+(cd "${NOTGT_ALL}" && br orphanage sync >/dev/null)
+git -C "${NOTGT_ALL}" config --unset beadsOrphanage.target
+
+set +e
+SKIP_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+SKIP_EXIT=$?
+set -e
+assert_eq "'sync --all' still exits 0 with skips present" "0" "${SKIP_EXIT}"
+assert_contains "warns about the stale path" "${SKIP_OUT}" "skipping 'all-stale'"
+assert_contains "stale warning says the path is gone" "${SKIP_OUT}" "no longer exists"
+assert_contains "warns about the unconfigured project" "${SKIP_OUT}" "skipping 'all-no-target'"
+assert_contains "unconfigured warning names the cause" "${SKIP_OUT}" "no sync target configured"
+# Restore the target so later full-suite runs stay deterministic.
+git -C "${NOTGT_ALL}" config beadsOrphanage.target origin
+
+section "sync --all: a real per-project failure yields nonzero exit"
+
+FAIL_ALL="${WORK}/proj-all-fail"
+make_project_repo "${FAIL_ALL}" yes "all-fail"
+(cd "${FAIL_ALL}" && br orphanage init -q --target origin)
+(cd "${FAIL_ALL}" && br q "doomed issue" >/dev/null)
+(cd "${FAIL_ALL}" && br orphanage sync >/dev/null)
+# Induce a real failure: point the target at a URL that doesn't exist.
+git -C "${FAIL_ALL}" config beadsOrphanage.target "${WORK}/definitely/not/a/repo.git"
+
+set +e
+FAILRUN_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+FAILRUN_EXIT=$?
+set -e
+if [[ "${FAILRUN_EXIT}" -ne 0 ]]; then
+    pass "'sync --all' exits nonzero when a known project's sync fails (${FAILRUN_EXIT})"
+else
+    fail "'sync --all' unexpectedly exited 0 despite an induced failure"
+fi
+assert_contains "failure is warned per-project" "${FAILRUN_OUT}" "sync failed for 'all-fail'"
+assert_contains "healthy projects still synced in the same run" "${FAILRUN_OUT}" "syncing 'all-a'"
+# Restore all-fail's target so later runs are deterministic.
+git -C "${FAIL_ALL}" config beadsOrphanage.target origin
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
