@@ -518,6 +518,19 @@ merge_inbound() {
     done
 }
 
+# Abort a partial bootstrap: everything under .beads/ was created by this
+# very bootstrap attempt (we only run when it was absent), so removing it
+# returns the project to a cleanly re-bootstrappable state instead of
+# stranding it half-initialized (sync_one would otherwise fail against the
+# broken workspace forever, and its empty-base merge could publish init's
+# throwaway config.yaml to the shared branch).
+bootstrap_fail() {
+    echo "$1" >&2
+    echo "br-orphanage: bootstrap failed partway; removed the partially-created ${BEADS_DIR}/ — fix the problem above and re-run 'br orphanage sync'" >&2
+    rm -rf "${BEADS_DIR}"
+    exit 1
+}
+
 # Bootstrap: no .beads/ yet (fresh clone / new machine). Requires the orphan
 # branch to already exist at the target; a brand-new project should run
 # `br orphanage init` instead. Exits (not returns) — only reachable from the
@@ -542,21 +555,31 @@ sync_bootstrap() {
 
     run_augmented_init
 
+    # Everything from here on runs with a bootstrap-created .beads/ in place;
+    # any failure goes through bootstrap_fail so the partial workspace is
+    # removed rather than stranding the project (see bootstrap_fail).
     # Fetch into the dedicated ref (see FETCHED_REF) rather than FETCH_HEAD.
-    git fetch --quiet "${url}" "+refs/heads/${branch}:${FETCHED_REF}"
-    tip=$(git rev-parse -q --verify "${FETCHED_REF}")
+    if ! git fetch --quiet "${url}" "+refs/heads/${branch}:${FETCHED_REF}"; then
+        bootstrap_fail "br-orphanage: error: fetch of '${branch}' from ${url} failed"
+    fi
+    if ! tip=$(git rev-parse -q --verify "${FETCHED_REF}"); then
+        bootstrap_fail "br-orphanage: error: could not resolve ${FETCHED_REF} after fetch"
+    fi
     for f in "${TRACKED_FILES[@]}"; do
         if git cat-file -e "${tip}:${f}" 2>/dev/null; then
-            git cat-file blob "${tip}:${f}" > "${BEADS_DIR}/${f}"
+            if ! git cat-file blob "${tip}:${f}" > "${BEADS_DIR}/${f}"; then
+                bootstrap_fail "br-orphanage: error: could not extract ${f}"
+            fi
             extracted=$((extracted + 1))
         fi
     done
     if [[ "${extracted}" -eq 0 ]]; then
-        echo "br-orphanage: error: nothing restorable on '${branch}' at ${url}" >&2
-        exit 1
+        bootstrap_fail "br-orphanage: error: nothing restorable on '${branch}' at ${url}"
     fi
 
-    "${REAL_BR}" sync --import-only
+    if ! "${REAL_BR}" sync --import-only; then
+        bootstrap_fail "br-orphanage: error: 'br sync --import-only' failed during bootstrap"
+    fi
     git update-ref "${PUSHED_REF}" "${tip}"
     # shellcheck disable=SC2310 # failure handled by the || exit
     record_index_entry "${name}" || exit 1

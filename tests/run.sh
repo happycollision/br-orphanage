@@ -830,6 +830,51 @@ else
 fi
 assert_contains "never-synced error suggests 'br orphanage init'" "${NEVER_OUT}" "br orphanage init"
 
+section "bootstrap: partial failure cleans up and stays re-bootstrappable"
+
+BF_PROJ="${WORK}/proj-bootfail"
+make_project_repo "${BF_PROJ}" yes "bootfail"
+(cd "${BF_PROJ}" && br orphanage init -q --target origin)
+(cd "${BF_PROJ}" && br q "bootfail recovery issue" >/dev/null)
+(cd "${BF_PROJ}" && br orphanage sync >/dev/null)
+git -C "${BF_PROJ}" push -q origin HEAD:refs/heads/main
+
+BF_BARE="${WORK}/origins/bootfail.git"
+BF_BRANCH="orphanage/origins/bootfail"
+BF_GOOD_TIP=$(git -C "${BF_BARE}" rev-parse "refs/heads/${BF_BRANCH}")
+
+# Corrupt the branch tip via plumbing: a commit whose issues.jsonl is garbage,
+# so a bootstrap fails deterministically AFTER .beads/ has been created (the
+# import step rejects the invalid JSONL).
+BF_BAD_BLOB=$(printf 'this is not json {{{\n' | git -C "${BF_BARE}" hash-object -w --stdin)
+BF_BAD_TREE=$(printf '100644 blob %s\tissues.jsonl\n' "${BF_BAD_BLOB}" | git -C "${BF_BARE}" mktree)
+BF_BAD_COMMIT=$(git -C "${BF_BARE}" -c user.name=corruptor -c user.email=c@test \
+    commit-tree "${BF_BAD_TREE}" -p "${BF_GOOD_TIP}" -m "corrupt issues.jsonl")
+git -C "${BF_BARE}" update-ref "refs/heads/${BF_BRANCH}" "${BF_BAD_COMMIT}"
+
+BF_CLONE="${WORK}/proj-bootfail-clone"
+git clone -q "${BF_BARE}" "${BF_CLONE}"
+(cd "${BF_CLONE}" && br orphanage target origin)
+set +e
+BF_OUT=$(cd "${BF_CLONE}" && br orphanage sync 2>&1)
+BF_EXIT=$?
+set -e
+if [[ "${BF_EXIT}" -ne 0 ]]; then
+    pass "bootstrap against corrupt data exits nonzero (${BF_EXIT})"
+else
+    fail "bootstrap against corrupt data unexpectedly exited 0"
+fi
+assert_contains "failure output explains the partial-bootstrap cleanup" "${BF_OUT}" "bootstrap failed partway"
+assert_file_absent "partially-created .beads/ was removed" "${BF_CLONE}/.beads"
+
+# Repair the branch and confirm the same clone re-bootstraps cleanly: the
+# failed attempt must not have dead-ended the workspace.
+git -C "${BF_BARE}" update-ref "refs/heads/${BF_BRANCH}" "${BF_GOOD_TIP}"
+BF_RETRY=$(cd "${BF_CLONE}" && br orphanage sync)
+assert_contains "re-bootstrap after repair succeeds" "${BF_RETRY}" "Bootstrapped bootfail"
+BF_LIST=$(cd "${BF_CLONE}" && br list)
+assert_contains "issue visible after recovered bootstrap" "${BF_LIST}" "bootfail recovery issue"
+
 section "retargeting: new empty target receives a fresh orphan root"
 
 RETGT_BARE="${WORK}/targets/retarget-home.git"
@@ -842,9 +887,12 @@ RETGT_PARENTS=$(git -C "${RETGT_BARE}" cat-file -p "${RETGT_TIP}" | grep -c '^pa
 assert_eq "retargeted commit is a fresh orphan root (no parents)" "0" "${RETGT_PARENTS}"
 RETGT_ISSUES=$(git -C "${RETGT_BARE}" show "${RETGT_TIP}:issues.jsonl")
 assert_contains "full current state landed at the new target" "${RETGT_ISSUES}" "orphan roundtrip issue"
-# Point sync-demo back at origin for any later sections.
+# Point sync-demo back at origin for any later sections. Output is kept so a
+# failing settle sync prints its diagnostics before set -e stops the harness.
 (cd "${SYNC_PROJ}" && br orphanage target origin)
-(cd "${SYNC_PROJ}" && br orphanage sync >/dev/null 2>&1)
+(cd "${SYNC_PROJ}" && br orphanage sync)
+RETGT_TIP_AFTER=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+assert_eq "old retarget target left untouched after repointing to origin" "${RETGT_TIP}" "${RETGT_TIP_AFTER}"
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
