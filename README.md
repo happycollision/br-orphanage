@@ -1,143 +1,266 @@
-# beads-sync
+# Beads Orphanage (br-orphanage)
 
-Central home for all my [br](https://github.com/Dicklesworthstone/beads_rust)
-issues, one directory per project, plus the tooling that manages them.
-Project repos never see `.beads/` — it's excluded locally via
-`.git/info/exclude`, and the issue data lives here instead.
+A [`br`](https://github.com/Dicklesworthstone/beads_rust) wrapper that syncs
+each project's beads issue data to an **orphan branch** on a git repo you
+choose, per project. Issue data never has to live in — or leak from — a
+repo you didn't pick for it. The name: orphan branches live in the
+orphanage.
 
-## Layout
+`br-orphanage` shadows the real `br` on `PATH`. Everything outside the
+`orphanage` namespace (alias `o`) is passed straight through to the real
+binary, untouched.
 
-```
-bin/br        wrapper around the real br binary (see below)
-install.sh    one-time machine setup
-projects/     one subdirectory per project (issues.jsonl etc.)
-tests/        end-to-end test harness (tests/run.sh)
-.gitignore    this repo's own .gitignore, keeping the machine-local
-              .project-paths index out of git (unrelated to the
-              per-project .gitignore the wrapper preserves)
-```
-
-## New machine setup
+## Install
 
 ```sh
-git clone git@github.com:YOURUSER/beads-sync.git ~/.local/share/beads-sync
-~/.local/share/beads-sync/install.sh
-# open a new shell
+curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 ```
 
-This prepends `bin/` to PATH so the wrapper shadows the real `br`. The
-wrapper resolves the real binary at runtime (scanning PATH, skipping
-itself), so `br upgrade` and reinstalls keep working. `install.sh` also
-runs `chmod +x` on `bin/br` as a runtime defense-in-depth repair, on top
-of git already tracking the executable bit (mode 100755).
+> **Note:** this URL assumes the GitHub repo has been renamed from
+> `beads-sync` to `br-orphanage`. Until that rename happens, the one-liner
+> above is aspirational — use a local checkout (below) in the meantime.
 
-`~/.local/share/beads-sync` is only a suggestion — clone this repo
-anywhere. Nothing is hardcoded to that path: `install.sh` resolves its own
-location and writes a PATH line pointing at `<your-clone>/bin`, and the
-wrapper finds this repo relative to its own resolved path (`bin/..`). Two
-things follow from how that works:
+This downloads the wrapper to `~/.local/share/br-orphanage/bin/br`
+(respecting `$XDG_DATA_HOME` if set) and `chmod +x`s it, then adds that
+directory to `PATH` via a line marked `# br-orphanage` in `~/.bashrc` and
+`~/.zshrc` (whichever exist) — so the wrapper shadows the real `br`. Running
+it again is safe: it detects the existing marked line and doesn't duplicate
+it.
 
-- **The location must be stable once installed.** The rc-file PATH line
-  records the absolute path at install time. If you move the clone later,
-  delete the stale line (marked `# beads-sync wrapper`) from your rc files
-  and re-run `install.sh` from the new location.
-- **Symlinks are fine.** Paths are resolved with `readlink -f`, so a
-  symlinked `br` still finds the physical clone (and the PATH scan still
-  correctly skips the wrapper itself).
+**Local dev mode:** running `install.sh` from a checkout of this repo (i.e.
+`bin/br` sits next to the script) copies the local wrapper instead of
+downloading it, so contributors and the test harness exercise the local
+source.
 
-## Usage
+**No auto-update, ever.** Nothing is fetched on sync except the data branch
+itself. To update the wrapper, re-run the one-liner (or `install.sh` in a
+checkout). `br orphanage --version` prints what you currently have
+installed, and re-running the installer reports old → new when it detects a
+version change.
 
-Inside any project repo:
+## Quick start
 
-| Command         | What it does                                                          |
-| --------------- | --------------------------------------------------------------------- |
-| `br init`       | Real init, then reverts any `.gitignore` changes and adds `.beads/` to the repo's git exclude file (info/exclude, resolved worktree-safely) |
-| `br push`       | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
-| `br push --all` | Pull this repo once, then push every project with a known local path  |
-| `br restore`    | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |
-| anything else   | Passed through untouched to the real `br`                             |
+```sh
+# Private repo: host issues on the project's own origin.
+br orphanage init --target origin
 
-`<name>` comes from the origin remote's repo name, falling back to the
-project's directory name. If you ever have two repos with the same name
-under different owners, switch `project_name()` in `bin/br` to an
-owner-qualified form (e.g. `owner__repo`).
+# Public project: keep issues elsewhere, private.
+br orphanage init --target git@github.com:you/private-issues.git
 
-### `br push --all` and the machine-local project index
+# Anytime after that:
+br orphanage sync
 
-Every successful `br push` records this project's absolute path (from `git
-rev-parse --show-toplevel`) in `.project-paths` at the root of this repo,
-keyed by project name (`name<TAB>absolute-path`, one line per project,
-updated in place on re-push — no duplicates, and a moved/renamed project's
-entry is simply overwritten the next time you push from its new location).
+# Every known project on this machine, in one run:
+br orphanage sync --all
+```
 
-This file is **machine-local and never committed** — it's listed in this
-repo's own tracked `.gitignore` (not to be confused with the per-project
-`.gitignore` preservation `br init` does inside project repos, which is a
-separate thing). A tracked `.gitignore` was chosen over
-`.git/info/exclude` deliberately: `info/exclude` lives inside `.git/` and
-doesn't survive a fresh clone, so every new machine would see the index as
-untracked-but-unignored clutter. A tracked `.gitignore` entry comes along
-for free on every clone instead.
+`br o` is a shorthand alias for `br orphanage`.
 
-`br push --all` walks every directory under `projects/`, looks up each
-one's recorded path in the index, and pushes from there — pulling this repo
-only once up front rather than once per project. A project with no index
-entry (never pushed from this machine) or a stale one (the recorded path
-was deleted, moved, or is no longer a git repo) is skipped with a warning;
-it does not fail the whole run. The command exits `0` if every known
-project pushed cleanly (no-op pushes count as clean) and nonzero if any
-known project's push actually failed.
+## Commands
 
-## Multi-machine habits
+| Command | Behavior |
+|---|---|
+| `br orphanage init [--target <t>] [args...]` | Runs the real `br init`, then reverts any top-level `.gitignore` changes it made (deleting it if it didn't exist before), and adds `.beads/` to the repo's exclude file (`git rev-parse --git-path info/exclude`, worktree/submodule-safe). Unrecognized args pass through to the real init. `--target` sets the sync target inline (stripped before the real init sees the args). |
+| `br orphanage target` | Print the resolved target, URL, and branch. Exits 1 with guidance if unset. |
+| `br orphanage target <remote-or-url> [--branch <template>] [--namespace <ns>]` | Store the target (and optional overrides) in the project's git config. A bare word naming an existing remote is stored as a remote name; anything else is stored as a literal URL. A named remote must exist at set time. |
+| `br orphanage sync` | Converge this project with its orphan branch. Records the project's absolute path in the machine-local index. |
+| `br orphanage sync --all` | Iterate the machine-local index; for each entry, `cd` to the recorded path and sync. Stale/missing paths, non-repos, missing `.beads/`, and unconfigured targets are skipped with a warning rather than failing the run. Exits 0 iff no known project's sync actually failed. |
+| `br orphanage --version` | Print the wrapper version. Bare `br orphanage` prints usage (which includes the version). |
 
-Pushes are last-write-wins per project: `br push` copies files wholesale.
-Run `br restore` before starting work on a machine you haven't used
-recently. `br push` also fast-forwards this repo first (`pull --ff-only`),
-which doubles as auto-updating the scripts; a non-fast-forward failure
-means divergence to resolve manually in your clone of this repo.
+**Passthrough guarantee:** everything else — including bare `br init` and
+bare `br sync`, which are the real binary's own commands — reaches the real
+`br` untouched: exit codes, stdin/stdout, `--json`, TTY detection, all of
+it. If a future real `br` ever grows its own `o` or `orphanage` subcommand,
+this wrapper shadows it; that trade-off is accepted for now.
 
-## What gets synced
+## Configuration
 
-`config.yaml`, `interactions.jsonl`, `issues.jsonl`, `metadata.json`, and
-`.beads/README.md` if present. Not synced: `beads.db` (local SQLite state;
-JSONL is the source of truth), `.jsonl.lock` (transient), and
+Stored in the **project's own git config** (`.git/config`) — per-clone,
+machine-local, never committed, so a private target URL never ends up
+inside a public project repo.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `beadsOrphanage.target` | A remote name (resolved to a URL at run time — `origin` naturally means "this project's own repo") or a literal git URL. Precedence is remote-first: a value that names an existing remote wins even if it also looks URL-shaped. | unset → hard error on sync |
+| `beadsOrphanage.branch` | Branch-name template. Tokens: `<namespace>`, `<owner>`, `<project>`. | `<namespace>/<owner>/<project>` |
+| `beadsOrphanage.namespace` | Value substituted for the `<namespace>` token. | `orphanage` |
+
+`<owner>`/`<project>` are parsed from the **origin** remote URL (e.g.
+`git@github.com:happycollision/foo.git` → owner `happycollision`, project
+`foo`; `https://` URLs parse the same way; `.git` suffix stripped). With no
+origin remote, `<project>` falls back to the toplevel directory name and
+`<owner>` falls back to `local`. Tokens never resolve empty.
+
+Configuration is **per-clone**: each new clone or machine runs
+`br orphanage target` once (or passes `--target` to `br orphanage init`).
+That's the point — a private target URL lives only in that machine's
+`.git/config`, never in anything committed, so it can't leak through a
+public project repo.
+
+## How sync works
+
+Everything happens as plumbing inside the project's own `.git` — no managed
+clones, no temporary worktrees, no temp directories. The local ref
+`refs/orphanage/pushed` records the commit this machine last published; it
+anchors objects against gc and serves as the merge base for divergence
+detection and the three-way rule below.
+
+1. Flush the local DB to JSONL (`br sync --flush-only`), resolve the
+   target and branch, then fetch the branch tip into a dedicated ref
+   (`refs/orphanage/fetched` — never `FETCH_HEAD`, which a concurrent
+   unrelated fetch could clobber).
+2. If the fetched tip differs from `refs/orphanage/pushed` (the remote has
+   changes this machine hasn't merged), merge inbound:
+   - **Issues** merge through the real `br`'s own import: per-issue,
+     newest-wins, tombstone-protected (see below). The remote's
+     `issues.jsonl` is extracted over the local one, `br sync
+     --import-only` runs, then `br sync --flush-only --force` re-exports
+     the full merged DB. The `--force` matters: a non-forced flush only
+     exports *dirty* rows, so without it the just-clobbered file would
+     silently drop already-flushed local issues instead of reflecting the
+     full post-merge union.
+   - **Non-issue files** (`config.yaml`, `metadata.json`, `README.md`, and
+     `interactions.jsonl`) use a cheap three-way rule by blob SHA, with
+     base = the file's blob in the `refs/orphanage/pushed` tree:
+     local-unchanged-since-base takes the remote version (convergence);
+     remote-unchanged keeps local (propagates on this sync); both changed
+     keeps local **and warns**, e.g. `kept local config.yaml; remote
+     version preserved at <tip-sha> — view it with git cat-file blob
+     <tip-sha>:config.yaml`. Local wins on conflict because recoverability
+     is asymmetric: the remote version is committed on the branch and
+     lives in its history forever, while the local edit exists nowhere
+     else (`.beads/` is excluded from the project's own git) and would be
+     destroyed with no undo.
+   - **Byte-convergence adoption:** br 0.2.16 serializes tombstones
+     asymmetrically — a machine that *creates* a tombstone (`br delete`)
+     exports it without `closed_at`, but a machine that *imports* that
+     tombstone backfills `closed_at` and exports it with the field. Left
+     alone, this flaps the published tree hash between machines forever.
+     So: if the inbound import made no DB changes (no `Created:`/`Updated:`
+     lines) and the freshly-flushed file contains exactly the same
+     issue-id set as the remote tip's `issues.jsonl`, the wrapper adopts
+     the remote file's bytes verbatim — the two files are semantically
+     identical at that point and differ only in serialization. Any guard
+     failure just degrades to keeping the force-flushed bytes: correct
+     union, possibly one extra commit, never data loss.
+3. Build a tree from the tracked files present in `.beads/` and compare
+   its SHA to the fetched tip's tree. Identical → "Already in sync",
+   `refs/orphanage/pushed` advances, no commit. Different → commit (with
+   the fetched tip as parent, or no parent for a brand-new branch) and
+   push with no force. History on the branch is linear and
+   fast-forward-only; a non-fast-forward push rejection means another
+   machine synced in the window between fetch and push — the error
+   advises re-running.
+
+Tracked files: `config.yaml`, `interactions.jsonl`, `issues.jsonl`,
+`metadata.json`, `README.md`. Never synced: `beads.db` (SQLite is local
+state; JSONL is the source of truth), `.jsonl.lock` (transient), and
 `.beads/.gitignore` (regenerated by init).
+
+## Bootstrap & retargeting
+
+A fresh clone (or a machine that has never synced this project) has no
+`.beads/` yet. Set a target and sync:
+
+```sh
+br orphanage target <remote-or-url>
+br orphanage sync
+```
+
+This requires the orphan branch to already exist at the target — it
+extracts the branch's tracked files into a freshly-initialized `.beads/`
+and imports them. For a **brand-new** project with no branch yet, run
+`br orphanage init` (optionally with `--target`) instead, which creates the
+orphan root on the first sync.
+
+A bootstrap that fails partway cleans up after itself (removes the
+partially-created `.beads/`) rather than stranding the project — just fix
+the underlying problem and re-run `br orphanage sync`.
+
+**Retargeting** is nothing special: set a new target and sync. A branch
+that doesn't exist yet at the new target receives the full current state as
+its orphan root.
+
+## Privacy notes
+
+- There is **no fallback target**. A project with none configured fails
+  sync hard, pointing at `br orphanage target` — nothing can silently
+  publish issue data to an unintended place.
+- **Orphan ≠ hidden.** An orphan branch shares no history with any code
+  branch, but pushing it to a *public* repo still publishes the issues.
+  The explicit, per-project target is the privacy guard — not the branch
+  shape.
+
+## Multi-machine notes
+
+- **Version skew:** machines update their wrapper independently (there's
+  no auto-update), so two machines can run different `br-orphanage`
+  versions against the same branches. The branch layout is deterministic
+  and the payload is just `br`'s own JSONL, so skew is expected to be
+  harmless — but nothing enforces lockstep. Re-run the installer on a
+  machine to bring it current.
+- **Deletions propagate as tombstones**, not absences: `br delete`
+  rewrites the JSONL line with `status: tombstone` rather than removing
+  it, so the deletion merges like any other change and importing a stale
+  pre-deletion snapshot does **not** resurrect the issue (`br` reports
+  "Tombstone protected").
+- **Avoid `br delete --hard` in multi-machine use.** It prunes the
+  tombstone immediately, turning the deletion into a true absence — a
+  stale snapshot from another machine that hasn't synced recently *will*
+  resurrect it on import.
+- No tombstone GC/retention exists in br 0.2.16; tombstones persist until
+  hard-pruned. If a future `br` adds auto-expiry, machines that haven't
+  synced within the retention window could resurrect old deletions on
+  import — worth re-checking this note against future `br` versions.
+
+## The machine-local index
+
+`~/.local/share/br-orphanage/project-paths` (respecting `$XDG_DATA_HOME`) —
+one `name<TAB>absolute-path` line per project, written on every successful
+sync (including no-ops). It powers `br orphanage sync --all`, which
+iterates it, skipping with a warning (not a failure) for a stale recorded
+path, a path that's no longer a git repo, a missing `.beads/`, or a project
+with no target configured. Only real per-project sync failures make the
+run's exit code nonzero.
 
 ## Testing
 
-`tests/run.sh` is an end-to-end harness that exercises the wrapper against
-the real `br` binary. It runs entirely inside a throwaway `mktemp -d`
-directory (a fake bare "central" remote plus a clone of this repo, so it
-tests the clone's `bin/br`, not your live checkout) and never touches your
-real beads data, shell rc files, or any real remote:
+`tests/run.sh` is a self-contained, sandboxed end-to-end harness: fake
+`HOME`/`XDG_DATA_HOME`, bare git repos standing in for every remote (project
+origins and orphan-branch targets), and the real `br` binary from your
+`PATH` providing all issue-tracker behavior. It never touches your real
+home directory, beads data, shell rc files, or any real remote. Run it from
+anywhere:
 
 ```sh
 tests/run.sh
 ```
 
-It covers `br init` (`.gitignore` preservation, idempotent `.beads/` exclude
-entry, repeated/forced re-init, worktree exclude-file resolution),
-passthrough of real commands (`--version`, `list`, `ready`, `--json`, exit
-code transparency), `br push` (tracked files land in `projects/<name>/`,
-scoped commit, no-op on no changes, reaches the fake remote, machine-local
-index file gets written and stays untracked/uncommitted, re-push doesn't
-duplicate index entries, unknown `--` options rejected with an error rather
-than silently running a single-project push, index-write failures surface
-as push failures), `br push --all` (pushes multiple known projects in
-one pull, skips unknown/stale index entries with a warning instead of
-failing the run, exit code reflects whether any known project's push
-actually failed), `br restore` (bootstraps a fresh clone and round-trips an
-issue end-to-end), project-name fallback when there's no `origin` remote,
-and the Task 1 executable-bit regression check. It also runs `shellcheck` on
-`bin/br`, `install.sh`, and itself when `shellcheck` is available.
+It runs `shellcheck` on `bin/br`, `install.sh`, and itself when `shellcheck`
+is available on `PATH`, skipping gracefully otherwise.
 
-**Empirical finding:** as of real `br` v0.2.16, `br init` does **not**
-create or modify a top-level `.gitignore` at all — it only creates
-`.beads/` (which has its own internal `.beads/.gitignore`). The wrapper's
-`.gitignore` snapshot/revert logic (`bin/br`, `cmd_init`) is therefore
-currently a no-op safety net for a behavior the older Go `bd` had, kept in
-case a future `br` version reintroduces it. Also worth noting: `br init` is
-**not** idempotent — running it again on an already-initialized `.beads/`
-exits nonzero ("Already initialized ... Use --force to reinitialize");
-the wrapper does not mask this and simply inherits the real binary's exit
-code.
+## Empirical findings (br 0.2.16)
+
+- `br init` does **not** touch a top-level `.gitignore` at all (it only
+  creates `.beads/`, which has its own internal `.beads/.gitignore`). The
+  wrapper's snapshot/revert logic is a safety net for a behavior the older
+  Go `bd` had, kept in case a future `br` reintroduces it.
+- Tombstone protection is real: importing a stale pre-deletion snapshot
+  reports "Tombstone protected" and does not resurrect the issue.
+- `br sync --import-only` and `--flush-only` never touch
+  `interactions.jsonl` at all — verified by truncating it and running both;
+  it stayed untouched. That file is written only by `br audit record`, so
+  it's resolved by the three-way rule like `config.yaml`/`metadata.json`,
+  never by import.
+- Tombstones serialize asymmetrically: the machine that deletes an issue
+  exports its tombstone without `closed_at`, but a machine that imports
+  that tombstone backfills `closed_at` and exports it with the field
+  present. Without a countermeasure this flaps the published tree hash
+  between machines on every alternate sync — see "byte-convergence
+  adoption" above.
+- A non-forced `br sync --flush-only` only exports rows it considers dirty.
+  After an inbound merge clobbers `issues.jsonl` with the remote's version
+  and imports it, a non-forced flush would silently omit local issues that
+  were already flushed (and thus non-dirty) before the merge. The wrapper
+  always force-flushes after an inbound merge to guarantee a full,
+  correct union.
