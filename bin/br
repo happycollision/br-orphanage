@@ -692,7 +692,10 @@ cmd_sync_all() {
     fi
 
     local name path failed=0 synced=0 skipped=0
-    while IFS=$'\t' read -r -u 3 name path; do
+    # The `|| [[ -n ... ]]` processes a final line that lacks a trailing
+    # newline (a hand-edited index) instead of silently dropping it — the
+    # wrapper itself always newline-terminates via record_project_path.
+    while IFS=$'\t' read -r -u 3 name path || [[ -n "${name:-}" ]]; do
         [[ -n "${name}" ]] || continue
         if [[ ! -d "${path}" ]]; then
             echo "br-orphanage: warning: skipping '${name}' (recorded path no longer exists: ${path})" >&2

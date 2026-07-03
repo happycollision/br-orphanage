@@ -923,6 +923,7 @@ assert_eq "'sync --all' exits 0 when all known projects sync cleanly" "0" "${ALL
 assert_contains "reports syncing all-a" "${ALL_OUT}" "syncing 'all-a'"
 assert_contains "reports syncing all-b" "${ALL_OUT}" "syncing 'all-b'"
 assert_contains "prints a summary" "${ALL_OUT}" "sync --all summary:"
+assert_contains "first --all run reports zero failures" "${ALL_OUT}" "0 failed"
 
 ALL_A_REMOTE=$(git -C "${WORK}/origins/all-a.git" show "refs/heads/orphanage/origins/all-a:issues.jsonl")
 assert_contains "all-a's second issue reached its target" "${ALL_A_REMOTE}" "second in all-a"
