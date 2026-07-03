@@ -32,6 +32,9 @@ BEADS_DIR=".beads"
 # The commit this machine last published: gc anchor, cheap fetch
 # negotiation, and the merge base for divergence detection.
 PUSHED_REF="refs/orphanage/pushed"
+# Where sync fetches the remote tip (immune to FETCH_HEAD clobbering by
+# concurrent unrelated fetches); also anchors fetched objects against gc.
+FETCHED_REF="refs/orphanage/fetched"
 
 # Files worth syncing. Deliberately excludes:
 #   beads.db      — SQLite is local state; JSONL is the source of truth
@@ -314,6 +317,10 @@ cmd_target() {
 # Record (or update) this machine's absolute path for a project name in the
 # machine-local index. Idempotent per project name. Format: one
 # "name<TAB>absolute-path" pair per line.
+# Known lost-update race (accepted): two genuinely PARALLEL invocations for
+# DIFFERENT projects can each read-filter-append-mv and one entry loses.
+# Serial use and `sync --all` (which iterates serially) are unaffected, and
+# a lost entry self-heals on that project's next sync.
 # Every step checks its own status: this runs inside `if (subshell)` from
 # sync --all, where `set -e` is inert.
 record_project_path() {
@@ -418,12 +425,16 @@ sync_one() {
         return 1
     fi
     if [[ -n "${lsout}" ]]; then
-        if ! git fetch --quiet "${url}" "refs/heads/${branch}"; then
+        # Fetch into a dedicated local ref: FETCH_HEAD is a single global
+        # file per repo, so a concurrent unrelated `git fetch` could clobber
+        # it between our fetch and the rev-parse. The + forces update: after
+        # retargeting, the previously-fetched tip may not fast-forward.
+        if ! git fetch --quiet "${url}" "+refs/heads/${branch}:${FETCHED_REF}"; then
             echo "br-orphanage: error: fetch of '${branch}' from ${url} failed" >&2
             return 1
         fi
-        if ! remote_tip=$(git rev-parse FETCH_HEAD); then
-            echo "br-orphanage: error: could not resolve FETCH_HEAD after fetch" >&2
+        if ! remote_tip=$(git rev-parse -q --verify "${FETCHED_REF}" 2>/dev/null); then
+            echo "br-orphanage: error: could not resolve ${FETCHED_REF} after fetch" >&2
             return 1
         fi
     fi
@@ -442,7 +453,7 @@ sync_one() {
         return 1
     fi
 
-    if [[ -n "${remote_tip}" ]] && [[ "${tree}" == "$(git rev-parse "${remote_tip}^{tree}")" ]]; then
+    if [[ -n "${remote_tip}" ]] && [[ "${tree}" == "$(git rev-parse "${remote_tip}^{tree}" 2>/dev/null)" ]]; then
         if ! git update-ref "${PUSHED_REF}" "${remote_tip}"; then
             echo "br-orphanage: error: could not update ${PUSHED_REF}" >&2
             return 1

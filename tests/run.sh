@@ -553,6 +553,8 @@ SYNC_ISSUE_ID=$(cd "${SYNC_PROJ}" && br q "orphan roundtrip issue")
 SYNC_OUT1=$(cd "${SYNC_PROJ}" && br orphanage sync)
 assert_contains "first sync reports success" "${SYNC_OUT1}" "Beads synced for sync-demo"
 
+# Hardcodes the default template resolution (namespace/owner-from-origin-path/
+# project); that resolution logic is independently covered by the target tests.
 SYNC_BRANCH="orphanage/origins/sync-demo"
 SYNC_TIP1=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 if [[ -n "${SYNC_TIP1}" ]]; then
@@ -591,6 +593,15 @@ assert_contains "second sync reports success" "${SYNC_OUT2}" "Beads synced for s
 SYNC_TIP2=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 SYNC_TIP2_PARENT=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "${SYNC_TIP2}^")
 assert_eq "second sync commit's parent is the first sync commit" "${SYNC_TIP1}" "${SYNC_TIP2_PARENT}"
+
+# The second sync fetched the branch tip as it stood BEFORE committing on top:
+# refs/orphanage/fetched == SYNC_TIP1, while refs/orphanage/pushed == SYNC_TIP2.
+LOCAL_FETCHED2=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/fetched)
+assert_eq "refs/orphanage/fetched holds the pre-commit remote tip after second sync" \
+    "${SYNC_TIP1}" "${LOCAL_FETCHED2}"
+LOCAL_PUSHED2=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/pushed)
+assert_eq "refs/orphanage/pushed holds the new tip after second sync" \
+    "${SYNC_TIP2}" "${LOCAL_PUSHED2}"
 
 INDEX_LINES=$(grep -cF "$(printf 'sync-demo\t')" "${INDEX_FILE}" || true)
 assert_eq "re-sync does not duplicate the index entry" "1" "${INDEX_LINES}"
