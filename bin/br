@@ -452,8 +452,12 @@ merge_inbound() {
         # the DB and (b) both files contain exactly the same issue-id set,
         # the two files are semantically identical and differ only in
         # serialization — adopt the remote bytes verbatim so both machines
-        # publish identical trees and the flap terminates. Every guard
-        # failure below degrades to keeping the force-flushed bytes:
+        # publish identical trees and the flap terminates. Id-set equality
+        # alone is a necessary-but-not-sufficient proxy for semantic
+        # equality (equal ids could still carry different field values);
+        # it's the no-DB-change guard that carries the semantic weight,
+        # and the combination has been verified against br 0.2.16. Every
+        # guard failure below degrades to keeping the force-flushed bytes:
         # correct union, at worst one extra commit, never data loss.
         #
         # No-change detection: br omits/zeroes the Created/Updated report

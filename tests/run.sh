@@ -719,7 +719,13 @@ if [[ "${DIV_B_LIST2}" == *"issue from machine A"* ]]; then
 else
     pass "deletion propagated to machine B"
 fi
-(cd "${DIV_A}" && br orphanage sync >/dev/null)
+# This round is A's tombstone-protected import (no DB changes, equal issue-id
+# sets): the byte-convergence adoption path must fire here, or br's tombstone
+# closed_at serialization asymmetry would flap the tree hash between the two
+# machines forever.
+DIV_ADOPT_OUT=$(cd "${DIV_A}" && br orphanage sync 2>&1)
+assert_contains "A's post-deletion sync adopts remote serialization" \
+    "${DIV_ADOPT_OUT}" "adopted remote serialization"
 DIV_A_LIST2=$(cd "${DIV_A}" && br list)
 if [[ "${DIV_A_LIST2}" == *"issue from machine A"* ]]; then
     fail "deleted issue RESURRECTED on machine A (tombstone not honored)"
@@ -744,6 +750,14 @@ set +e
 DIV_SETTLE_A=$(cd "${DIV_A}" && br orphanage sync 2>&1)
 set -e
 assert_contains "A's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_A}" "Already in sync"
+
+# Byte-level convergence: after settling, both machines hold the SAME
+# serialization of issues.jsonl (adoption picked one canonical byte form).
+if cmp -s "${DIV_A}/.beads/issues.jsonl" "${DIV_B}/.beads/issues.jsonl"; then
+    pass "both machines' issues.jsonl are byte-identical after settling"
+else
+    fail "both machines' issues.jsonl differ after settling"
+fi
 
 # Both-changed: A and B edit config.yaml differently; syncing machine keeps
 # local and warns with the recovery command.
