@@ -247,6 +247,68 @@ else
 fi
 assert_eq "wrapper exit code matches real binary's for same failing invocation" "${REAL_EXIT}" "${WRAPPER_EXIT}"
 
+# --- orphanage namespace: version, usage, alias, unknown subcommand -------------
+
+section "br orphanage: version, usage, 'br o' alias, unknown subcommand"
+
+SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br" | head -n 1)
+if [[ -n "${SRC_VERSION}" ]]; then
+    pass "bin/br declares a VERSION (${SRC_VERSION})"
+else
+    fail "bin/br has no VERSION= line"
+fi
+
+ORPH_VERSION_OUT=$(br orphanage --version)
+assert_eq "'br orphanage --version' prints the wrapper version" \
+    "br-orphanage ${SRC_VERSION}" "${ORPH_VERSION_OUT}"
+
+O_VERSION_OUT=$(br o --version)
+assert_eq "'br o --version' matches 'br orphanage --version'" \
+    "${ORPH_VERSION_OUT}" "${O_VERSION_OUT}"
+
+BARE_ORPH_OUT=$(br orphanage)
+assert_contains "bare 'br orphanage' prints usage" "${BARE_ORPH_OUT}" "Usage:"
+assert_contains "bare 'br orphanage' includes the version" "${BARE_ORPH_OUT}" "${SRC_VERSION}"
+
+set +e
+UNKNOWN_OUT=$(br orphanage frobnicate 2>&1)
+UNKNOWN_EXIT=$?
+set -e
+if [[ "${UNKNOWN_EXIT}" -ne 0 ]]; then
+    pass "'br orphanage frobnicate' exits nonzero (${UNKNOWN_EXIT})"
+else
+    fail "'br orphanage frobnicate' unexpectedly exited 0"
+fi
+assert_contains "unknown subcommand names the offender" "${UNKNOWN_OUT}" "unknown subcommand 'frobnicate'"
+
+# --- bare 'br init' passes through UNMODIFIED ------------------------------------
+
+section "bare 'br init' passes through to the real binary unmodified"
+
+BAREINIT_PROJ="${WORK}/proj-bare-init"
+make_project_repo "${BAREINIT_PROJ}" yes "bare-init-demo"
+printf 'node_modules/\n' > "${BAREINIT_PROJ}/.gitignore"
+
+(cd "${BAREINIT_PROJ}" && br init -q)
+
+assert_dir_exists "real init created .beads/" "${BAREINIT_PROJ}/.beads"
+BAREINIT_EXCLUDE=$(abs_git_path "${BAREINIT_PROJ}" info/exclude)
+if grep -qxF '.beads/' "${BAREINIT_EXCLUDE}" 2>/dev/null; then
+    fail "bare 'br init' wrongly added '.beads/' to info/exclude (legacy interception still active)"
+else
+    pass "bare 'br init' did NOT touch info/exclude"
+fi
+
+# Bare 'br sync' is the real binary's own command: passthrough, no git traffic.
+(cd "${BAREINIT_PROJ}" && br sync >/dev/null)
+pass "bare 'br sync' passes through without error"
+BAREINIT_ORIGIN_REFS=$(git -C "${WORK}/origins/bare-init-demo.git" for-each-ref --format='%(refname)' refs/heads)
+if [[ "${BAREINIT_ORIGIN_REFS}" == *orphanage* ]]; then
+    fail "bare 'br sync' unexpectedly created an orphan branch at the origin"
+else
+    pass "bare 'br sync' produced no git traffic (no orphan branch at origin)"
+fi
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
