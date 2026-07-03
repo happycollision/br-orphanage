@@ -600,6 +600,61 @@ assert_contains "'br push --all' warns about the failed push" "${FAIL_ALL_OUT}" 
 # push-all-a/b should still be reported as pushed in the same run.
 assert_contains "'br push --all' still pushes healthy projects despite one failure" "${FAIL_ALL_OUT}" "pushing 'push-all-a'"
 
+# --- Scenario: unknown push option is rejected, not silently ignored ----------
+
+section "br push: unknown option is rejected with an error (no silent single-project push)"
+
+HEAD_BEFORE_BOGUS=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
+set +e
+BOGUS_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --bogus 2>&1)
+BOGUS_EXIT=$?
+set -e
+if [[ "${BOGUS_EXIT}" -ne 0 ]]; then
+    pass "'br push --bogus' exits nonzero (${BOGUS_EXIT})"
+else
+    fail "'br push --bogus' unexpectedly exited 0"
+fi
+assert_contains "'br push --bogus' reports the unknown option" "${BOGUS_OUT}" "unknown push option '--bogus'"
+
+# A typo'd --all variant must not quietly degrade to a single-project push.
+set +e
+TYPO_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --al 2>&1)
+TYPO_EXIT=$?
+set -e
+if [[ "${TYPO_EXIT}" -ne 0 ]]; then
+    pass "'br push --al' (typo of --all) exits nonzero (${TYPO_EXIT})"
+else
+    fail "'br push --al' unexpectedly exited 0 (silent single-project push)"
+fi
+assert_contains "'br push --al' reports the unknown option" "${TYPO_OUT}" "unknown push option '--al'"
+HEAD_AFTER_BOGUS=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
+assert_eq "rejected push options created no sync-repo commits" "${HEAD_BEFORE_BOGUS}" "${HEAD_AFTER_BOGUS}"
+
+# --- Scenario: index-write failure fails the push (record_project_path) -------
+
+section "br push: index-write failure (read-only sync repo root) fails the push"
+
+# record_project_path's mktemp lands in the sync repo ROOT; making that one
+# directory read-only breaks index writing while leaving .git/ and
+# projects/<name>/ (both subdirectories with their own perms) fully
+# functional, so everything up to the index write succeeds and the failure
+# is attributable to record_project_path specifically.
+chmod 555 "${SYNC_CLONE}"
+set +e
+ROIDX_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push 2>&1)
+ROIDX_EXIT=$?
+set -e
+# Restore write permission immediately so later scenarios and the cleanup
+# trap are unaffected.
+chmod 755 "${SYNC_CLONE}"
+
+if [[ "${ROIDX_EXIT}" -ne 0 ]]; then
+    pass "'br push' exits nonzero when the index cannot be written (${ROIDX_EXIT})"
+else
+    fail "'br push' unexpectedly exited 0 despite an unwritable index"
+fi
+assert_contains "index-write failure is reported explicitly" "${ROIDX_OUT}" "failed to record project path for push-all-a"
+
 # --- Scenario: br restore into a fresh clone (round-trip) ----------------------
 
 section "br restore: fresh clone bootstraps workspace and round-trips issues"

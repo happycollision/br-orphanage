@@ -33,7 +33,7 @@ Inside any project repo:
 | --------------- | --------------------------------------------------------------------- |
 | `br init`       | Real init, then reverts any `.gitignore` changes and adds `.beads/` to `.git/info/exclude` |
 | `br push`       | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
-| `br push --all` | Pull this repo once, then push every project with a known local path |
+| `br push --all` | Pull this repo once, then push every project with a known local path  |
 | `br restore`    | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |
 | anything else   | Passed through untouched to the real `br`                             |
 
@@ -101,7 +101,9 @@ passthrough of real commands (`--version`, `list`, `ready`, `--json`, exit
 code transparency), `br push` (tracked files land in `projects/<name>/`,
 scoped commit, no-op on no changes, reaches the fake remote, machine-local
 index file gets written and stays untracked/uncommitted, re-push doesn't
-duplicate index entries), `br push --all` (pushes multiple known projects in
+duplicate index entries, unknown `--` options rejected with an error rather
+than silently running a single-project push, index-write failures surface
+as push failures), `br push --all` (pushes multiple known projects in
 one pull, skips unknown/stale index entries with a warning instead of
 failing the run, exit code reflects whether any known project's push
 actually failed), `br restore` (bootstraps a fresh clone and round-trips an

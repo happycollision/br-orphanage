@@ -112,16 +112,37 @@ sync_repo_pull() {
 # index file. Idempotent: re-pushing the same project replaces its line
 # rather than duplicating it; a renamed/moved project's entry is updated in
 # place. Format: one "name<TAB>absolute-path" pair per line.
+#
+# Every step checks its own exit status and returns 1 on failure rather than
+# relying on `set -e`: this is called from push_one(), which cmd_push_all()
+# runs inside an `if ( subshell )` condition where bash disables `-e`
+# enforcement — an unchecked mktemp/awk/mv failure there would be silently
+# swallowed and the push would report success with a stale/missing index.
 record_project_path() {
     local name="$1" path="$2" tmp
-    tmp=$(mktemp "${SYNC_REPO}/.project-paths.XXXXXX")
+    if ! tmp=$(mktemp "${SYNC_REPO}/.project-paths.XXXXXX"); then
+        echo "br-wrapper: error: could not create temp file in ${SYNC_REPO} for project-path index" >&2
+        return 1
+    fi
     if [[ -f "${PROJECT_PATHS_FILE}" ]]; then
         # awk (not grep -v with an interpolated pattern) so a project name
         # containing regex metacharacters (e.g. a dot) is matched literally.
-        awk -F'\t' -v n="${name}" '$1 != n' "${PROJECT_PATHS_FILE}" > "${tmp}"
+        if ! awk -F'\t' -v n="${name}" '$1 != n' "${PROJECT_PATHS_FILE}" > "${tmp}"; then
+            rm -f "${tmp}"
+            echo "br-wrapper: error: could not rewrite project-path index" >&2
+            return 1
+        fi
     fi
-    printf '%s\t%s\n' "${name}" "${path}" >> "${tmp}"
-    mv "${tmp}" "${PROJECT_PATHS_FILE}"
+    if ! printf '%s\t%s\n' "${name}" "${path}" >> "${tmp}"; then
+        rm -f "${tmp}"
+        echo "br-wrapper: error: could not append to project-path index temp file" >&2
+        return 1
+    fi
+    if ! mv "${tmp}" "${PROJECT_PATHS_FILE}"; then
+        rm -f "${tmp}"
+        echo "br-wrapper: error: could not move project-path index into place at ${PROJECT_PATHS_FILE}" >&2
+        return 1
+    fi
 }
 
 # Look up a project's recorded absolute path. Prints the path and returns 0
@@ -228,8 +249,20 @@ push_one() {
         return 1
     fi
 
-    # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
-    record_project_path "${name}" "$(git rev-parse --show-toplevel)"
+    # Capture the toplevel into a checked variable first: on the --all path
+    # this function runs inside an `if ( subshell )` where set -e is inert,
+    # so an unchecked `$(git rev-parse ...)` failure would silently pass an
+    # empty path to record_project_path instead of aborting.
+    local toplevel
+    if ! toplevel=$(git rev-parse --show-toplevel); then
+        echo "br-wrapper: error: could not resolve project toplevel for ${name}" >&2
+        return 1
+    fi
+    # shellcheck disable=SC2310 # failure is handled explicitly by this if/return; set -e need not apply here
+    if ! record_project_path "${name}" "${toplevel}"; then
+        echo "br-wrapper: error: failed to record project path for ${name}" >&2
+        return 1
+    fi
 
     # Scope the add to this project only — local edits to the wrapper/scripts
     # should be committed deliberately, not swept up in a sync.
@@ -259,6 +292,14 @@ cmd_push() {
         return $?
     fi
 
+    # Reject unknown options loudly rather than silently ignoring them and
+    # running a single-project push the user didn't ask for (e.g. a typo'd
+    # `br push --al` must not quietly degrade to `br push`).
+    if [[ "${1:-}" == -* ]]; then
+        echo "br-wrapper: error: unknown push option '${1}' (did you mean --all?)" >&2
+        exit 1
+    fi
+
     require_work_tree
     # shellcheck disable=SC2312 # git rev-parse failure here would exit the script under set -e; no separate capture needed
     cd "$(git rev-parse --show-toplevel)"
@@ -280,6 +321,9 @@ cmd_push() {
 # whole run. Exit 0 iff every known project pushed cleanly (no-ops count as
 # clean); nonzero if any known project's push actually failed.
 cmd_push_all() {
+    # No require_work_tree here, deliberately: unlike the single-project
+    # commands, --all operates on recorded paths and is runnable from
+    # anywhere, including outside any git repo.
     sync_repo_pull
 
     if [[ ! -d "${PROJECTS_DIR}" ]]; then
@@ -287,7 +331,7 @@ cmd_push_all() {
         return 0
     fi
 
-    local dir name path any_failed=0 pushed=0 skipped=0
+    local dir name path failed=0 pushed=0 skipped=0
     for dir in "${PROJECTS_DIR}"/*/; do
         [[ -d "${dir}" ]] || continue
         name=$(basename "${dir}")
@@ -320,12 +364,12 @@ cmd_push_all() {
             pushed=$((pushed + 1))
         else
             echo "br-wrapper: warning: push failed for '${name}'" >&2
-            any_failed=1
+            failed=$((failed + 1))
         fi
     done
 
-    echo "br-wrapper: push --all summary: ${pushed} pushed, ${skipped} skipped, exit-worthy failures: ${any_failed}"
-    [[ "${any_failed}" -eq 0 ]]
+    echo "br-wrapper: push --all summary: ${pushed} pushed, ${skipped} skipped, ${failed} failed"
+    [[ "${failed}" -eq 0 ]]
 }
 
 # --- Command: restore ---------------------------------------------------------
