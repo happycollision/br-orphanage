@@ -11,6 +11,10 @@ Project repos never see `.beads/` — it's excluded locally via
 bin/br        wrapper around the real br binary (see below)
 install.sh    one-time machine setup
 projects/     one subdirectory per project (issues.jsonl etc.)
+tests/        end-to-end test harness (tests/run.sh)
+.gitignore    this repo's own .gitignore, keeping the machine-local
+              .project-paths index out of git (unrelated to the
+              per-project .gitignore the wrapper preserves)
 ```
 
 ## New machine setup
@@ -23,23 +27,66 @@ git clone git@github.com:YOURUSER/beads-sync.git ~/.local/share/beads-sync
 
 This prepends `bin/` to PATH so the wrapper shadows the real `br`. The
 wrapper resolves the real binary at runtime (scanning PATH, skipping
-itself), so `br upgrade` and reinstalls keep working.
+itself), so `br upgrade` and reinstalls keep working. `install.sh` also
+runs `chmod +x` on `bin/br` as a runtime defense-in-depth repair, on top
+of git already tracking the executable bit (mode 100755).
+
+`~/.local/share/beads-sync` is only a suggestion — clone this repo
+anywhere. Nothing is hardcoded to that path: `install.sh` resolves its own
+location and writes a PATH line pointing at `<your-clone>/bin`, and the
+wrapper finds this repo relative to its own resolved path (`bin/..`). Two
+things follow from how that works:
+
+- **The location must be stable once installed.** The rc-file PATH line
+  records the absolute path at install time. If you move the clone later,
+  delete the stale line (marked `# beads-sync wrapper`) from your rc files
+  and re-run `install.sh` from the new location.
+- **Symlinks are fine.** Paths are resolved with `readlink -f`, so a
+  symlinked `br` still finds the physical clone (and the PATH scan still
+  correctly skips the wrapper itself).
 
 ## Usage
 
 Inside any project repo:
 
-| Command      | What it does                                                          |
-| ------------ | --------------------------------------------------------------------- |
-| `br init`    | Real init, then reverts any `.gitignore` changes and adds `.beads/` to `.git/info/exclude` |
-| `br push`    | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
-| `br restore` | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |
-| anything else| Passed through untouched to the real `br`                             |
+| Command         | What it does                                                          |
+| --------------- | --------------------------------------------------------------------- |
+| `br init`       | Real init, then reverts any `.gitignore` changes and adds `.beads/` to the repo's git exclude file (info/exclude, resolved worktree-safely) |
+| `br push`       | Flush DB → JSONL, copy into `projects/<name>/`, commit, push          |
+| `br push --all` | Pull this repo once, then push every project with a known local path  |
+| `br restore`    | Pull this repo, copy `projects/<name>/` back into `.beads/`, import   |
+| anything else   | Passed through untouched to the real `br`                             |
 
 `<name>` comes from the origin remote's repo name, falling back to the
 project's directory name. If you ever have two repos with the same name
 under different owners, switch `project_name()` in `bin/br` to an
 owner-qualified form (e.g. `owner__repo`).
+
+### `br push --all` and the machine-local project index
+
+Every successful `br push` records this project's absolute path (from `git
+rev-parse --show-toplevel`) in `.project-paths` at the root of this repo,
+keyed by project name (`name<TAB>absolute-path`, one line per project,
+updated in place on re-push — no duplicates, and a moved/renamed project's
+entry is simply overwritten the next time you push from its new location).
+
+This file is **machine-local and never committed** — it's listed in this
+repo's own tracked `.gitignore` (not to be confused with the per-project
+`.gitignore` preservation `br init` does inside project repos, which is a
+separate thing). A tracked `.gitignore` was chosen over
+`.git/info/exclude` deliberately: `info/exclude` lives inside `.git/` and
+doesn't survive a fresh clone, so every new machine would see the index as
+untracked-but-unignored clutter. A tracked `.gitignore` entry comes along
+for free on every clone instead.
+
+`br push --all` walks every directory under `projects/`, looks up each
+one's recorded path in the index, and pushes from there — pulling this repo
+only once up front rather than once per project. A project with no index
+entry (never pushed from this machine) or a stale one (the recorded path
+was deleted, moved, or is no longer a git repo) is skipped with a warning;
+it does not fail the whole run. The command exits `0` if every known
+project pushed cleanly (no-op pushes count as clean) and nonzero if any
+known project's push actually failed.
 
 ## Multi-machine habits
 
@@ -47,7 +94,7 @@ Pushes are last-write-wins per project: `br push` copies files wholesale.
 Run `br restore` before starting work on a machine you haven't used
 recently. `br push` also fast-forwards this repo first (`pull --ff-only`),
 which doubles as auto-updating the scripts; a non-fast-forward failure
-means divergence to resolve manually in `~/.local/share/beads-sync`.
+means divergence to resolve manually in your clone of this repo.
 
 ## What gets synced
 
@@ -55,3 +102,42 @@ means divergence to resolve manually in `~/.local/share/beads-sync`.
 `.beads/README.md` if present. Not synced: `beads.db` (local SQLite state;
 JSONL is the source of truth), `.jsonl.lock` (transient), and
 `.beads/.gitignore` (regenerated by init).
+
+## Testing
+
+`tests/run.sh` is an end-to-end harness that exercises the wrapper against
+the real `br` binary. It runs entirely inside a throwaway `mktemp -d`
+directory (a fake bare "central" remote plus a clone of this repo, so it
+tests the clone's `bin/br`, not your live checkout) and never touches your
+real beads data, shell rc files, or any real remote:
+
+```sh
+tests/run.sh
+```
+
+It covers `br init` (`.gitignore` preservation, idempotent `.beads/` exclude
+entry, repeated/forced re-init, worktree exclude-file resolution),
+passthrough of real commands (`--version`, `list`, `ready`, `--json`, exit
+code transparency), `br push` (tracked files land in `projects/<name>/`,
+scoped commit, no-op on no changes, reaches the fake remote, machine-local
+index file gets written and stays untracked/uncommitted, re-push doesn't
+duplicate index entries, unknown `--` options rejected with an error rather
+than silently running a single-project push, index-write failures surface
+as push failures), `br push --all` (pushes multiple known projects in
+one pull, skips unknown/stale index entries with a warning instead of
+failing the run, exit code reflects whether any known project's push
+actually failed), `br restore` (bootstraps a fresh clone and round-trips an
+issue end-to-end), project-name fallback when there's no `origin` remote,
+and the Task 1 executable-bit regression check. It also runs `shellcheck` on
+`bin/br`, `install.sh`, and itself when `shellcheck` is available.
+
+**Empirical finding:** as of real `br` v0.2.16, `br init` does **not**
+create or modify a top-level `.gitignore` at all — it only creates
+`.beads/` (which has its own internal `.beads/.gitignore`). The wrapper's
+`.gitignore` snapshot/revert logic (`bin/br`, `cmd_init`) is therefore
+currently a no-op safety net for a behavior the older Go `bd` had, kept in
+case a future `br` version reintroduces it. Also worth noting: `br init` is
+**not** idempotent — running it again on an already-initialized `.beads/`
+exits nonzero ("Already initialized ... Use --force to reinitialize");
+the wrapper does not mask this and simply inherits the real binary's exit
+code.
