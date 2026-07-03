@@ -99,6 +99,11 @@ cmd_init() {
 
     # Snapshot .gitignore. The Rust br claims to only touch .beads/, but the
     # original Go bd modified the repo .gitignore on init; guard either way.
+    # Empirically verified (tests/run.sh, real br v0.2.16): `br init` does
+    # NOT create or modify a top-level .gitignore at all — it only creates
+    # .beads/ (which contains its own internal .beads/.gitignore). This
+    # snapshot/revert logic is therefore currently a no-op safety net, kept
+    # in case a future br version changes that behavior.
     # NOTE: _snapshot is deliberately not `local` — the EXIT trap fires after
     # this function returns, when locals are already out of scope.
     gitignore="${repo_root}/.gitignore"
