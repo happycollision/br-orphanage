@@ -20,9 +20,12 @@ VERSION="0.1.0"
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 
-# NOTE: further constants (data dir, tracked files, refs, template defaults)
-# are added by later tasks, in the task that first uses them — defining them
-# now would fail shellcheck (SC2034 unused) at this task's commit.
+DEFAULT_BRANCH_TEMPLATE='<namespace>/<owner>/<project>'
+DEFAULT_NAMESPACE='orphanage'
+
+# NOTE: further constants (data dir, tracked files, refs) are added by later
+# tasks, in the task that first uses them — defining them now would trip the
+# unused-variable check (SC2034) at this task's commit.
 
 # --- Find the real br binary (skip ourselves; no recursion) -------------------
 
@@ -66,6 +69,13 @@ Everything else is passed through to the real 'br' binary untouched.
 EOF
 }
 
+require_work_tree() {
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "br-orphanage: error: not inside a git repository" >&2
+        exit 1
+    fi
+}
+
 # --- Subcommand stubs (implemented in later tasks) ------------------------------
 
 cmd_init() {
@@ -73,9 +83,118 @@ cmd_init() {
     exit 1
 }
 
+# Prints "<owner>\t<project>" derived from the origin remote URL, falling
+# back to owner=local, project=<toplevel dirname> when there is no origin.
+owner_and_project() {
+    local url path owner project
+    if url=$(git remote get-url origin 2>/dev/null); then
+        case "${url}" in
+            *://*) path="${url#*://}" ;;            # scheme://host/owner/repo
+            *:*)   path="${url%%:*}/${url#*:}" ;;   # host:owner/repo (scp-like)
+            *)     path="${url}" ;;                 # plain filesystem path
+        esac
+        path="${path%/}"
+        path="${path%.git}"
+        project=$(basename "${path}")
+        owner=$(basename "$(dirname "${path}")")
+        if [[ -z "${owner}" || "${owner}" == "." || "${owner}" == "/" ]]; then
+            owner="local"
+        fi
+    else
+        # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
+        project=$(basename "$(git rev-parse --show-toplevel)")
+        owner="local"
+    fi
+    printf '%s\t%s\n' "${owner}" "${project}"
+}
+
+# shellcheck disable=SC2329 # used by the sync engine added in a later task
+project_name() {
+    local owner project
+    IFS=$'\t' read -r owner project < <(owner_and_project)
+    printf '%s\n' "${project}"
+}
+
+# Resolve the branch-name template (beadsOrphanage.branch, tokens
+# <namespace>/<owner>/<project>) to a concrete branch name.
+branch_name() {
+    local tpl ns owner project
+    tpl=$(git config --get beadsOrphanage.branch 2>/dev/null) || tpl="${DEFAULT_BRANCH_TEMPLATE}"
+    ns=$(git config --get beadsOrphanage.namespace 2>/dev/null) || ns="${DEFAULT_NAMESPACE}"
+    IFS=$'\t' read -r owner project < <(owner_and_project)
+    tpl="${tpl//<namespace>/${ns}}"
+    tpl="${tpl//<owner>/${owner}}"
+    tpl="${tpl//<project>/${project}}"
+    printf '%s\n' "${tpl}"
+}
+
+# Resolve beadsOrphanage.target to a fetchable/pushable URL on stdout.
+# A stored value containing ':' or '/' is a literal URL; anything else must
+# name an existing remote (resolved at run time, so URL changes track).
+# Returns 1 with guidance if unset, or an error if the named remote is gone.
+resolve_target_url() {
+    local t
+    if ! t=$(git config --get beadsOrphanage.target 2>/dev/null); then
+        echo "br-orphanage: error: no sync target configured for this project" >&2
+        echo "br-orphanage: set one with: br orphanage target <remote-or-url>" >&2
+        return 1
+    fi
+    if [[ "${t}" == *[:/]* ]]; then
+        printf '%s\n' "${t}"
+        return 0
+    fi
+    if ! git remote get-url "${t}" 2>/dev/null; then
+        echo "br-orphanage: error: configured target remote '${t}' does not exist in this repo" >&2
+        return 1
+    fi
+}
+
 cmd_target() {
-    echo "br-orphanage: error: 'target' not implemented yet" >&2
-    exit 1
+    require_work_tree
+    if [[ $# -eq 0 ]]; then
+        local stored url branch
+        if ! stored=$(git config --get beadsOrphanage.target 2>/dev/null); then
+            echo "br-orphanage: error: no sync target configured for this project" >&2
+            echo "br-orphanage: set one with: br orphanage target <remote-or-url>" >&2
+            exit 1
+        fi
+        # shellcheck disable=SC2310 # failure handled by the || exit
+        url=$(resolve_target_url) || exit 1
+        branch=$(branch_name)
+        echo "target: ${stored}"
+        echo "url:    ${url}"
+        echo "branch: ${branch}"
+        return 0
+    fi
+
+    local target=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --branch)
+                [[ $# -ge 2 ]] || { echo "br-orphanage: error: --branch requires a value" >&2; exit 1; }
+                git config beadsOrphanage.branch "$2"
+                shift 2 ;;
+            --namespace)
+                [[ $# -ge 2 ]] || { echo "br-orphanage: error: --namespace requires a value" >&2; exit 1; }
+                git config beadsOrphanage.namespace "$2"
+                shift 2 ;;
+            -*)
+                echo "br-orphanage: error: unknown target option '${1}'" >&2
+                exit 1 ;;
+            *)
+                target="$1"
+                shift ;;
+        esac
+    done
+
+    if [[ -n "${target}" ]]; then
+        if [[ "${target}" != *[:/]* ]] && ! git remote get-url "${target}" >/dev/null 2>&1; then
+            echo "br-orphanage: error: '${target}' is not a remote in this repo (and doesn't look like a URL)" >&2
+            exit 1
+        fi
+        git config beadsOrphanage.target "${target}"
+        echo "br-orphanage: target set to '${target}' for this clone"
+    fi
 }
 
 cmd_sync() {

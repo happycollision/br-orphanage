@@ -309,6 +309,76 @@ else
     pass "bare 'br sync' produced no git traffic (no orphan branch at origin)"
 fi
 
+# --- br orphanage target: set, print, resolve, validate --------------------------
+
+section "br orphanage target: unset -> exit 1 with guidance"
+
+TGT_PROJ="${WORK}/proj-target"
+make_project_repo "${TGT_PROJ}" yes "target-demo"
+
+set +e
+TGT_UNSET_OUT=$(cd "${TGT_PROJ}" && br orphanage target 2>&1)
+TGT_UNSET_EXIT=$?
+set -e
+if [[ "${TGT_UNSET_EXIT}" -ne 0 ]]; then
+    pass "unset target exits nonzero (${TGT_UNSET_EXIT})"
+else
+    fail "unset target unexpectedly exited 0"
+fi
+assert_contains "unset target names the fix" "${TGT_UNSET_OUT}" "br orphanage target <remote-or-url>"
+
+section "br orphanage target: set by remote name, resolved at print time"
+
+(cd "${TGT_PROJ}" && br orphanage target origin)
+STORED_TGT=$(git -C "${TGT_PROJ}" config --get beadsOrphanage.target)
+assert_eq "stored config value is the remote name" "origin" "${STORED_TGT}"
+
+TGT_PRINT_OUT=$(cd "${TGT_PROJ}" && br orphanage target)
+TGT_ORIGIN_URL=$(git -C "${TGT_PROJ}" remote get-url origin)
+assert_contains "print shows the resolved URL" "${TGT_PRINT_OUT}" "url:    ${TGT_ORIGIN_URL}"
+# origin URL is $WORK/origins/target-demo.git -> owner=origins project=target-demo
+assert_contains "print shows the default templated branch" "${TGT_PRINT_OUT}" "branch: orphanage/origins/target-demo"
+
+section "br orphanage target: set by URL, template overrides, validation"
+
+EXT_TARGET_BARE="${WORK}/targets/external-issues.git"
+mkdir -p "$(dirname "${EXT_TARGET_BARE}")"
+git init -q --bare "${EXT_TARGET_BARE}"
+
+(cd "${TGT_PROJ}" && br orphanage target "${EXT_TARGET_BARE}")
+STORED_TGT2=$(git -C "${TGT_PROJ}" config --get beadsOrphanage.target)
+assert_eq "URL target stored literally" "${EXT_TARGET_BARE}" "${STORED_TGT2}"
+
+(cd "${TGT_PROJ}" && br orphanage target --namespace beads --branch '<namespace>/only-<project>')
+TGT_PRINT_OUT2=$(cd "${TGT_PROJ}" && br orphanage target)
+assert_contains "custom template + namespace resolve in print" "${TGT_PRINT_OUT2}" "branch: beads/only-target-demo"
+# Reset overrides for later tasks.
+git -C "${TGT_PROJ}" config --unset beadsOrphanage.branch
+git -C "${TGT_PROJ}" config --unset beadsOrphanage.namespace
+
+set +e
+BADREMOTE_OUT=$(cd "${TGT_PROJ}" && br orphanage target upstream 2>&1)
+BADREMOTE_EXIT=$?
+set -e
+if [[ "${BADREMOTE_EXIT}" -ne 0 ]]; then
+    pass "nonexistent remote name rejected (${BADREMOTE_EXIT})"
+else
+    fail "nonexistent remote name unexpectedly accepted"
+fi
+assert_contains "rejection names the missing remote" "${BADREMOTE_OUT}" "upstream"
+
+section "br orphanage target: fallbacks with no origin remote"
+
+NOORIGIN_TGT_PROJ="${WORK}/proj-target-no-origin"
+make_project_repo "${NOORIGIN_TGT_PROJ}" no
+NOORIGIN_BARE="${WORK}/targets/no-origin-target.git"
+git init -q --bare "${NOORIGIN_BARE}"
+(cd "${NOORIGIN_TGT_PROJ}" && br orphanage target "${NOORIGIN_BARE}")
+NOORIGIN_PRINT=$(cd "${NOORIGIN_TGT_PROJ}" && br orphanage target)
+NOORIGIN_DIRNAME=$(basename "${NOORIGIN_TGT_PROJ}")
+assert_contains "no-origin fallback branch is orphanage/local/<dirname>" \
+    "${NOORIGIN_PRINT}" "branch: orphanage/local/${NOORIGIN_DIRNAME}"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
