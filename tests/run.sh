@@ -367,6 +367,62 @@ else
 fi
 assert_contains "rejection names the missing remote" "${BADREMOTE_OUT}" "upstream"
 
+section "br orphanage target: slash-in-remote-name resolves as a remote, not a URL"
+
+(cd "${TGT_PROJ}" && git remote add fork/thing "${EXT_TARGET_BARE}")
+(cd "${TGT_PROJ}" && br orphanage target fork/thing)
+SLASH_PRINT=$(cd "${TGT_PROJ}" && br orphanage target)
+assert_contains "slash-named remote resolves to its URL at print time" \
+    "${SLASH_PRINT}" "url:    ${EXT_TARGET_BARE}"
+# Restore prior state (URL target, no extra remote) for later sections.
+(cd "${TGT_PROJ}" && br orphanage target "${EXT_TARGET_BARE}")
+git -C "${TGT_PROJ}" remote remove fork/thing
+
+section "br orphanage target: argument validation edge cases"
+
+set +e
+EXTRA_OUT=$(cd "${TGT_PROJ}" && br orphanage target origin bogus-extra 2>&1)
+EXTRA_EXIT=$?
+set -e
+if [[ "${EXTRA_EXIT}" -ne 0 ]]; then
+    pass "extra positional argument rejected (${EXTRA_EXIT})"
+else
+    fail "extra positional argument unexpectedly accepted"
+fi
+assert_contains "extra positional names the problem" "${EXTRA_OUT}" "unexpected extra argument"
+
+set +e
+OPTVAL_OUT=$(cd "${TGT_PROJ}" && br orphanage target --branch --namespace 2>&1)
+OPTVAL_EXIT=$?
+set -e
+if [[ "${OPTVAL_EXIT}" -ne 0 ]]; then
+    pass "option-looking --branch value rejected (${OPTVAL_EXIT})"
+else
+    fail "option-looking --branch value unexpectedly accepted"
+fi
+assert_contains "rejection says --branch requires a value" "${OPTVAL_OUT}" "--branch requires a value"
+if git -C "${TGT_PROJ}" config --get beadsOrphanage.branch >/dev/null 2>&1; then
+    fail "beadsOrphanage.branch wrongly set after rejected --branch"
+else
+    pass "beadsOrphanage.branch left unset after rejected --branch"
+fi
+
+section "br orphanage target: invalid resolved branch name rejected at print time"
+
+(cd "${TGT_PROJ}" && br orphanage target --branch 'bad branch')
+set +e
+BADBRANCH_OUT=$(cd "${TGT_PROJ}" && br orphanage target 2>&1)
+BADBRANCH_EXIT=$?
+set -e
+if [[ "${BADBRANCH_EXIT}" -ne 0 ]]; then
+    pass "invalid resolved branch name rejected (${BADBRANCH_EXIT})"
+else
+    fail "invalid resolved branch name unexpectedly accepted"
+fi
+assert_contains "invalid branch error names the problem" "${BADBRANCH_OUT}" "not a valid git branch name"
+# Restore for later tasks.
+git -C "${TGT_PROJ}" config --unset beadsOrphanage.branch
+
 section "br orphanage target: fallbacks with no origin remote"
 
 NOORIGIN_TGT_PROJ="${WORK}/proj-target-no-origin"

@@ -125,13 +125,19 @@ branch_name() {
     tpl="${tpl//<namespace>/${ns}}"
     tpl="${tpl//<owner>/${owner}}"
     tpl="${tpl//<project>/${project}}"
+    if ! git check-ref-format --branch "${tpl}" >/dev/null 2>&1; then
+        echo "br-orphanage: error: resolved branch name '${tpl}' is not a valid git branch name (check beadsOrphanage.branch/namespace and your origin URL)" >&2
+        return 1
+    fi
     printf '%s\n' "${tpl}"
 }
 
 # Resolve beadsOrphanage.target to a fetchable/pushable URL on stdout.
-# A stored value containing ':' or '/' is a literal URL; anything else must
-# name an existing remote (resolved at run time, so URL changes track).
-# Returns 1 with guidance if unset, or an error if the named remote is gone.
+# Precedence is remote-first: a stored value naming an existing remote
+# (remote names may contain '/') resolves to that remote's URL at run time,
+# so URL changes track; otherwise a value containing ':' or '/' is a literal
+# URL. Returns 1 with guidance if unset, or an error if the value is neither
+# an existing remote nor URL-shaped.
 resolve_target_url() {
     local t
     if ! t=$(git config --get beadsOrphanage.target 2>/dev/null); then
@@ -139,14 +145,15 @@ resolve_target_url() {
         echo "br-orphanage: set one with: br orphanage target <remote-or-url>" >&2
         return 1
     fi
+    if git remote get-url "${t}" 2>/dev/null; then
+        return 0
+    fi
     if [[ "${t}" == *[:/]* ]]; then
         printf '%s\n' "${t}"
         return 0
     fi
-    if ! git remote get-url "${t}" 2>/dev/null; then
-        echo "br-orphanage: error: configured target remote '${t}' does not exist in this repo" >&2
-        return 1
-    fi
+    echo "br-orphanage: error: configured target remote '${t}' does not exist in this repo" >&2
+    return 1
 }
 
 cmd_target() {
@@ -171,24 +178,38 @@ cmd_target() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --branch)
-                [[ $# -ge 2 ]] || { echo "br-orphanage: error: --branch requires a value" >&2; exit 1; }
+                if [[ $# -lt 2 || "${2}" == -* ]]; then
+                    echo "br-orphanage: error: --branch requires a value" >&2
+                    exit 1
+                fi
                 git config beadsOrphanage.branch "$2"
                 shift 2 ;;
             --namespace)
-                [[ $# -ge 2 ]] || { echo "br-orphanage: error: --namespace requires a value" >&2; exit 1; }
+                if [[ $# -lt 2 || "${2}" == -* ]]; then
+                    echo "br-orphanage: error: --namespace requires a value" >&2
+                    exit 1
+                fi
                 git config beadsOrphanage.namespace "$2"
                 shift 2 ;;
             -*)
                 echo "br-orphanage: error: unknown target option '${1}'" >&2
                 exit 1 ;;
             *)
+                if [[ -n "${target}" ]]; then
+                    echo "br-orphanage: error: unexpected extra argument '${1}'" >&2
+                    exit 1
+                fi
                 target="$1"
                 shift ;;
         esac
     done
 
     if [[ -n "${target}" ]]; then
-        if [[ "${target}" != *[:/]* ]] && ! git remote get-url "${target}" >/dev/null 2>&1; then
+        # Remote-first, mirroring resolve_target_url: an existing remote name
+        # wins; otherwise anything with ':' or '/' is accepted as a literal URL.
+        if git remote get-url "${target}" >/dev/null 2>&1; then
+            : # existing remote name
+        elif [[ "${target}" != *[:/]* ]]; then
             echo "br-orphanage: error: '${target}' is not a remote in this repo (and doesn't look like a URL)" >&2
             exit 1
         fi
