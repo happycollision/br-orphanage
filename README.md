@@ -31,6 +31,20 @@ itself), so `br upgrade` and reinstalls keep working. `install.sh` also
 runs `chmod +x` on `bin/br` as a runtime defense-in-depth repair, on top
 of git already tracking the executable bit (mode 100755).
 
+`~/.local/share/beads-sync` is only a suggestion — clone this repo
+anywhere. Nothing is hardcoded to that path: `install.sh` resolves its own
+location and writes a PATH line pointing at `<your-clone>/bin`, and the
+wrapper finds this repo relative to its own resolved path (`bin/..`). Two
+things follow from how that works:
+
+- **The location must be stable once installed.** The rc-file PATH line
+  records the absolute path at install time. If you move the clone later,
+  delete the stale line (marked `# beads-sync wrapper`) from your rc files
+  and re-run `install.sh` from the new location.
+- **Symlinks are fine.** Paths are resolved with `readlink -f`, so a
+  symlinked `br` still finds the physical clone (and the PATH scan still
+  correctly skips the wrapper itself).
+
 ## Usage
 
 Inside any project repo:
@@ -80,7 +94,7 @@ Pushes are last-write-wins per project: `br push` copies files wholesale.
 Run `br restore` before starting work on a machine you haven't used
 recently. `br push` also fast-forwards this repo first (`pull --ff-only`),
 which doubles as auto-updating the scripts; a non-fast-forward failure
-means divergence to resolve manually in `~/.local/share/beads-sync`.
+means divergence to resolve manually in your clone of this repo.
 
 ## What gets synced
 

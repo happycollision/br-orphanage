@@ -6,6 +6,12 @@ set -euo pipefail
 #   git clone git@github.com:YOURUSER/beads-sync.git ~/.local/share/beads-sync
 #   ~/.local/share/beads-sync/install.sh
 #
+# The clone location above is only a suggestion — this script and the
+# wrapper resolve everything relative to their own (readlink -f'd) paths,
+# so any directory works. It just has to stay put: the PATH line written
+# below records the absolute path at install time, so if the clone moves,
+# remove the stale line from your rc files and re-run this script.
+#
 # Puts this repo's bin/ at the FRONT of PATH so the `br` wrapper shadows the
 # real binary. The wrapper finds the real binary at runtime by scanning PATH
 # and skipping itself, so it keeps working when `br upgrade` replaces the
