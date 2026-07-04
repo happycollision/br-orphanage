@@ -44,13 +44,24 @@ export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test.invalid
 # --- Locate the REAL br binary on the invoker's PATH --------------------------
 
 find_real_br_on_path() {
-    local dir cand
+    local dir cand resolved
     local IFS=':'
     # shellcheck disable=SC2250 # deliberately unbraced/unquoted: word-splits PATH on the IFS=':' set above
     for dir in $PATH; do
         [[ -n "${dir}" ]] || continue
         cand="${dir}/br"
         [[ -x "${cand}" ]] && [[ -f "${cand}" ]] || continue
+        # Skip the br-orphanage wrapper (real file or shadow symlink): it always
+        # resolves under a 'br-orphanage' data dir. Selecting it here made the
+        # harness treat the wrapper as the real binary, and when the wrapper is
+        # first on the invoker's PATH (e.g. while dogfooding) the fake and real
+        # wrappers each exec'd the other forever — a deadlock, not the real br
+        # (br-orphanage-b3e).
+        # shellcheck disable=SC2312 # readlink failure falls back to the raw path
+        resolved=$(readlink -f "${cand}" 2>/dev/null || printf '%s' "${cand}")
+        case "${resolved}" in
+            */br-orphanage/*) continue ;;
+        esac
         printf '%s\n' "${cand}"
         return 0
     done
@@ -155,6 +166,22 @@ make_project_repo() {
         git -C "${dir}" remote add origin "${origin_bare}"
     fi
 }
+
+# --- Regression (b3e): the harness must not mis-select the wrapper as real br ----
+
+section "Regression (b3e): find_real_br_on_path skips the br-orphanage wrapper"
+
+# A fake wrapper (under a 'br-orphanage' data dir) placed FIRST on PATH must be
+# skipped in favor of a genuine 'br' later on PATH — otherwise the harness feeds
+# the wrapper to itself and deadlocks.
+B3E_WRAP_DIR="${WORK}/b3e/share/br-orphanage/bin"
+B3E_REAL_DIR="${WORK}/b3e/realbin"
+mkdir -p "${B3E_WRAP_DIR}" "${B3E_REAL_DIR}"
+printf '#!/usr/bin/env bash\n' | tee "${B3E_WRAP_DIR}/br" "${B3E_REAL_DIR}/br" >/dev/null
+chmod +x "${B3E_WRAP_DIR}/br" "${B3E_REAL_DIR}/br"
+B3E_GOT=$(PATH="${B3E_WRAP_DIR}:${B3E_REAL_DIR}" find_real_br_on_path)
+assert_eq "wrapper-first PATH resolves to the genuine br, not the wrapper" \
+    "${B3E_REAL_DIR}/br" "${B3E_GOT}"
 
 # --- Setup: run install.sh in local dev mode ------------------------------------
 
