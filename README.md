@@ -16,10 +16,6 @@ binary, untouched.
 curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 ```
 
-> **Note:** this URL assumes the GitHub repo has been renamed from
-> `beads-sync` to `br-orphanage`. Until that rename happens, the one-liner
-> above is aspirational — use a local checkout (below) in the meantime.
-
 This downloads the wrapper to `~/.local/share/br-orphanage/bin/br`
 (respecting `$XDG_DATA_HOME` if set) and `chmod +x`s it, then adds that
 directory to `PATH` via a line marked `# br-orphanage` in `~/.bashrc` and
@@ -27,16 +23,13 @@ directory to `PATH` via a line marked `# br-orphanage` in `~/.bashrc` and
 it again is safe: it detects the existing marked line and doesn't duplicate
 it.
 
-**Local dev mode:** running `install.sh` from a checkout of this repo (i.e.
-`bin/br` sits next to the script) copies the local wrapper instead of
-downloading it, so contributors and the test harness exercise the local
-source.
+**Local dev mode:** running `install.sh` from a checkout of this repo copies the
+local wrapper instead of downloading it, so contributors and the test harness
+exercise the local source.
 
-**No auto-update, ever.** Nothing is fetched on sync except the data branch
-itself. To update the wrapper, re-run the one-liner (or `install.sh` in a
+**Update:** To update the wrapper, re-run the one-liner (or `install.sh` in a
 checkout). `br orphanage --version` prints what you currently have
-installed, and re-running the installer reports old → new when it detects a
-version change.
+installed.
 
 ## Quick start
 
@@ -193,9 +186,9 @@ its orphan root.
 
 ## Multi-machine notes
 
-- **Version skew:** machines update their wrapper independently (there's
-  no auto-update), so two machines can run different `br-orphanage`
-  versions against the same branches. The branch layout is deterministic
+- **Version skew:** machines update their wrapper independently, so two
+  machines can run different `br-orphanage` versions against the same
+  branches. The branch layout is deterministic
   and the payload is just `br`'s own JSONL, so skew is expected to be
   harmless — but nothing enforces lockstep. Re-run the installer on a
   machine to bring it current.
@@ -239,28 +232,7 @@ tests/run.sh
 It runs `shellcheck` on `bin/br`, `install.sh`, and itself when `shellcheck`
 is available on `PATH`, skipping gracefully otherwise.
 
-## Empirical findings (br 0.2.16)
+## Further reading
 
-- `br init` does **not** touch a top-level `.gitignore` at all (it only
-  creates `.beads/`, which has its own internal `.beads/.gitignore`). The
-  wrapper's snapshot/revert logic is a safety net for a behavior the older
-  Go `bd` had, kept in case a future `br` reintroduces it.
-- Tombstone protection is real: importing a stale pre-deletion snapshot
-  reports "Tombstone protected" and does not resurrect the issue.
-- `br sync --import-only` and `--flush-only` never touch
-  `interactions.jsonl` at all — verified by truncating it and running both;
-  it stayed untouched. That file is written only by `br audit record`, so
-  it's resolved by the three-way rule like `config.yaml`/`metadata.json`,
-  never by import.
-- Tombstones serialize asymmetrically: the machine that deletes an issue
-  exports its tombstone without `closed_at`, but a machine that imports
-  that tombstone backfills `closed_at` and exports it with the field
-  present. Without a countermeasure this flaps the published tree hash
-  between machines on every alternate sync — see "byte-convergence
-  adoption" above.
-- A non-forced `br sync --flush-only` only exports rows it considers dirty.
-  After an inbound merge clobbers `issues.jsonl` with the remote's version
-  and imports it, a non-forced flush would silently omit local issues that
-  were already flushed (and thus non-dirty) before the merge. The wrapper
-  always force-flushes after an inbound merge to guarantee a full,
-  correct union.
+- [Empirical findings (br 0.2.16)](docs/empirical-findings.md) — observed
+  `br` behaviors the sync logic depends on.
