@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tests/run.sh — end-to-end harness for the Beads Orphanage `br` wrapper.
+# tests/run.sh — end-to-end harness for the standalone Beads Orphanage command.
 #
 # Everything runs inside a throwaway `mktemp -d`, cleaned up on exit via
 # trap. Nothing touches the invoking user's real home directory, data dir,
 # beads data, shell rc files, or any real remote.
 #
 #   - install.sh runs in LOCAL DEV MODE into a fake HOME; the INSTALLED
-#     wrapper (never the checkout's bin/br-orphanage directly) is what tests exercise.
+#     br-orphanage command (not the checkout's bin/br-orphanage) is what tests
+#     exercise.
 #   - The REAL br binary from the invoker's PATH provides issue-tracker
 #     behavior; no fakes.
 #   - Bare repos under $WORK stand in for every remote (project origins and
@@ -51,7 +52,8 @@ find_real_br_on_path() {
         [[ -n "${dir}" ]] || continue
         cand="${dir}/br"
         [[ -x "${cand}" ]] && [[ -f "${cand}" ]] || continue
-        # Skip the br-orphanage wrapper (real file or shadow symlink): it always
+        # Skip a br-orphanage-managed br link when present in older installs: it
+        # always
         # resolves under a 'br-orphanage' data dir. Selecting it here made the
         # harness treat the wrapper as the real binary, and when the wrapper is
         # first on the invoker's PATH (e.g. while dogfooding) the fake and real
@@ -167,13 +169,12 @@ make_project_repo() {
     fi
 }
 
-# --- Regression (b3e): the harness must not mis-select the wrapper as real br ----
+# --- Regression (b3e): real-br discovery skips br-orphanage installs ------------
 
-section "Regression (b3e): find_real_br_on_path skips the br-orphanage wrapper"
+section "Regression (b3e): find_real_br_on_path skips br-orphanage installs"
 
-# A fake wrapper (under a 'br-orphanage' data dir) placed FIRST on PATH must be
-# skipped in favor of a genuine 'br' later on PATH — otherwise the harness feeds
-# the wrapper to itself and deadlocks.
+# A fake br under a 'br-orphanage' data dir placed FIRST on PATH must be skipped
+# in favor of a genuine 'br' later on PATH.
 B3E_WRAP_DIR="${WORK}/b3e/share/br-orphanage/bin"
 B3E_REAL_DIR="${WORK}/b3e/realbin"
 mkdir -p "${B3E_WRAP_DIR}" "${B3E_REAL_DIR}"
@@ -187,47 +188,46 @@ assert_eq "wrapper-first PATH resolves to the genuine br, not the wrapper" \
 
 section "Setup: install.sh (local dev mode) into fake HOME"
 
-INSTALL_DIR="${XDG_DATA_HOME}/br-orphanage"
-CANON="${INSTALL_DIR}/bin/br-orphanage"   # canonical wrapper file
-SHADOW="${INSTALL_DIR}/bin/br"            # inert shadow symlink
-
-# A writable dir already on PATH for install to drop the br-orphanage symlink.
-LOCALBIN="${WORK}/localbin"
-mkdir -p "${LOCALBIN}"
-export PATH="${LOCALBIN}:${PATH}"
+DATA_DIR="${XDG_DATA_HOME}/br-orphanage"
+LOCALBIN="${FAKE_HOME}/.local/bin"
+CANON="${LOCALBIN}/br-orphanage"
+export PATH="${LOCALBIN}:${REAL_BR_DIR}:${PATH}"
 
 touch "${FAKE_HOME}/.bashrc"
 BASHRC_BEFORE=$(cat "${FAKE_HOME}/.bashrc")
 
 INSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
 assert_contains "installer reports local-checkout install" "${INSTALL_OUT}" "installed from local checkout"
-assert_file_exists "canonical wrapper installed" "${CANON}"
-assert_true "canonical wrapper is executable" test -x "${CANON}"
-assert_true "shadow 'br' is a symlink" test -L "${SHADOW}"
-assert_eq "shadow 'br' points at the canonical wrapper" \
-    "$(readlink -f "${CANON}")" "$(readlink -f "${SHADOW}")"
-assert_true "br-orphanage symlinked into a writable PATH dir" test -L "${LOCALBIN}/br-orphanage"
-assert_eq "br-orphanage resolves by name to the canonical wrapper" \
+assert_file_exists "br-orphanage installed at the default user-bin path" "${CANON}"
+assert_true "installed br-orphanage is executable" test -x "${CANON}"
+assert_file_absent "installer did not create a br command" "${LOCALBIN}/br"
+assert_eq "br-orphanage resolves by name to the installed command" \
     "$(readlink -f "${CANON}")" "$(readlink -f "$(command -v br-orphanage)")"
 assert_contains "installer reports the installed version" "${INSTALL_OUT}" "installed version"
-assert_contains "installer points user at shell-intercept" "${INSTALL_OUT}" "shell-intercept"
+REMOVED_SHELL_CMD="shell""-intercept"
+REMOVED_BR_LINK_WORD="sha""dow"
+REMOVED_BR_ROUTE_PHRASE="route through this ""wrapper"
+if [[ "${INSTALL_OUT}" == *"${REMOVED_SHELL_CMD}"* || "${INSTALL_OUT}" == *"${REMOVED_BR_LINK_WORD}"* || "${INSTALL_OUT}" == *"${REMOVED_BR_ROUTE_PHRASE}"* ]]; then
+    fail "installer output still mentions shell interception or br routing"
+else
+    pass "installer output contains no shell interception or br routing guidance"
+fi
 
-# The escape-hatch promise: install edits NO shell startup file.
 assert_eq "install left ~/.bashrc untouched" "${BASHRC_BEFORE}" "$(cat "${FAKE_HOME}/.bashrc")"
 assert_file_absent "install wrote no ~/.zshenv" "${FAKE_HOME}/.zshenv"
 
-section "install.sh: no writable PATH dir falls back to full-path guidance"
+section "install.sh: override path and PATH guidance"
 
-# With no writable directory on PATH, install cannot make the command callable
-# by name, so it must PRINT the full path and still lay down the files.
 FB_HOME="${WORK}/fallback-home"
 mkdir -p "${FB_HOME}"
+FB_INSTALL="${FB_HOME}/tools/br-orphanage"
 FB_OUT=$(env HOME="${FB_HOME}" XDG_DATA_HOME="${FB_HOME}/.local/share" \
-    PATH="/usr/bin:/bin" "${REPO_UNDER_TEST}/install.sh")
-assert_contains "fallback names the full path to br-orphanage" "${FB_OUT}" \
-    "${FB_HOME}/.local/share/br-orphanage/bin/br-orphanage"
-assert_file_exists "fallback still installs the canonical wrapper" \
-    "${FB_HOME}/.local/share/br-orphanage/bin/br-orphanage"
+    BR_ORPHANAGE_INSTALL_PATH="${FB_INSTALL}" PATH="/usr/bin:/bin" \
+    "${REPO_UNDER_TEST}/install.sh")
+assert_contains "override install names the selected path" "${FB_OUT}" "${FB_INSTALL}"
+assert_contains "override install prints PATH guidance" "${FB_OUT}" "${FB_HOME}/tools"
+assert_file_exists "override install wrote the selected executable" "${FB_INSTALL}"
+assert_file_absent "override install did not create a br command" "${FB_HOME}/tools/br"
 
 # Upgrade reporting: fake an older installed version, re-run installer.
 if grep -q '^VERSION=' "${CANON}"; then
@@ -238,12 +238,10 @@ fi
 UPGRADE_OUT=$("${REPO_UNDER_TEST}/install.sh")
 assert_contains "upgrade reports old -> new version" "${UPGRADE_OUT}" "updated 0.0.0 ->"
 
-# Shadow mode for the rest of the suite: prepend BIN_DIR so 'br' resolves to the
-# shadow symlink; real binary's dir next so the wrapper's own PATH scan (skipping
-# itself) finds the real one.
-export PATH="${INSTALL_DIR}/bin:${REAL_BR_DIR}:${PATH}"
-assert_eq "PATH resolves 'br' to the installed wrapper" \
-    "$(readlink -f "${CANON}")" "$(readlink -f "$(command -v br)")"
+BRO=$(command -v br-orphanage)
+assert_eq "BRO points at the installed command" "$(readlink -f "${CANON}")" "$(readlink -f "${BRO}")"
+assert_eq "br still resolves to the real beads binary" \
+    "$(readlink -f "${REAL_BR_RESOLVED}")" "$(readlink -f "$(command -v br)")"
 
 # --- Regression: executable bits tracked in git ----------------------------------
 
@@ -254,10 +252,8 @@ assert_eq "bin/br-orphanage tracked as 100755" "100755" "${BIN_MODE}"
 INSTALL_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s install.sh | awk '{print $1}')
 assert_eq "install.sh tracked as 100755" "100755" "${INSTALL_MODE}"
 
-# --- Passthrough: real commands reach the real binary transparently --------------
+# --- Standalone command surface -------------------------------------------------
 
-# Wrapper version declared in source; reused by the direct-mode and orphanage
-# namespace sections below.
 SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br-orphanage" | head -n 1)
 if [[ -n "${SRC_VERSION}" ]]; then
     pass "bin/br-orphanage declares a VERSION (${SRC_VERSION})"
@@ -265,55 +261,19 @@ else
     fail "bin/br-orphanage has no VERSION= line"
 fi
 
-section "Passthrough: real commands reach the real br binary transparently"
+section "Standalone command: version, help, unknown commands"
 
-# Fixture initialized with the REAL binary directly, so passthrough tests do
-# not depend on any wrapper init behavior.
-PASSTHRU_PROJ="${WORK}/proj-passthrough"
-make_project_repo "${PASSTHRU_PROJ}" yes "passthrough-demo"
-(cd "${PASSTHRU_PROJ}" && "${REAL_BR_RESOLVED}" init -q)
-
-WRAPPER_VERSION_OUT=$(br --version)
-REAL_VERSION_OUT=$("${REAL_BR_RESOLVED}" --version)
-assert_eq "'br --version' matches real binary output" "${REAL_VERSION_OUT}" "${WRAPPER_VERSION_OUT}"
-
-(cd "${PASSTHRU_PROJ}" && br list >/dev/null)
-pass "'br list' passes through without error"
-
-(cd "${PASSTHRU_PROJ}" && br ready >/dev/null)
-pass "'br ready' passes through without error"
-
-JSON_OUT=$(cd "${PASSTHRU_PROJ}" && br list --json)
-if command -v jq >/dev/null 2>&1; then
-    # shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
-    assert_true "'br list --json' output parses as JSON" \
-        bash -c 'printf "%s" "$1" | jq empty' _ "${JSON_OUT}"
-elif command -v python3 >/dev/null 2>&1; then
-    # shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
-    assert_true "'br list --json' output parses as JSON" \
-        bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' _ "${JSON_OUT}"
-else
-    echo "  jq/python3 not installed; skipping JSON parse check."
-fi
-
-set +e
-(cd "${PASSTHRU_PROJ}" && br show definitely-not-a-real-id >/dev/null 2>&1)
-WRAPPER_EXIT=$?
-(cd "${PASSTHRU_PROJ}" && "${REAL_BR_RESOLVED}" show definitely-not-a-real-id >/dev/null 2>&1)
-REAL_EXIT=$?
-set -e
-if [[ "${WRAPPER_EXIT}" -ne 0 ]]; then
-    pass "failing command's exit code is nonzero through the wrapper (${WRAPPER_EXIT})"
-else
-    fail "failing command unexpectedly exited 0 through the wrapper"
-fi
-assert_eq "wrapper exit code matches real binary's for same failing invocation" "${REAL_EXIT}" "${WRAPPER_EXIT}"
-
-section "Direct mode: 'br-orphanage' runs orphanage verbs only, no passthrough"
-
-BRO="${CANON}"   # invoke by the canonical name to force direct mode
 assert_eq "br-orphanage --version prints wrapper version" \
     "br-orphanage ${SRC_VERSION}" "$("${BRO}" --version)"
+
+BRO_HELP=$("${BRO}" --help)
+assert_contains "br-orphanage --help shows standalone usage" "${BRO_HELP}" "br-orphanage sync [--all]"
+REMOVED_PASSTHRU_WORD="pass""through"
+if [[ "${BRO_HELP}" == *"${REMOVED_SHELL_CMD}"* || "${BRO_HELP}" == *"${REMOVED_BR_LINK_WORD}"* || "${BRO_HELP}" == *"${REMOVED_PASSTHRU_WORD}"* ]]; then
+    fail "br-orphanage --help still advertises shell interception or wrapper behavior"
+else
+    pass "br-orphanage --help has no removed routing guidance"
+fi
 
 # An unknown verb must NOT fall through to the real br.
 set +e
@@ -323,107 +283,33 @@ set -e
 assert_eq "br-orphanage <unknown> exits nonzero" "1" "${UNKNOWN_EXIT}"
 assert_contains "br-orphanage <unknown> reports unknown command" "${UNKNOWN_OUT}" "unknown command"
 
-# Contrast: the shadow 'br' still passes 'list' through to the real binary.
-(cd "${PASSTHRU_PROJ}" && br list >/dev/null)
-pass "shadow 'br list' still passes through"
-
-# --- orphanage namespace: version, usage, alias, unknown subcommand -------------
-
-section "br orphanage: version, usage, 'br o' alias, unknown subcommand"
-
-ORPH_VERSION_OUT=$(br orphanage --version)
-assert_eq "'br orphanage --version' prints the wrapper version" \
-    "br-orphanage ${SRC_VERSION}" "${ORPH_VERSION_OUT}"
-
-O_VERSION_OUT=$(br o --version)
-assert_eq "'br o --version' matches 'br orphanage --version'" \
-    "${ORPH_VERSION_OUT}" "${O_VERSION_OUT}"
-
-BARE_ORPH_OUT=$(br orphanage)
-assert_contains "bare 'br orphanage' prints usage" "${BARE_ORPH_OUT}" "Usage:"
-assert_contains "bare 'br orphanage' includes the version" "${BARE_ORPH_OUT}" "${SRC_VERSION}"
+set +e
+SHELL_INTERCEPT_OUT=$("${BRO}" "${REMOVED_SHELL_CMD}" 2>&1)
+SHELL_INTERCEPT_EXIT=$?
+set -e
+assert_eq "removed shell command exits nonzero" "1" "${SHELL_INTERCEPT_EXIT}"
+assert_contains "removed shell command reports unknown command" "${SHELL_INTERCEPT_OUT}" "unknown command"
 
 set +e
-UNKNOWN_OUT=$(br orphanage frobnicate 2>&1)
+UNKNOWN_OUT=$("${BRO}" frobnicate 2>&1)
 UNKNOWN_EXIT=$?
 set -e
 if [[ "${UNKNOWN_EXIT}" -ne 0 ]]; then
-    pass "'br orphanage frobnicate' exits nonzero (${UNKNOWN_EXIT})"
+    pass "unknown br-orphanage command exits nonzero (${UNKNOWN_EXIT})"
 else
-    fail "'br orphanage frobnicate' unexpectedly exited 0"
+    fail "unknown br-orphanage command unexpectedly exited 0"
 fi
-assert_contains "unknown subcommand names the offender" "${UNKNOWN_OUT}" "unknown subcommand 'frobnicate'"
+assert_contains "unknown command names the offender" "${UNKNOWN_OUT}" "unknown command 'frobnicate'"
 
-# --- bare 'br init' passes through UNMODIFIED ------------------------------------
+# --- br-orphanage target: set, print, resolve, validate -------------------------
 
-section "shell-intercept: prints per-shell guidance, edits nothing"
-
-BRO="${CANON}"
-# The wrapper derives its bin dir from readlink -f of itself, so compare against
-# the resolved path (macOS resolves /var -> /private/var).
-RESOLVED_BIN=$(readlink -f "${INSTALL_DIR}/bin")
-EXPORT_LINE="export PATH=\"${RESOLVED_BIN}:\$PATH\""
-
-# bash -> ~/.bashrc
-SI_BASH_HOME="${WORK}/si-bash"
-mkdir -p "${SI_BASH_HOME}"
-BASH_OUT=$(env HOME="${SI_BASH_HOME}" SHELL=/bin/bash "${BRO}" shell-intercept)
-assert_contains "bash guidance names ~/.bashrc" "${BASH_OUT}" ".bashrc"
-assert_contains "bash guidance gives the export line" "${BASH_OUT}" "${EXPORT_LINE}"
-assert_contains "bash guidance offers the full-path fallback" "${BASH_OUT}" "${RESOLVED_BIN}/br-orphanage"
-assert_file_absent "shell-intercept wrote no ~/.bashrc" "${SI_BASH_HOME}/.bashrc"
-
-# zsh -> ~/.zshenv, and must NOT steer the user to ~/.zshrc (br-orphanage-t9m).
-ZSH_OUT=$(env SHELL=/bin/zsh "${BRO}" shell-intercept)
-assert_contains "zsh guidance names ~/.zshenv" "${ZSH_OUT}" ".zshenv"
-# shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
-assert_true "zsh guidance does not steer to .zshrc" \
-    bash -c '! grep -q "\.zshrc" <<<"$1"' _ "${ZSH_OUT}"
-
-# unknown shell -> named + generic guidance
-FISH_OUT=$(env SHELL=/opt/fish "${BRO}" shell-intercept)
-assert_contains "unknown-shell guidance names the shell" "${FISH_OUT}" "fish"
-assert_contains "unknown-shell guidance still gives the export line" "${FISH_OUT}" "${EXPORT_LINE}"
-
-# Reachable through the shadow 'br' too.
-SHADOW_SI=$(br orphanage shell-intercept)
-assert_contains "'br orphanage shell-intercept' works in shadow mode" "${SHADOW_SI}" "${EXPORT_LINE}"
-
-section "bare 'br init' passes through to the real binary unmodified"
-
-BAREINIT_PROJ="${WORK}/proj-bare-init"
-make_project_repo "${BAREINIT_PROJ}" yes "bare-init-demo"
-printf 'node_modules/\n' > "${BAREINIT_PROJ}/.gitignore"
-
-(cd "${BAREINIT_PROJ}" && br init -q)
-
-assert_dir_exists "real init created .beads/" "${BAREINIT_PROJ}/.beads"
-BAREINIT_EXCLUDE=$(abs_git_path "${BAREINIT_PROJ}" info/exclude)
-if grep -qxF '.beads/' "${BAREINIT_EXCLUDE}" 2>/dev/null; then
-    fail "bare 'br init' wrongly added '.beads/' to info/exclude (legacy interception still active)"
-else
-    pass "bare 'br init' did NOT touch info/exclude"
-fi
-
-# Bare 'br sync' is the real binary's own command: passthrough, no git traffic.
-(cd "${BAREINIT_PROJ}" && br sync >/dev/null)
-pass "bare 'br sync' passes through without error"
-BAREINIT_ORIGIN_REFS=$(git -C "${WORK}/origins/bare-init-demo.git" for-each-ref --format='%(refname)' refs/heads)
-if [[ "${BAREINIT_ORIGIN_REFS}" == *orphanage* ]]; then
-    fail "bare 'br sync' unexpectedly created an orphan branch at the origin"
-else
-    pass "bare 'br sync' produced no git traffic (no orphan branch at origin)"
-fi
-
-# --- br orphanage target: set, print, resolve, validate --------------------------
-
-section "br orphanage target: unset -> exit 1 with guidance"
+section "br-orphanage target: unset -> exit 1 with guidance"
 
 TGT_PROJ="${WORK}/proj-target"
 make_project_repo "${TGT_PROJ}" yes "target-demo"
 
 set +e
-TGT_UNSET_OUT=$(cd "${TGT_PROJ}" && br orphanage target 2>&1)
+TGT_UNSET_OUT=$(cd "${TGT_PROJ}" && "${BRO}" target 2>&1)
 TGT_UNSET_EXIT=$?
 set -e
 if [[ "${TGT_UNSET_EXIT}" -ne 0 ]]; then
@@ -431,39 +317,39 @@ if [[ "${TGT_UNSET_EXIT}" -ne 0 ]]; then
 else
     fail "unset target unexpectedly exited 0"
 fi
-assert_contains "unset target names the fix" "${TGT_UNSET_OUT}" "br orphanage target <remote-or-url>"
+assert_contains "unset target names the fix" "${TGT_UNSET_OUT}" "br-orphanage target <remote-or-url>"
 
-section "br orphanage target: set by remote name, resolved at print time"
+section "br-orphanage target: set by remote name, resolved at print time"
 
-(cd "${TGT_PROJ}" && br orphanage target origin)
+(cd "${TGT_PROJ}" && "${BRO}" target origin)
 STORED_TGT=$(git -C "${TGT_PROJ}" config --get beadsOrphanage.target)
 assert_eq "stored config value is the remote name" "origin" "${STORED_TGT}"
 
-TGT_PRINT_OUT=$(cd "${TGT_PROJ}" && br orphanage target)
+TGT_PRINT_OUT=$(cd "${TGT_PROJ}" && "${BRO}" target)
 TGT_ORIGIN_URL=$(git -C "${TGT_PROJ}" remote get-url origin)
 assert_contains "print shows the resolved URL" "${TGT_PRINT_OUT}" "url:    ${TGT_ORIGIN_URL}"
 # origin URL is $WORK/origins/target-demo.git -> owner=origins project=target-demo
 assert_contains "print shows the default templated branch" "${TGT_PRINT_OUT}" "branch: orphanage/origins/target-demo"
 
-section "br orphanage target: set by URL, template overrides, validation"
+section "br-orphanage target: set by URL, template overrides, validation"
 
 EXT_TARGET_BARE="${WORK}/targets/external-issues.git"
 mkdir -p "$(dirname "${EXT_TARGET_BARE}")"
 git init -q --bare "${EXT_TARGET_BARE}"
 
-(cd "${TGT_PROJ}" && br orphanage target "${EXT_TARGET_BARE}")
+(cd "${TGT_PROJ}" && "${BRO}" target "${EXT_TARGET_BARE}")
 STORED_TGT2=$(git -C "${TGT_PROJ}" config --get beadsOrphanage.target)
 assert_eq "URL target stored literally" "${EXT_TARGET_BARE}" "${STORED_TGT2}"
 
-(cd "${TGT_PROJ}" && br orphanage target --namespace beads --branch '<namespace>/only-<project>')
-TGT_PRINT_OUT2=$(cd "${TGT_PROJ}" && br orphanage target)
+(cd "${TGT_PROJ}" && "${BRO}" target --namespace beads --branch '<namespace>/only-<project>')
+TGT_PRINT_OUT2=$(cd "${TGT_PROJ}" && "${BRO}" target)
 assert_contains "custom template + namespace resolve in print" "${TGT_PRINT_OUT2}" "branch: beads/only-target-demo"
 # Reset overrides for later tasks.
 git -C "${TGT_PROJ}" config --unset beadsOrphanage.branch
 git -C "${TGT_PROJ}" config --unset beadsOrphanage.namespace
 
 set +e
-BADREMOTE_OUT=$(cd "${TGT_PROJ}" && br orphanage target upstream 2>&1)
+BADREMOTE_OUT=$(cd "${TGT_PROJ}" && "${BRO}" target upstream 2>&1)
 BADREMOTE_EXIT=$?
 set -e
 if [[ "${BADREMOTE_EXIT}" -ne 0 ]]; then
@@ -473,21 +359,21 @@ else
 fi
 assert_contains "rejection names the missing remote" "${BADREMOTE_OUT}" "upstream"
 
-section "br orphanage target: slash-in-remote-name resolves as a remote, not a URL"
+section "br-orphanage target: slash-in-remote-name resolves as a remote, not a URL"
 
 (cd "${TGT_PROJ}" && git remote add fork/thing "${EXT_TARGET_BARE}")
-(cd "${TGT_PROJ}" && br orphanage target fork/thing)
-SLASH_PRINT=$(cd "${TGT_PROJ}" && br orphanage target)
+(cd "${TGT_PROJ}" && "${BRO}" target fork/thing)
+SLASH_PRINT=$(cd "${TGT_PROJ}" && "${BRO}" target)
 assert_contains "slash-named remote resolves to its URL at print time" \
     "${SLASH_PRINT}" "url:    ${EXT_TARGET_BARE}"
 # Restore prior state (URL target, no extra remote) for later sections.
-(cd "${TGT_PROJ}" && br orphanage target "${EXT_TARGET_BARE}")
+(cd "${TGT_PROJ}" && "${BRO}" target "${EXT_TARGET_BARE}")
 git -C "${TGT_PROJ}" remote remove fork/thing
 
-section "br orphanage target: argument validation edge cases"
+section "br-orphanage target: argument validation edge cases"
 
 set +e
-EXTRA_OUT=$(cd "${TGT_PROJ}" && br orphanage target origin bogus-extra 2>&1)
+EXTRA_OUT=$(cd "${TGT_PROJ}" && "${BRO}" target origin bogus-extra 2>&1)
 EXTRA_EXIT=$?
 set -e
 if [[ "${EXTRA_EXIT}" -ne 0 ]]; then
@@ -498,7 +384,7 @@ fi
 assert_contains "extra positional names the problem" "${EXTRA_OUT}" "unexpected extra argument"
 
 set +e
-OPTVAL_OUT=$(cd "${TGT_PROJ}" && br orphanage target --branch --namespace 2>&1)
+OPTVAL_OUT=$(cd "${TGT_PROJ}" && "${BRO}" target --branch --namespace 2>&1)
 OPTVAL_EXIT=$?
 set -e
 if [[ "${OPTVAL_EXIT}" -ne 0 ]]; then
@@ -513,11 +399,11 @@ else
     pass "beadsOrphanage.branch left unset after rejected --branch"
 fi
 
-section "br orphanage target: invalid resolved branch name rejected at print time"
+section "br-orphanage target: invalid resolved branch name rejected at print time"
 
-(cd "${TGT_PROJ}" && br orphanage target --branch 'bad branch')
+(cd "${TGT_PROJ}" && "${BRO}" target --branch 'bad branch')
 set +e
-BADBRANCH_OUT=$(cd "${TGT_PROJ}" && br orphanage target 2>&1)
+BADBRANCH_OUT=$(cd "${TGT_PROJ}" && "${BRO}" target 2>&1)
 BADBRANCH_EXIT=$?
 set -e
 if [[ "${BADBRANCH_EXIT}" -ne 0 ]]; then
@@ -529,41 +415,41 @@ assert_contains "invalid branch error names the problem" "${BADBRANCH_OUT}" "not
 # Restore for later tasks.
 git -C "${TGT_PROJ}" config --unset beadsOrphanage.branch
 
-section "br orphanage target: fallbacks with no origin remote"
+section "br-orphanage target: fallbacks with no origin remote"
 
 NOORIGIN_TGT_PROJ="${WORK}/proj-target-no-origin"
 make_project_repo "${NOORIGIN_TGT_PROJ}" no
 NOORIGIN_BARE="${WORK}/targets/no-origin-target.git"
 git init -q --bare "${NOORIGIN_BARE}"
-(cd "${NOORIGIN_TGT_PROJ}" && br orphanage target "${NOORIGIN_BARE}")
-NOORIGIN_PRINT=$(cd "${NOORIGIN_TGT_PROJ}" && br orphanage target)
+(cd "${NOORIGIN_TGT_PROJ}" && "${BRO}" target "${NOORIGIN_BARE}")
+NOORIGIN_PRINT=$(cd "${NOORIGIN_TGT_PROJ}" && "${BRO}" target)
 NOORIGIN_DIRNAME=$(basename "${NOORIGIN_TGT_PROJ}")
 assert_contains "no-origin fallback branch is orphanage/local/<dirname>" \
     "${NOORIGIN_PRINT}" "branch: orphanage/local/${NOORIGIN_DIRNAME}"
 
-# --- br orphanage init: gitignore preservation, exclude entry, --target ----------
+# --- br-orphanage init: gitignore preservation, exclude entry, --target ----------
 
-section "br orphanage init: pre-existing .gitignore is byte-identical afterward"
+section "br-orphanage init: pre-existing .gitignore is byte-identical afterward"
 
 OINIT1="${WORK}/proj-oinit-gitignore"
 make_project_repo "${OINIT1}" yes "oinit-gitignore"
 printf 'node_modules/\n*.log\n' > "${OINIT1}/.gitignore"
 cp "${OINIT1}/.gitignore" "${WORK}/oinit-gitignore-snapshot"
 
-(cd "${OINIT1}" && br orphanage init -q)
+(cd "${OINIT1}" && "${BRO}" init -q)
 
 if cmp -s "${WORK}/oinit-gitignore-snapshot" "${OINIT1}/.gitignore"; then
-    pass ".gitignore byte-identical after 'br orphanage init'"
+    pass ".gitignore byte-identical after 'br-orphanage init'"
 else
-    fail ".gitignore CHANGED after 'br orphanage init'"
+    fail ".gitignore CHANGED after 'br-orphanage init'"
 fi
 
-section "br orphanage init: no .gitignore before -> none after; exclude idempotent"
+section "br-orphanage init: no .gitignore before -> none after; exclude idempotent"
 
 OINIT2="${WORK}/proj-oinit-clean"
 make_project_repo "${OINIT2}" yes "oinit-clean"
 
-(cd "${OINIT2}" && br orphanage init -q)
+(cd "${OINIT2}" && "${BRO}" init -q)
 
 assert_file_absent "no .gitignore created" "${OINIT2}/.gitignore"
 assert_dir_exists ".beads/ created" "${OINIT2}/.beads"
@@ -572,15 +458,15 @@ count_oinit2_excl() { grep -cxF '.beads/' "${OINIT2_EXCLUDE}" 2>/dev/null || tru
 assert_eq "exclude has exactly one '.beads/' line" "1" "$(count_oinit2_excl)"
 
 # Repeat init (real br needs --force on an initialized workspace).
-(cd "${OINIT2}" && br orphanage init -q --force)
-(cd "${OINIT2}" && br orphanage init -q --force)
+(cd "${OINIT2}" && "${BRO}" init -q --force)
+(cd "${OINIT2}" && "${BRO}" init -q --force)
 assert_eq "still exactly one '.beads/' line after repeated forced inits" "1" "$(count_oinit2_excl)"
 assert_file_absent "still no .gitignore after repeated inits" "${OINIT2}/.gitignore"
 
-section "br orphanage init: double init without --force fails like the real binary"
+section "br-orphanage init: double init without --force fails like the real binary"
 
 set +e
-(cd "${OINIT2}" && br orphanage init -q >/dev/null 2>&1)
+(cd "${OINIT2}" && "${BRO}" init -q >/dev/null 2>&1)
 DBLINIT_WRAPPER_EXIT=$?
 (cd "${OINIT2}" && "${REAL_BR_RESOLVED}" init -q >/dev/null 2>&1)
 DBLINIT_REAL_EXIT=$?
@@ -594,24 +480,24 @@ assert_eq "wrapper double-init exit code matches the real binary's" \
     "${DBLINIT_REAL_EXIT}" "${DBLINIT_WRAPPER_EXIT}"
 assert_eq "exclude still has exactly one '.beads/' line after failed double init" "1" "$(count_oinit2_excl)"
 
-section "br orphanage init --target: inline target set"
+section "br-orphanage init --target: inline target set"
 
 OINIT3="${WORK}/proj-oinit-target"
 make_project_repo "${OINIT3}" yes "oinit-target"
 
-(cd "${OINIT3}" && br orphanage init -q --target origin)
+(cd "${OINIT3}" && "${BRO}" init -q --target origin)
 
 OINIT3_TGT=$(git -C "${OINIT3}" config --get beadsOrphanage.target)
 assert_eq "--target stored in git config" "origin" "${OINIT3_TGT}"
 assert_dir_exists "--target didn't break the real init" "${OINIT3}/.beads"
 
-section "br orphanage init --target: failing target still leaves a successful init"
+section "br-orphanage init --target: failing target still leaves a successful init"
 
 OINIT4="${WORK}/proj-oinit-badtarget"
 make_project_repo "${OINIT4}" yes "oinit-badtarget"
 
 set +e
-BADTGT_OUT=$(cd "${OINIT4}" && br orphanage init -q --target bogus-nonexistent 2>&1)
+BADTGT_OUT=$(cd "${OINIT4}" && "${BRO}" init -q --target bogus-nonexistent 2>&1)
 BADTGT_EXIT=$?
 set -e
 if [[ "${BADTGT_EXIT}" -ne 0 ]]; then
@@ -627,14 +513,14 @@ else
     pass "beadsOrphanage.target left unset after rejected --target"
 fi
 
-section "br orphanage init: worktree resolves the shared info/exclude"
+section "br-orphanage init: worktree resolves the shared info/exclude"
 
 WT_MAIN="${WORK}/proj-worktree-main"
 make_project_repo "${WT_MAIN}" yes "worktree-demo"
 WT_LINKED="${WORK}/proj-worktree-linked"
 git -C "${WT_MAIN}" worktree add -q -b wt-feature-branch "${WT_LINKED}"
 
-(cd "${WT_LINKED}" && br orphanage init -q)
+(cd "${WT_LINKED}" && "${BRO}" init -q)
 
 COMMON_EXCLUDE=$(abs_git_path "${WT_MAIN}" info/exclude)
 if grep -qxF '.beads/' "${COMMON_EXCLUDE}" 2>/dev/null; then
@@ -643,19 +529,19 @@ else
     fail "'.beads/' did NOT land in the shared info/exclude (${COMMON_EXCLUDE})"
 fi
 
-# --- br orphanage sync: outbound core --------------------------------------------
+# --- br-orphanage sync: outbound core -------------------------------------------
 
-INDEX_FILE="${INSTALL_DIR}/project-paths"
+INDEX_FILE="${DATA_DIR}/project-paths"
 
-section "br orphanage sync: first sync creates the orphan root at the target"
+section "br-orphanage sync: first sync creates the orphan root at the target"
 
 SYNC_PROJ="${WORK}/proj-sync"
 make_project_repo "${SYNC_PROJ}" yes "sync-demo"
 SYNC_ORIGIN_BARE="${WORK}/origins/sync-demo.git"
-(cd "${SYNC_PROJ}" && br orphanage init -q --target origin)
+(cd "${SYNC_PROJ}" && "${BRO}" init -q --target origin)
 SYNC_ISSUE_ID=$(cd "${SYNC_PROJ}" && br q "orphan roundtrip issue")
 
-SYNC_OUT1=$(cd "${SYNC_PROJ}" && br orphanage sync)
+SYNC_OUT1=$(cd "${SYNC_PROJ}" && "${BRO}" sync)
 assert_contains "first sync reports success" "${SYNC_OUT1}" "Beads synced for sync-demo"
 
 # Hardcodes the default template resolution (namespace/owner-from-origin-path/
@@ -685,7 +571,7 @@ assert_contains "synced issues.jsonl contains the created issue" "${REMOTE_ISSUE
 LOCAL_PUSHED=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/pushed)
 assert_eq "local refs/orphanage/pushed matches the remote tip" "${SYNC_TIP1}" "${LOCAL_PUSHED}"
 
-section "br orphanage sync: index entry, second sync chains, no-op"
+section "br-orphanage sync: index entry, second sync chains, no-op"
 
 assert_file_exists "machine-local index created" "${INDEX_FILE}"
 SYNC_PROJ_REAL=$(cd "${SYNC_PROJ}" && pwd -P)
@@ -693,7 +579,7 @@ assert_true "index records sync-demo -> its absolute path" \
     grep -qF "$(printf 'sync-demo\t%s' "${SYNC_PROJ_REAL}")" "${INDEX_FILE}"
 
 (cd "${SYNC_PROJ}" && br q "second orphan issue" >/dev/null)
-SYNC_OUT2=$(cd "${SYNC_PROJ}" && br orphanage sync)
+SYNC_OUT2=$(cd "${SYNC_PROJ}" && "${BRO}" sync)
 assert_contains "second sync reports success" "${SYNC_OUT2}" "Beads synced for sync-demo"
 SYNC_TIP2=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 SYNC_TIP2_PARENT=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "${SYNC_TIP2}^")
@@ -712,7 +598,7 @@ INDEX_LINES=$(grep -cF "$(printf 'sync-demo\t')" "${INDEX_FILE}" || true)
 assert_eq "re-sync does not duplicate the index entry" "1" "${INDEX_LINES}"
 
 set +e
-NOOP_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync 2>&1)
+NOOP_OUT=$(cd "${SYNC_PROJ}" && "${BRO}" sync 2>&1)
 NOOP_EXIT=$?
 set -e
 assert_eq "no-op sync exits 0" "0" "${NOOP_EXIT}"
@@ -720,16 +606,16 @@ assert_contains "no-op sync reports already in sync" "${NOOP_OUT}" "Already in s
 SYNC_TIP3=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 assert_eq "no-op sync created no new commit" "${SYNC_TIP2}" "${SYNC_TIP3}"
 
-section "br orphanage sync: external (non-origin) target"
+section "br-orphanage sync: external (non-origin) target"
 
 EXT_PROJ="${WORK}/proj-sync-external"
 make_project_repo "${EXT_PROJ}" yes "sync-external"
 EXT_BARE="${WORK}/targets/private-issues.git"
 mkdir -p "$(dirname "${EXT_BARE}")"
 git init -q --bare "${EXT_BARE}"
-(cd "${EXT_PROJ}" && br orphanage init -q --target "${EXT_BARE}")
+(cd "${EXT_PROJ}" && "${BRO}" init -q --target "${EXT_BARE}")
 (cd "${EXT_PROJ}" && br q "external target issue" >/dev/null)
-(cd "${EXT_PROJ}" && br orphanage sync >/dev/null)
+(cd "${EXT_PROJ}" && "${BRO}" sync >/dev/null)
 EXT_BRANCH="orphanage/origins/sync-external"
 EXT_ISSUES=$(git -C "${EXT_BARE}" show "refs/heads/${EXT_BRANCH}:issues.jsonl")
 assert_contains "issue landed at the external target" "${EXT_ISSUES}" "external target issue"
@@ -740,13 +626,13 @@ else
     pass "project origin has no orphan branch (data went only to the external target)"
 fi
 
-section "br orphanage sync: errors (unset target, unknown option)"
+section "br-orphanage sync: errors (unset target, unknown option)"
 
 NOTGT_PROJ="${WORK}/proj-sync-no-target"
 make_project_repo "${NOTGT_PROJ}" yes "sync-no-target"
-(cd "${NOTGT_PROJ}" && br orphanage init -q)
+(cd "${NOTGT_PROJ}" && "${BRO}" init -q)
 set +e
-NOTGT_OUT=$(cd "${NOTGT_PROJ}" && br orphanage sync 2>&1)
+NOTGT_OUT=$(cd "${NOTGT_PROJ}" && "${BRO}" sync 2>&1)
 NOTGT_EXIT=$?
 set -e
 if [[ "${NOTGT_EXIT}" -ne 0 ]]; then
@@ -754,10 +640,10 @@ if [[ "${NOTGT_EXIT}" -ne 0 ]]; then
 else
     fail "sync without a target unexpectedly exited 0"
 fi
-assert_contains "unset-target error names the fix" "${NOTGT_OUT}" "br orphanage target <remote-or-url>"
+assert_contains "unset-target error names the fix" "${NOTGT_OUT}" "br-orphanage target <remote-or-url>"
 
 set +e
-BOGUS_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync --bogus 2>&1)
+BOGUS_OUT=$(cd "${SYNC_PROJ}" && "${BRO}" sync --bogus 2>&1)
 BOGUS_EXIT=$?
 set -e
 if [[ "${BOGUS_EXIT}" -ne 0 ]]; then
@@ -777,18 +663,18 @@ make_project_repo "${DIV_A}" yes "div-demo"
 DIV_BARE="${WORK}/origins/div-demo.git"
 # Push code so machine B can clone the project like a real second machine.
 git -C "${DIV_A}" push -q origin HEAD:refs/heads/main
-(cd "${DIV_A}" && br orphanage init -q --target origin)
+(cd "${DIV_A}" && "${BRO}" init -q --target origin)
 (cd "${DIV_A}" && br q "issue from machine A" >/dev/null)
-(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_A}" && "${BRO}" sync >/dev/null)
 
 # "Machine B" = a fresh clone with its own empty workspace (bootstrap-by-init;
 # the dedicated bootstrap path is exercised in its own section later).
 DIV_B="${WORK}/proj-div-b"
 git clone -q "${DIV_BARE}" "${DIV_B}"
-(cd "${DIV_B}" && br orphanage init -q --target origin)
+(cd "${DIV_B}" && "${BRO}" init -q --target origin)
 (cd "${DIV_B}" && br q "issue from machine B" >/dev/null)
 set +e
-(cd "${DIV_B}" && br orphanage sync >/dev/null 2>&1)
+(cd "${DIV_B}" && "${BRO}" sync >/dev/null 2>&1)
 DIV_B_SYNC_EXIT=$?
 set -e
 assert_eq "machine B's divergent sync exits 0" "0" "${DIV_B_SYNC_EXIT}"
@@ -808,7 +694,7 @@ assert_eq "merged commit has exactly one parent (linear history)" "1" "${DIV_TIP
 
 section "divergence: A picks up B's issue; deletion propagates via tombstone"
 
-(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_A}" && "${BRO}" sync >/dev/null)
 DIV_A_LIST=$(cd "${DIV_A}" && br list)
 assert_contains "machine A's DB gained machine B's issue" "${DIV_A_LIST}" "issue from machine B"
 
@@ -816,8 +702,8 @@ assert_contains "machine A's DB gained machine B's issue" "${DIV_A_LIST}" "issue
 # must NOT resurrect on any later sync from either side.
 DIV_A_DEL_ID=$(cd "${DIV_A}" && br list --json | jq -r '.issues[] | select(.title | contains("issue from machine A")) | .id' | head -n 1)
 (cd "${DIV_A}" && br delete "${DIV_A_DEL_ID}" >/dev/null)
-(cd "${DIV_A}" && br orphanage sync >/dev/null)
-(cd "${DIV_B}" && br orphanage sync >/dev/null)
+(cd "${DIV_A}" && "${BRO}" sync >/dev/null)
+(cd "${DIV_B}" && "${BRO}" sync >/dev/null)
 DIV_B_LIST2=$(cd "${DIV_B}" && br list)
 if [[ "${DIV_B_LIST2}" == *"issue from machine A"* ]]; then
     fail "deleted issue still visible on machine B after sync"
@@ -828,7 +714,7 @@ fi
 # sets): the byte-convergence adoption path must fire here, or br's tombstone
 # closed_at serialization asymmetry would flap the tree hash between the two
 # machines forever.
-DIV_ADOPT_OUT=$(cd "${DIV_A}" && br orphanage sync 2>&1)
+DIV_ADOPT_OUT=$(cd "${DIV_A}" && "${BRO}" sync 2>&1)
 assert_contains "A's post-deletion sync adopts remote serialization" \
     "${DIV_ADOPT_OUT}" "adopted remote serialization"
 DIV_A_LIST2=$(cd "${DIV_A}" && br list)
@@ -842,17 +728,17 @@ section "divergence: three-way non-issue files (converge, no flap, both-changed)
 
 # A edits config.yaml; the edit must reach B and then settle (no flapping).
 printf '\n# marker-from-A\n' >> "${DIV_A}/.beads/config.yaml"
-(cd "${DIV_A}" && br orphanage sync >/dev/null)
-(cd "${DIV_B}" && br orphanage sync >/dev/null 2>&1)
+(cd "${DIV_A}" && "${BRO}" sync >/dev/null)
+(cd "${DIV_B}" && "${BRO}" sync >/dev/null 2>&1)
 assert_true "A's config edit reached machine B" \
     grep -qF "# marker-from-A" "${DIV_B}/.beads/config.yaml"
 
 set +e
-DIV_SETTLE_OUT=$(cd "${DIV_B}" && br orphanage sync 2>&1)
+DIV_SETTLE_OUT=$(cd "${DIV_B}" && "${BRO}" sync 2>&1)
 set -e
 assert_contains "B's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_OUT}" "Already in sync"
 set +e
-DIV_SETTLE_A=$(cd "${DIV_A}" && br orphanage sync 2>&1)
+DIV_SETTLE_A=$(cd "${DIV_A}" && "${BRO}" sync 2>&1)
 set -e
 assert_contains "A's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_A}" "Already in sync"
 
@@ -868,9 +754,9 @@ fi
 # local and warns with the recovery command.
 printf '\n# conflict-from-A\n' >> "${DIV_A}/.beads/config.yaml"
 printf '\n# conflict-from-B\n' >> "${DIV_B}/.beads/config.yaml"
-(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_A}" && "${BRO}" sync >/dev/null)
 set +e
-DIV_CONFLICT_OUT=$(cd "${DIV_B}" && br orphanage sync 2>&1)
+DIV_CONFLICT_OUT=$(cd "${DIV_B}" && "${BRO}" sync 2>&1)
 DIV_CONFLICT_EXIT=$?
 set -e
 assert_eq "both-changed sync still exits 0" "0" "${DIV_CONFLICT_EXIT}"
@@ -891,8 +777,8 @@ BOOT_PROJ="${WORK}/proj-bootstrap"
 git clone -q "${SYNC_ORIGIN_BARE}" "${BOOT_PROJ}"
 assert_file_absent "fresh clone has no .beads/" "${BOOT_PROJ}/.beads"
 
-(cd "${BOOT_PROJ}" && br orphanage target origin)
-BOOT_OUT=$(cd "${BOOT_PROJ}" && br orphanage sync)
+(cd "${BOOT_PROJ}" && "${BRO}" target origin)
+BOOT_OUT=$(cd "${BOOT_PROJ}" && "${BRO}" sync)
 assert_contains "bootstrap reports success" "${BOOT_OUT}" "Bootstrapped sync-demo"
 
 assert_dir_exists "workspace bootstrapped: .beads/ exists" "${BOOT_PROJ}/.beads"
@@ -911,7 +797,7 @@ BOOT_REMOTE_TIP=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRAN
 assert_eq "bootstrap set refs/orphanage/pushed to the remote tip" "${BOOT_REMOTE_TIP}" "${BOOT_PUSHED}"
 
 set +e
-BOOT_NOOP=$(cd "${BOOT_PROJ}" && br orphanage sync 2>&1)
+BOOT_NOOP=$(cd "${BOOT_PROJ}" && "${BRO}" sync 2>&1)
 BOOT_NOOP_EXIT=$?
 set -e
 assert_eq "post-bootstrap sync exits 0" "0" "${BOOT_NOOP_EXIT}"
@@ -924,9 +810,9 @@ make_project_repo "${NEVER_PROJ}" yes "never-synced"
 NEVER_CLONE="${WORK}/proj-never-synced-clone"
 git -C "${NEVER_PROJ}" push -q origin HEAD:refs/heads/main
 git clone -q "${WORK}/origins/never-synced.git" "${NEVER_CLONE}"
-(cd "${NEVER_CLONE}" && br orphanage target origin)
+(cd "${NEVER_CLONE}" && "${BRO}" target origin)
 set +e
-NEVER_OUT=$(cd "${NEVER_CLONE}" && br orphanage sync 2>&1)
+NEVER_OUT=$(cd "${NEVER_CLONE}" && "${BRO}" sync 2>&1)
 NEVER_EXIT=$?
 set -e
 if [[ "${NEVER_EXIT}" -ne 0 ]]; then
@@ -934,15 +820,15 @@ if [[ "${NEVER_EXIT}" -ne 0 ]]; then
 else
     fail "sync against a never-synced branch unexpectedly exited 0"
 fi
-assert_contains "never-synced error suggests 'br orphanage init'" "${NEVER_OUT}" "br orphanage init"
+assert_contains "never-synced error suggests 'br-orphanage init'" "${NEVER_OUT}" "br-orphanage init"
 
 section "bootstrap: partial failure cleans up and stays re-bootstrappable"
 
 BF_PROJ="${WORK}/proj-bootfail"
 make_project_repo "${BF_PROJ}" yes "bootfail"
-(cd "${BF_PROJ}" && br orphanage init -q --target origin)
+(cd "${BF_PROJ}" && "${BRO}" init -q --target origin)
 (cd "${BF_PROJ}" && br q "bootfail recovery issue" >/dev/null)
-(cd "${BF_PROJ}" && br orphanage sync >/dev/null)
+(cd "${BF_PROJ}" && "${BRO}" sync >/dev/null)
 git -C "${BF_PROJ}" push -q origin HEAD:refs/heads/main
 
 BF_BARE="${WORK}/origins/bootfail.git"
@@ -960,9 +846,9 @@ git -C "${BF_BARE}" update-ref "refs/heads/${BF_BRANCH}" "${BF_BAD_COMMIT}"
 
 BF_CLONE="${WORK}/proj-bootfail-clone"
 git clone -q "${BF_BARE}" "${BF_CLONE}"
-(cd "${BF_CLONE}" && br orphanage target origin)
+(cd "${BF_CLONE}" && "${BRO}" target origin)
 set +e
-BF_OUT=$(cd "${BF_CLONE}" && br orphanage sync 2>&1)
+BF_OUT=$(cd "${BF_CLONE}" && "${BRO}" sync 2>&1)
 BF_EXIT=$?
 set -e
 if [[ "${BF_EXIT}" -ne 0 ]]; then
@@ -976,7 +862,7 @@ assert_file_absent "partially-created .beads/ was removed" "${BF_CLONE}/.beads"
 # Repair the branch and confirm the same clone re-bootstraps cleanly: the
 # failed attempt must not have dead-ended the workspace.
 git -C "${BF_BARE}" update-ref "refs/heads/${BF_BRANCH}" "${BF_GOOD_TIP}"
-BF_RETRY=$(cd "${BF_CLONE}" && br orphanage sync)
+BF_RETRY=$(cd "${BF_CLONE}" && "${BRO}" sync)
 assert_contains "re-bootstrap after repair succeeds" "${BF_RETRY}" "Bootstrapped bootfail"
 BF_LIST=$(cd "${BF_CLONE}" && br list)
 assert_contains "issue visible after recovered bootstrap" "${BF_LIST}" "bootfail recovery issue"
@@ -985,8 +871,8 @@ section "retargeting: new empty target receives a fresh orphan root"
 
 RETGT_BARE="${WORK}/targets/retarget-home.git"
 git init -q --bare "${RETGT_BARE}"
-(cd "${SYNC_PROJ}" && br orphanage target "${RETGT_BARE}")
-RETGT_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync)
+(cd "${SYNC_PROJ}" && "${BRO}" target "${RETGT_BARE}")
+RETGT_OUT=$(cd "${SYNC_PROJ}" && "${BRO}" sync)
 assert_contains "retargeted sync reports success" "${RETGT_OUT}" "Beads synced for sync-demo"
 RETGT_TIP=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 RETGT_PARENTS=$(git -C "${RETGT_BARE}" cat-file -p "${RETGT_TIP}" | grep -c '^parent ' || true)
@@ -995,8 +881,8 @@ RETGT_ISSUES=$(git -C "${RETGT_BARE}" show "${RETGT_TIP}:issues.jsonl")
 assert_contains "full current state landed at the new target" "${RETGT_ISSUES}" "orphan roundtrip issue"
 # Point sync-demo back at origin for any later sections. Output is kept so a
 # failing settle sync prints its diagnostics before set -e stops the harness.
-(cd "${SYNC_PROJ}" && br orphanage target origin)
-(cd "${SYNC_PROJ}" && br orphanage sync)
+(cd "${SYNC_PROJ}" && "${BRO}" target origin)
+(cd "${SYNC_PROJ}" && "${BRO}" sync)
 RETGT_TIP_AFTER=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
 assert_eq "old retarget target left untouched after repointing to origin" "${RETGT_TIP}" "${RETGT_TIP_AFTER}"
 
@@ -1010,19 +896,19 @@ make_project_repo "${ALL_A}" yes "all-a"
 make_project_repo "${ALL_B}" yes "all-b"
 ALL_B_TARGET="${WORK}/targets/all-b-private.git"
 git init -q --bare "${ALL_B_TARGET}"
-(cd "${ALL_A}" && br orphanage init -q --target origin)
-(cd "${ALL_B}" && br orphanage init -q --target "${ALL_B_TARGET}")
+(cd "${ALL_A}" && "${BRO}" init -q --target origin)
+(cd "${ALL_B}" && "${BRO}" init -q --target "${ALL_B_TARGET}")
 (cd "${ALL_A}" && br q "first in all-a" >/dev/null)
 (cd "${ALL_B}" && br q "first in all-b" >/dev/null)
-(cd "${ALL_A}" && br orphanage sync >/dev/null)
-(cd "${ALL_B}" && br orphanage sync >/dev/null)
+(cd "${ALL_A}" && "${BRO}" sync >/dev/null)
+(cd "${ALL_B}" && "${BRO}" sync >/dev/null)
 
 (cd "${ALL_A}" && br q "second in all-a" >/dev/null)
 (cd "${ALL_B}" && br q "second in all-b" >/dev/null)
 
 # Runnable from anywhere, including outside any git repo.
 set +e
-ALL_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+ALL_OUT=$(cd "${WORK}" && "${BRO}" sync --all 2>&1)
 ALL_EXIT=$?
 set -e
 assert_eq "'sync --all' exits 0 when all known projects sync cleanly" "0" "${ALL_EXIT}"
@@ -1041,21 +927,21 @@ section "sync --all: skips (with warnings) without failing the run"
 # Stale path: recorded project deleted from disk.
 STALE_ALL="${WORK}/proj-all-stale"
 make_project_repo "${STALE_ALL}" yes "all-stale"
-(cd "${STALE_ALL}" && br orphanage init -q --target origin)
+(cd "${STALE_ALL}" && "${BRO}" init -q --target origin)
 (cd "${STALE_ALL}" && br q "stale issue" >/dev/null)
-(cd "${STALE_ALL}" && br orphanage sync >/dev/null)
+(cd "${STALE_ALL}" && "${BRO}" sync >/dev/null)
 rm -rf "${STALE_ALL}"
 
 # No-target project: synced once (so it's in the index), then target unset.
 NOTGT_ALL="${WORK}/proj-all-no-target"
 make_project_repo "${NOTGT_ALL}" yes "all-no-target"
-(cd "${NOTGT_ALL}" && br orphanage init -q --target origin)
+(cd "${NOTGT_ALL}" && "${BRO}" init -q --target origin)
 (cd "${NOTGT_ALL}" && br q "no-target issue" >/dev/null)
-(cd "${NOTGT_ALL}" && br orphanage sync >/dev/null)
+(cd "${NOTGT_ALL}" && "${BRO}" sync >/dev/null)
 git -C "${NOTGT_ALL}" config --unset beadsOrphanage.target
 
 set +e
-SKIP_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+SKIP_OUT=$(cd "${WORK}" && "${BRO}" sync --all 2>&1)
 SKIP_EXIT=$?
 set -e
 assert_eq "'sync --all' still exits 0 with skips present" "0" "${SKIP_EXIT}"
@@ -1070,14 +956,14 @@ section "sync --all: a real per-project failure yields nonzero exit"
 
 FAIL_ALL="${WORK}/proj-all-fail"
 make_project_repo "${FAIL_ALL}" yes "all-fail"
-(cd "${FAIL_ALL}" && br orphanage init -q --target origin)
+(cd "${FAIL_ALL}" && "${BRO}" init -q --target origin)
 (cd "${FAIL_ALL}" && br q "doomed issue" >/dev/null)
-(cd "${FAIL_ALL}" && br orphanage sync >/dev/null)
+(cd "${FAIL_ALL}" && "${BRO}" sync >/dev/null)
 # Induce a real failure: point the target at a URL that doesn't exist.
 git -C "${FAIL_ALL}" config beadsOrphanage.target "${WORK}/definitely/not/a/repo.git"
 
 set +e
-FAILRUN_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+FAILRUN_OUT=$(cd "${WORK}" && "${BRO}" sync --all 2>&1)
 FAILRUN_EXIT=$?
 set -e
 if [[ "${FAILRUN_EXIT}" -ne 0 ]]; then

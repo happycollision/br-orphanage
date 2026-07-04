@@ -1,16 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# br (wrapper) — Beads Orphanage. Shadows the real `br` binary on PATH.
-# Everything outside the `orphanage` (alias `o`) namespace is exec'd through
-# to the real binary untouched (exit codes, stdin/stdout, --json, TTY
-# detection all pass through transparently). Note this includes bare
-# `br init` and bare `br sync`, which are the real binary's own commands.
+# br-orphanage — standalone companion command for beads_rust (`br`).
 #
-#   br orphanage init [...]     augmented init (+ optional --target <t>)
-#   br orphanage target [...]   show/set this project's sync target
-#   br orphanage sync [--all]   converge with the orphan branch
-#   br orphanage --version      wrapper version
+#   br-orphanage init [...]     augmented init (+ optional --target <t>)
+#   br-orphanage target [...]   show/set this project's sync target
+#   br-orphanage sync [--all]   converge with the orphan branch
+#   br-orphanage --version      command version
 #
 # Issue data syncs to an ORPHAN BRANCH on a per-project target repo,
 # configured in the project's own git config (beadsOrphanage.*). See the
@@ -19,13 +15,6 @@ set -euo pipefail
 VERSION="0.1.0"
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
-# How we were invoked: 'br-orphanage' (direct, escape-hatch mode) vs 'br' (the
-# shadow symlink, passthrough mode). Both names resolve to this same file.
-INVOKED_AS=$(basename "$0")
-# The directory this wrapper lives in — the one a user prepends to PATH to shadow
-# 'br' (see 'shell-intercept'). Derived from SELF so it is correct wherever the
-# wrapper was installed.
-BIN_DIR=$(dirname "${SELF}")
 
 DEFAULT_BRANCH_TEMPLATE='<namespace>/<owner>/<project>'
 DEFAULT_NAMESPACE='orphanage'
@@ -89,7 +78,7 @@ find_real_br() {
 }
 
 # Resolved lazily: commands that shell out to the real binary call require_real_br
-# first. Name-only commands (--version, shell-intercept, usage) never need it, so
+# first. Name-only commands (--version, usage) never need it, so
 # the wrapper stays usable even before the real br is installed.
 REAL_BR=""
 require_real_br() {
@@ -106,17 +95,16 @@ require_real_br() {
 
 usage() {
     cat <<EOF
-Beads Orphanage ${VERSION} — br wrapper syncing issue data to orphan branches
+Beads Orphanage ${VERSION} — sync beads issue data to orphan branches
 
 Usage:
-  br orphanage init [--target <remote-or-url>] [args for real 'br init']
-  br orphanage target [<remote-or-url>] [--branch <template>] [--namespace <ns>]
-  br orphanage sync [--all]
-  br orphanage shell-intercept
-  br orphanage --version
+  br-orphanage init [--target <remote-or-url>] [args for real 'br init']
+  br-orphanage target [<remote-or-url>] [--branch <template>] [--namespace <ns>]
+  br-orphanage sync [--all]
+  br-orphanage --help
+  br-orphanage --version
 
-'br o ...' is an alias for 'br orphanage ...'.
-Everything else is passed through to the real 'br' binary untouched.
+Normal issue commands (ready, list, create, close, ...) stay on the real 'br'.
 EOF
 }
 
@@ -204,7 +192,7 @@ cmd_init() {
         # returning, which would skip our note below — the subshell contains
         # that exit so we can report that init itself already succeeded.
         if ! ( cmd_target "${target}" ); then
-            echo "br-orphanage: note: init succeeded; the sync target was NOT set — fix and re-run: br orphanage target ${target}" >&2
+            echo "br-orphanage: note: init succeeded; the sync target was NOT set — fix and re-run: br-orphanage target ${target}" >&2
             exit 1
         fi
     fi
@@ -269,7 +257,7 @@ resolve_target_url() {
     local t
     if ! t=$(git config --get beadsOrphanage.target 2>/dev/null); then
         echo "br-orphanage: error: no sync target configured for this project" >&2
-        echo "br-orphanage: set one with: br orphanage target <remote-or-url>" >&2
+        echo "br-orphanage: set one with: br-orphanage target <remote-or-url>" >&2
         return 1
     fi
     if git remote get-url "${t}" 2>/dev/null; then
@@ -289,7 +277,7 @@ cmd_target() {
         local stored url branch
         if ! stored=$(git config --get beadsOrphanage.target 2>/dev/null); then
             echo "br-orphanage: error: no sync target configured for this project" >&2
-            echo "br-orphanage: set one with: br orphanage target <remote-or-url>" >&2
+            echo "br-orphanage: set one with: br-orphanage target <remote-or-url>" >&2
             exit 1
         fi
         # shellcheck disable=SC2310 # failure handled by the || exit
@@ -476,7 +464,7 @@ merge_inbound() {
         # guard failure below degrades to keeping the force-flushed bytes:
         # correct union, at worst one extra commit, never data loss.
         #
-        # No-change detection: br omits/zeroes the Created/Updated report
+        # No-change detection: beads omits/zeroes the Created/Updated report
         # lines when nothing changed. If br's wording ever changes so these
         # lines vanish entirely, this check could misread a changed round
         # as unchanged — the id-set equality below still gates adoption,
@@ -542,14 +530,14 @@ merge_inbound() {
 # throwaway config.yaml to the shared branch).
 bootstrap_fail() {
     echo "$1" >&2
-    echo "br-orphanage: bootstrap failed partway; removed the partially-created ${BEADS_DIR}/ — fix the problem above and re-run 'br orphanage sync'" >&2
+    echo "br-orphanage: bootstrap failed partway; removed the partially-created ${BEADS_DIR}/ — fix the problem above and re-run 'br-orphanage sync'" >&2
     rm -rf "${BEADS_DIR}"
     exit 1
 }
 
 # Bootstrap: no .beads/ yet (fresh clone / new machine). Requires the orphan
 # branch to already exist at the target; a brand-new project should run
-# `br orphanage init` instead. Exits (not returns) — only reachable from the
+# `br-orphanage init` instead. Exits (not returns) — only reachable from the
 # single-project cmd_sync path.
 sync_bootstrap() {
     local name url branch lsout tip f extracted=0
@@ -565,7 +553,7 @@ sync_bootstrap() {
     fi
     if [[ -z "${lsout}" ]]; then
         echo "br-orphanage: error: no ${BEADS_DIR}/ here and no '${branch}' branch at the target." >&2
-        echo "br-orphanage: for a brand-new project, run 'br orphanage init' first, then sync." >&2
+        echo "br-orphanage: for a brand-new project, run 'br-orphanage init' first, then sync." >&2
         exit 1
     fi
 
@@ -681,7 +669,7 @@ sync_one() {
         return 1
     fi
     if ! git push --quiet "${url}" "${commit}:refs/heads/${branch}"; then
-        echo "br-orphanage: error: push to ${url} (${branch}) was rejected — another machine may have synced just now; re-run 'br orphanage sync'" >&2
+        echo "br-orphanage: error: push to ${url} (${branch}) was rejected — another machine may have synced just now; re-run 'br-orphanage sync'" >&2
         return 1
     fi
     if ! git update-ref "${PUSHED_REF}" "${commit}"; then
@@ -781,110 +769,19 @@ cmd_sync() {
 
 # --- Dispatch -------------------------------------------------------------------
 
-cmd_orphanage() {
+main() {
     case "${1:-}" in
         init)            shift; cmd_init "$@" ;;
         target)          shift; cmd_target "$@" ;;
         sync)            shift; cmd_sync "$@" ;;
-        shell-intercept) shift; cmd_shell_intercept "$@" ;;
         --version)       echo "br-orphanage ${VERSION}" ;;
-        "")              usage ;;
+        -h | --help | "") usage ;;
         *)
-            echo "br-orphanage: error: unknown subcommand '${1}'" >&2
+            echo "br-orphanage: error: unknown command '${1}'" >&2
             usage >&2
             exit 1
             ;;
     esac
 }
 
-# Print-only guidance for shadowing the real 'br'. Detects the shell and prints
-# the exact line and target file, but NEVER edits anything — the escape-hatch
-# promise is that the user stays in control of their shell config.
-cmd_shell_intercept() {
-    local shell_name line
-    shell_name=$(basename "${SHELL:-}" 2>/dev/null || true)
-    line="export PATH=\"${BIN_DIR}:\$PATH\""
-
-    cat <<EOF
-Shadowing makes the real 'br' route through this wrapper by putting
-
-  ${BIN_DIR}
-
-first on your PATH. After that, 'br orphanage ...' is augmented and every
-other 'br' command passes through to the real binary untouched.
-
-EOF
-    case "${shell_name}" in
-        bash)
-            printf 'Detected bash. Add this line to ~/.bashrc:\n\n  %s\n\n' "${line}"
-            ;;
-        zsh)
-            # Deliberately steer to ~/.zshenv, not the interactive-only rc:
-            # non-interactive zsh (scripts, agents, cron) never sources the
-            # latter, so a PATH line placed there would miss them (t9m).
-            printf 'Detected zsh. Add this line to ~/.zshenv (loaded by every zsh,\n'
-            printf 'including the non-interactive shells that scripts, agents, and cron\n'
-            printf 'use — an interactive-only startup file would miss those):\n\n  %s\n\n' "${line}"
-            ;;
-        "")
-            printf 'Could not detect your shell. Add this line to its startup file:\n\n  %s\n\n' "${line}"
-            ;;
-        *)
-            printf 'Detected %s, which this tool does not configure automatically.\n' "${shell_name}"
-            printf 'Add the equivalent of this to its startup file:\n\n  %s\n\n' "${line}"
-            ;;
-    esac
-
-    cat <<EOF
-Nothing was changed — copy the line above yourself.
-
-Prefer no PATH changes? Skip shadowing and call the wrapper directly:
-  ${BIN_DIR}/br-orphanage sync
-EOF
-}
-
-usage_direct() {
-    cat <<EOF
-Beads Orphanage ${VERSION} — direct command (real 'br' is not shadowed)
-
-Usage:
-  br-orphanage init [--target <remote-or-url>] [args for real 'br init']
-  br-orphanage target [<remote-or-url>] [--branch <template>] [--namespace <ns>]
-  br-orphanage sync [--all]
-  br-orphanage shell-intercept
-  br-orphanage --version
-
-Normal issue commands (list, ready, create, ...) are NOT handled here;
-run the real 'br' for those, or shadow it with 'br-orphanage shell-intercept'.
-EOF
-}
-
-# Direct escape-hatch mode (invoked as 'br-orphanage'): orphanage verbs only,
-# NO passthrough. Anything unrecognized is an error, not a real-br command.
-cmd_orphanage_direct() {
-    case "${1:-}" in
-        init)            shift; cmd_init "$@" ;;
-        target)          shift; cmd_target "$@" ;;
-        sync)            shift; cmd_sync "$@" ;;
-        shell-intercept) shift; cmd_shell_intercept "$@" ;;
-        --version)       echo "br-orphanage ${VERSION}" ;;
-        -h | --help | "") usage_direct ;;
-        *)
-            echo "br-orphanage: error: unknown command '${1}'" >&2
-            usage_direct >&2
-            exit 1
-            ;;
-    esac
-}
-
-case "${INVOKED_AS}" in
-    br-orphanage)
-        cmd_orphanage_direct "$@"
-        ;;
-    *)  # invoked as 'br' (the shadow symlink): augment orphanage, pass the rest through
-        case "${1:-}" in
-            orphanage | o) shift; cmd_orphanage "$@" ;;
-            *)             require_real_br; exec "${REAL_BR}" "$@" ;;
-        esac
-        ;;
-esac
+main "$@"

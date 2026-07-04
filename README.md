@@ -16,12 +16,26 @@ the rest of beads' own command surface.
 curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 ```
 
-This installs the command to `~/.local/share/br-orphanage/bin/br-orphanage`
-(respecting `$XDG_DATA_HOME` if set), `chmod +x`s it, and makes it callable by
-name by symlinking `br-orphanage` into the first writable directory already on
-your `PATH` (e.g. `~/.local/bin`). **It changes no shell startup files.** If no
-writable `PATH` directory is found, it prints the full path to invoke instead.
-Running it again is safe — it just refreshes the files.
+This installs the command directly to `~/.local/bin/br-orphanage`, creating
+`~/.local/bin` when needed, and `chmod +x`s it. It changes no shell startup
+files and never installs anything named `br`. If `~/.local/bin` is not on
+`PATH`, it prints focused PATH guidance and the full path to invoke instead.
+Running it again is safe; it refreshes the executable in place.
+
+To install somewhere else:
+
+```sh
+BR_ORPHANAGE_INSTALL_PATH=/opt/bin/br-orphanage bash install.sh
+```
+
+For a cautious install, download `install.sh`, inspect it, then run it. Release
+downloads verify the `br-orphanage` executable against the release
+`br-orphanage.sha256` file. That protects against corrupt downloads or asset
+mismatches, but not against a compromised release account that replaces both
+files. Once release automation exists, GitHub artifact attestations or
+Sigstore/cosign signatures should provide the stronger provenance signal; for
+GitHub attestations, the expected shape is `gh attestation verify ... -R
+happycollision/br-orphanage`.
 
 Use it directly:
 
@@ -35,7 +49,7 @@ br-orphanage sync
 local command instead of downloading it, so contributors and the test harness
 exercise the local source.
 
-**Update:** To update the wrapper, re-run the one-liner (or `install.sh` in a
+**Update:** To update the command, re-run the one-liner (or `install.sh` in a
 checkout). `br-orphanage --version` prints what you currently have installed.
 
 ## Quick start
