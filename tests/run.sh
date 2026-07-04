@@ -8,7 +8,7 @@ set -euo pipefail
 # beads data, shell rc files, or any real remote.
 #
 #   - install.sh runs in LOCAL DEV MODE into a fake HOME; the INSTALLED
-#     wrapper (never the checkout's bin/br directly) is what tests exercise.
+#     wrapper (never the checkout's bin/br-orphanage directly) is what tests exercise.
 #   - The REAL br binary from the invoker's PATH provides issue-tracker
 #     behavior; no fakes.
 #   - Bare repos under $WORK stand in for every remote (project origins and
@@ -242,8 +242,8 @@ assert_eq "PATH resolves 'br' to the installed wrapper" \
 
 section "Regression: executable bits tracked in git (mode 100755)"
 
-BIN_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s bin/br | awk '{print $1}')
-assert_eq "bin/br tracked as 100755" "100755" "${BIN_MODE}"
+BIN_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s bin/br-orphanage | awk '{print $1}')
+assert_eq "bin/br-orphanage tracked as 100755" "100755" "${BIN_MODE}"
 INSTALL_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s install.sh | awk '{print $1}')
 assert_eq "install.sh tracked as 100755" "100755" "${INSTALL_MODE}"
 
@@ -297,11 +297,11 @@ assert_eq "wrapper exit code matches real binary's for same failing invocation" 
 
 section "br orphanage: version, usage, 'br o' alias, unknown subcommand"
 
-SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br" | head -n 1)
+SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br-orphanage" | head -n 1)
 if [[ -n "${SRC_VERSION}" ]]; then
-    pass "bin/br declares a VERSION (${SRC_VERSION})"
+    pass "bin/br-orphanage declares a VERSION (${SRC_VERSION})"
 else
-    fail "bin/br has no VERSION= line"
+    fail "bin/br-orphanage has no VERSION= line"
 fi
 
 ORPH_VERSION_OUT=$(br orphanage --version)
@@ -1035,7 +1035,7 @@ git -C "${FAIL_ALL}" config beadsOrphanage.target origin
 section "shellcheck (optional, skipped gracefully if unavailable)"
 
 if command -v shellcheck >/dev/null 2>&1; then
-    for f in "${REPO_UNDER_TEST}/bin/br" "${REPO_UNDER_TEST}/install.sh" "${TESTS_DIR}/run.sh"; do
+    for f in "${REPO_UNDER_TEST}/bin/br-orphanage" "${REPO_UNDER_TEST}/install.sh" "${TESTS_DIR}/run.sh"; do
         if shellcheck "${f}"; then
             pass "shellcheck clean: ${f#"${REPO_UNDER_TEST}"/}"
         else

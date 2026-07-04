@@ -6,7 +6,7 @@ set -euo pipefail
 # Normal install (no clone needed):
 #   curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 #
-# Local dev mode: when run from a checkout of this repo (bin/br sits next to
+# Local dev mode: when run from a checkout of this repo (bin/br-orphanage sits next to
 # this script), the local wrapper is copied instead of downloaded, so
 # contributors and the test harness exercise the local source.
 #
@@ -36,12 +36,12 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" ]]; then
     script_dir=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 fi
 
-if [[ -n "${script_dir}" && -f "${script_dir}/bin/br" ]]; then
-    cp "${script_dir}/bin/br" "${WRAPPER}"
-    echo "installed from local checkout: ${script_dir}/bin/br"
+if [[ -n "${script_dir}" && -f "${script_dir}/bin/br-orphanage" ]]; then
+    cp "${script_dir}/bin/br-orphanage" "${WRAPPER}"
+    echo "installed from local checkout: ${script_dir}/bin/br-orphanage"
 else
-    curl -fsSL "${RAW_BASE}/bin/br" -o "${WRAPPER}"
-    echo "downloaded wrapper from ${RAW_BASE}/bin/br"
+    curl -fsSL "${RAW_BASE}/bin/br-orphanage" -o "${WRAPPER}"
+    echo "downloaded wrapper from ${RAW_BASE}/bin/br-orphanage"
 fi
 chmod +x "${WRAPPER}"
 
