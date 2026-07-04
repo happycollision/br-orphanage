@@ -67,17 +67,31 @@ git push                # Push to remote
 
 ## This project
 
-...is a wrapper for `br`. Everything above is true, but this project also adds a subcommand called `orphanage` (or `o` for short) to the `br` utility.
+...is a standalone companion command for `br`. Everything above is true: normal
+issue work uses the real `br` (`br ready`, `br list`, `br create`, `br close`,
+and so on).
 
-The wrapper installs as a standalone `br-orphanage` command that handles the `orphanage` verbs directly (`br-orphanage sync`, `init`, `target`, `shell-intercept`, `--version`) — with **no** passthrough, so normal issue work still uses the real `br`. Installing edits **no** shell startup files. Making the real `br` route through the wrapper (so `br orphanage …` works and everything else passes through) is opt-in via `br-orphanage shell-intercept`, which only *prints* the `PATH` line to add — it never edits your config.
+This project also installs a `br-orphanage` command for orphan-branch setup and
+publication:
 
-`br orphanage --help` (shadowed) or `br-orphanage --help` (direct) for details.
+```bash
+br-orphanage init
+br-orphanage target <remote-or-url>
+br-orphanage sync
+br-orphanage --help
+br-orphanage --version
+```
 
 This project's own issues are tracked on an orphan branch using this tool.
 
-`br orphanage sync` runs `br sync --flush-only` under the hood, then manages actually syncing to origin. (So yes, these commands do in fact run some git commands, contrary to the docs for `br` proper.)
+`br-orphanage sync` runs `br sync --flush-only` under the hood, then manages
+actually syncing to origin. (So yes, these commands do in fact run some git
+commands, contrary to the docs for `br` proper.)
 
-In a nutshell, the point of this project is to give users a nice, repeatable way to use beads on repos where they don't want to leave a trace of the fact that they use beads at all. (You can, after all, target a completely separate repo for your beads sync, unlike this one.)
+In a nutshell, the point of this project is to give users a nice, repeatable way
+to use beads on repos where they don't want to leave a trace of the fact that
+they use beads at all. (You can, after all, target a completely separate repo
+for your beads sync, unlike this one.)
 
 ## Planning (designs and implementation plans)
 
@@ -94,12 +108,14 @@ orphan branch, and `master` stays pristine. (Bonus: it dogfoods the tool.)
 - Beads descriptions are plain-text JSONL (not rendered markdown), and the issue
   is the *only* record — so inline the full detail: files touched, key code, exact
   test assertions.
-- After creating them, run `br o sync` and verify the orphan branch received them
-  (`git show refs/orphanage/pushed:issues.jsonl | grep <id>`). Do **not** commit
-  the design/plan markdown to `master`.
+- After creating them, run `br-orphanage sync` and verify the orphan branch
+  received them (`git show refs/orphanage/pushed:issues.jsonl | grep <id>`). Do
+  **not** commit the design/plan markdown to `master`.
 
 ## Observation
 
-Since we develop this `br-orphanage` tool, it is important that we use it and always observe its behavior. Whenever you use the tool, check that it actually did what you expected it to do. For example, if you run `br o sync`, please check that the orphan branch you expect gets the changes you expect. If anything seems off, open an issue using beads.
+Since we develop this `br-orphanage` tool, it is important that we use it and always observe its behavior. Whenever you use the tool, check that it actually did what you expected it to do. For example, if you run `br-orphanage sync`, please check that the orphan branch you expect gets the changes you expect. If anything seems off, open an issue using beads.
 
-Any time you use beads, please then run `br o sync`. We always want the remote orphan branch to get all our issues.
+Any time you use beads, please then run `br-orphanage sync` and verify
+`refs/orphanage/pushed:issues.jsonl` contains the expected issue changes. We
+always want the remote orphan branch to get all our issues.

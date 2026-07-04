@@ -1,15 +1,14 @@
 # Beads Orphanage (br-orphanage)
 
-A [`br`](https://github.com/Dicklesworthstone/beads_rust) wrapper that syncs
-each project's beads issue data to an **orphan branch** on a git repo you
-choose, per project. Issue data never has to live in — or leak from — a
-repo you didn't pick for it. The name: orphan branches live in the
-orphanage.
+A standalone companion command for
+[`br`](https://github.com/Dicklesworthstone/beads_rust) that syncs each
+project's beads issue data to an **orphan branch** on a git repo you choose,
+per project. Issue data never has to live in - or leak from - a repo you
+didn't pick for it. The name: orphan branches live in the orphanage.
 
-Installed, `br-orphanage` is a standalone command for the `orphanage`
-namespace (alias `o`). Optionally, you can **shadow** the real `br` on `PATH`
-so that `br orphanage …` works and everything outside the `orphanage` namespace
-passes straight through to the real binary, untouched.
+`br-orphanage` handles orphan-branch setup and publication. Normal issue work
+still uses the real `br`: `br ready`, `br list`, `br create`, `br close`, and
+the rest of beads' own command surface.
 
 ## Install
 
@@ -17,59 +16,23 @@ passes straight through to the real binary, untouched.
 curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 ```
 
-This installs the wrapper to `~/.local/share/br-orphanage/bin/br-orphanage`
+This installs the command to `~/.local/share/br-orphanage/bin/br-orphanage`
 (respecting `$XDG_DATA_HOME` if set), `chmod +x`s it, and makes it callable by
 name by symlinking `br-orphanage` into the first writable directory already on
 your `PATH` (e.g. `~/.local/bin`). **It changes no shell startup files.** If no
 writable `PATH` directory is found, it prints the full path to invoke instead.
 Running it again is safe — it just refreshes the files.
 
-Now use it directly:
+Use it directly:
 
 ```sh
-br-orphanage sync        # also: init, target, shell-intercept, --version
-```
-
-The direct `br-orphanage` command handles only the `orphanage` verbs — run your
-real `br` for normal issue work (`br list`, `br ready`, …).
-
-### Shadowing `br` (optional)
-
-Prefer to type `br orphanage …` and have every other `br` command pass straight
-through to the real binary? Shadow `br` so it routes through this wrapper. That
-takes one line in your shell config, so it's opt-in:
-
-```sh
-br-orphanage shell-intercept
-```
-
-This **prints** exactly what to add and where — it never edits a file:
-
-- **zsh** → `~/.zshenv`. zsh sources this for *every* invocation, so the wrapper
-  wins in interactive **and** non-interactive shells — agent tool calls,
-  scripts, `cron`, CI. (An interactive-only startup file would leave the real
-  `br` winning everywhere but a prompt.)
-- **bash** → `~/.bashrc`.
-- other shells (fish, nushell, …) → it names your shell and prints the generic
-  `PATH` line to add.
-
-The line always prepends `~/.local/share/br-orphanage/bin` to `PATH`. Open a new
-shell (or `source` the file), then check the wrapper is winning:
-
-```sh
-command -v br      # should print a path under ~/.local/share/br-orphanage/bin
-```
-
-**Escape hatch:** you never have to shadow anything. `br-orphanage sync` (and the
-other verbs) work forever without touching your shell config. You can also
-invoke the wrapper by its full path:
-
-```sh
-~/.local/share/br-orphanage/bin/br-orphanage sync
+br-orphanage init
+br-orphanage target origin
+br-orphanage sync
 ```
 
 **Local dev mode:** running `install.sh` from a checkout of this repo copies the
-local wrapper instead of downloading it, so contributors and the test harness
+local command instead of downloading it, so contributors and the test harness
 exercise the local source.
 
 **Update:** To update the wrapper, re-run the one-liner (or `install.sh` in a
@@ -89,10 +52,13 @@ br-orphanage sync
 
 # Every known project on this machine, in one run:
 br-orphanage sync --all
-```
 
-After optional shadowing, the same commands are available as `br orphanage ...`;
-`br o` is a shorthand alias for `br orphanage`.
+# Normal issue work stays on the real br:
+br ready
+br list --status=open
+br create --title="..." --type=task --priority=2
+br close <id> --reason="Completed"
+```
 
 ## Commands
 
@@ -103,16 +69,8 @@ After optional shadowing, the same commands are available as `br orphanage ...`;
 | `br-orphanage target <remote-or-url> [--branch <template>] [--namespace <ns>]` | Store the target (and optional overrides) in the project's git config. A bare word naming an existing remote is stored as a remote name; anything else is stored as a literal URL. A named remote must exist at set time. |
 | `br-orphanage sync` | Converge this project with its orphan branch. Records the project's absolute path in the machine-local index. |
 | `br-orphanage sync --all` | Iterate the machine-local index; for each entry, `cd` to the recorded path and sync. Stale/missing paths, non-repos, missing `.beads/`, and unconfigured targets are skipped with a warning rather than failing the run. Exits 0 iff no known project's sync actually failed. |
+| `br-orphanage --help` | Print usage. |
 | `br-orphanage --version` | Print the wrapper version. Bare `br-orphanage` prints usage (which includes the version). |
-
-With optional shadowing enabled, replace `br-orphanage ...` with
-`br orphanage ...` (or `br o ...`) for the same commands.
-
-**Passthrough guarantee:** everything else — including bare `br init` and
-bare `br sync`, which are the real binary's own commands — reaches the real
-`br` untouched: exit codes, stdin/stdout, `--json`, TTY detection, all of
-it. If a future real `br` ever grows its own `o` or `orphanage` subcommand,
-this wrapper shadows it; that trade-off is accepted for now.
 
 ## Configuration
 
