@@ -77,6 +77,25 @@ This project's own issues are tracked on an orphan branch using this tool.
 
 In a nutshell, the point of this project is to give users a nice, repeatable way to use beads on repos where they don't want to leave a trace of the fact that they use beads at all. (You can, after all, target a completely separate repo for your beads sync, unlike this one.)
 
+## Planning (designs and implementation plans)
+
+Track designs and implementation plans **in beads**, not as committed markdown in
+`docs/plans/` on `master`. The whole point of this tool is tracking project work
+without leaving a trace on the main repo — so planning artifacts belong on the
+orphan branch, and `master` stays pristine. (Bonus: it dogfoods the tool.)
+
+- Model a design as an `epic`, and each plan step as a child `task`/`feature` via
+  `br create --parent <epic>`.
+- Chain the steps with `blocks` deps (`br dep add <step> <prev-step>`) so
+  `br ready` surfaces one step at a time, in order. Split a step into subagent
+  sub-tasks as further children when needed.
+- Beads descriptions are plain-text JSONL (not rendered markdown), and the issue
+  is the *only* record — so inline the full detail: files touched, key code, exact
+  test assertions.
+- After creating them, run `br o sync` and verify the orphan branch received them
+  (`git show refs/orphanage/pushed:issues.jsonl | grep <id>`). Do **not** commit
+  the design/plan markdown to `master`.
+
 ## Observation
 
 Since we develop this `br-orphanage` tool, it is important that we use it and always observe its behavior. Whenever you use the tool, check that it actually did what you expected it to do. For example, if you run `br o sync`, please check that the orphan branch you expect gets the changes you expect. If anything seems off, open an issue using beads.
