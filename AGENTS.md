@@ -69,7 +69,9 @@ git push                # Push to remote
 
 ...is a wrapper for `br`. Everything above is true, but this project also adds a subcommand called `orphanage` (or `o` for short) to the `br` utility.
 
-`br orphanage --help` for details.
+The wrapper installs as a standalone `br-orphanage` command that handles the `orphanage` verbs directly (`br-orphanage sync`, `init`, `target`, `shell-intercept`, `--version`) — with **no** passthrough, so normal issue work still uses the real `br`. Installing edits **no** shell startup files. Making the real `br` route through the wrapper (so `br orphanage …` works and everything else passes through) is opt-in via `br-orphanage shell-intercept`, which only *prints* the `PATH` line to add — it never edits your config.
+
+`br orphanage --help` (shadowed) or `br-orphanage --help` (direct) for details.
 
 This project's own issues are tracked on an orphan branch using this tool.
 

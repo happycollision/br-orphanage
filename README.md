@@ -6,9 +6,10 @@ choose, per project. Issue data never has to live in — or leak from — a
 repo you didn't pick for it. The name: orphan branches live in the
 orphanage.
 
-`br-orphanage` shadows the real `br` on `PATH`. Everything outside the
-`orphanage` namespace (alias `o`) is passed straight through to the real
-binary, untouched.
+Installed, `br-orphanage` is a standalone command for the `orphanage`
+namespace (alias `o`). Optionally, you can **shadow** the real `br` on `PATH`
+so that `br orphanage …` works and everything outside the `orphanage` namespace
+passes straight through to the real binary, untouched.
 
 ## Install
 
@@ -16,45 +17,63 @@ binary, untouched.
 curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
 ```
 
-This downloads the wrapper to `~/.local/share/br-orphanage/bin/br`
-(respecting `$XDG_DATA_HOME` if set) and `chmod +x`s it, then adds that
-directory to the front of `PATH` via a line marked `# br-orphanage` — so the
-wrapper shadows the real `br`. Running it again is safe: it detects the
-existing marked line and doesn't duplicate it.
+This installs the wrapper to `~/.local/share/br-orphanage/bin/br-orphanage`
+(respecting `$XDG_DATA_HOME` if set), `chmod +x`s it, and makes it callable by
+name by symlinking `br-orphanage` into the first writable directory already on
+your `PATH` (e.g. `~/.local/bin`). **It changes no shell startup files.** If no
+writable `PATH` directory is found, it prints the full path to invoke instead.
+Running it again is safe — it just refreshes the files.
 
-### Shell PATH setup
-
-The installer edits the shell startup files it knows how to configure:
-
-- **zsh** → `~/.zshenv` (created if needed). zsh sources this for *every*
-  invocation, so the wrapper wins in interactive **and** non-interactive
-  shells — agent tool calls, scripts, `cron`, CI. (Editing only `~/.zshrc`,
-  as older versions did, left the real `br` shadowing the wrapper everywhere
-  but an interactive prompt.)
-- **bash** → `~/.bashrc` (interactive shells).
-
-Other shells (fish, nushell, …) and non-interactive **non-login bash** have no
-startup file that loads for every invocation, so the installer can't configure
-them automatically. In those cases it prints the exact `PATH` line to add to
-your shell's config, and names your shell if it's one it doesn't handle.
-
-**Fallback that always works** — no `PATH` changes at all — is to invoke the
-wrapper by its full path:
+Now use it directly:
 
 ```sh
-~/.local/share/br-orphanage/bin/br orphanage --version
+br-orphanage sync        # also: init, target, shell-intercept, --version
 ```
 
-Verify the wrapper is winning with `command -v br` — it should print the path
-under `~/.local/share/br-orphanage/bin`, not your real `br`.
+The direct `br-orphanage` command handles only the `orphanage` verbs — run your
+real `br` for normal issue work (`br list`, `br ready`, …).
+
+### Shadowing `br` (optional)
+
+Prefer to type `br orphanage …` and have every other `br` command pass straight
+through to the real binary? Shadow `br` so it routes through this wrapper. That
+takes one line in your shell config, so it's opt-in:
+
+```sh
+br-orphanage shell-intercept
+```
+
+This **prints** exactly what to add and where — it never edits a file:
+
+- **zsh** → `~/.zshenv`. zsh sources this for *every* invocation, so the wrapper
+  wins in interactive **and** non-interactive shells — agent tool calls,
+  scripts, `cron`, CI. (An interactive-only startup file would leave the real
+  `br` winning everywhere but a prompt.)
+- **bash** → `~/.bashrc`.
+- other shells (fish, nushell, …) → it names your shell and prints the generic
+  `PATH` line to add.
+
+The line always prepends `~/.local/share/br-orphanage/bin` to `PATH`. Open a new
+shell (or `source` the file), then check the wrapper is winning:
+
+```sh
+command -v br      # should print a path under ~/.local/share/br-orphanage/bin
+```
+
+**Escape hatch:** you never have to shadow anything. `br-orphanage sync` (and the
+other verbs) work forever without touching your shell config. You can also
+invoke the wrapper by its full path:
+
+```sh
+~/.local/share/br-orphanage/bin/br-orphanage sync
+```
 
 **Local dev mode:** running `install.sh` from a checkout of this repo copies the
 local wrapper instead of downloading it, so contributors and the test harness
 exercise the local source.
 
 **Update:** To update the wrapper, re-run the one-liner (or `install.sh` in a
-checkout). `br orphanage --version` prints what you currently have
-installed.
+checkout). `br-orphanage --version` prints what you currently have installed.
 
 ## Quick start
 
@@ -254,7 +273,7 @@ anywhere:
 tests/run.sh
 ```
 
-It runs `shellcheck` on `bin/br`, `install.sh`, and itself when `shellcheck`
+It runs `shellcheck` on `bin/br-orphanage`, `install.sh`, and itself when `shellcheck`
 is available on `PATH`, skipping gracefully otherwise.
 
 ## Further reading
