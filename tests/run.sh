@@ -188,82 +188,62 @@ assert_eq "wrapper-first PATH resolves to the genuine br, not the wrapper" \
 section "Setup: install.sh (local dev mode) into fake HOME"
 
 INSTALL_DIR="${XDG_DATA_HOME}/br-orphanage"
-INSTALLED_BR="${INSTALL_DIR}/bin/br"
+CANON="${INSTALL_DIR}/bin/br-orphanage"   # canonical wrapper file
+SHADOW="${INSTALL_DIR}/bin/br"            # inert shadow symlink
+
+# A writable dir already on PATH for install to drop the br-orphanage symlink.
+LOCALBIN="${WORK}/localbin"
+mkdir -p "${LOCALBIN}"
+export PATH="${LOCALBIN}:${PATH}"
 
 touch "${FAKE_HOME}/.bashrc"
+BASHRC_BEFORE=$(cat "${FAKE_HOME}/.bashrc")
 
 INSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
 assert_contains "installer reports local-checkout install" "${INSTALL_OUT}" "installed from local checkout"
-assert_file_exists "wrapper installed at data dir" "${INSTALLED_BR}"
-assert_true "installed wrapper is executable" test -x "${INSTALLED_BR}"
+assert_file_exists "canonical wrapper installed" "${CANON}"
+assert_true "canonical wrapper is executable" test -x "${CANON}"
+assert_true "shadow 'br' is a symlink" test -L "${SHADOW}"
+assert_eq "shadow 'br' points at the canonical wrapper" \
+    "$(readlink -f "${CANON}")" "$(readlink -f "${SHADOW}")"
+assert_true "br-orphanage symlinked into a writable PATH dir" test -L "${LOCALBIN}/br-orphanage"
+assert_eq "br-orphanage resolves by name to the canonical wrapper" \
+    "$(readlink -f "${CANON}")" "$(readlink -f "$(command -v br-orphanage)")"
 assert_contains "installer reports the installed version" "${INSTALL_OUT}" "installed version"
-assert_true "rc file got the marked PATH line" grep -qF "# br-orphanage" "${FAKE_HOME}/.bashrc"
-assert_contains "installer always documents the full-path fallback" "${INSTALL_OUT}" "by full path"
-assert_contains "fallback names the wrapper's full path" "${INSTALL_OUT}" "${INSTALLED_BR}"
+assert_contains "installer points user at shell-intercept" "${INSTALL_OUT}" "shell-intercept"
 
-REINSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
-assert_contains "re-install does not duplicate the rc line" "${REINSTALL_OUT}" "already configured"
-RC_LINE_COUNT=$(grep -cF "# br-orphanage" "${FAKE_HOME}/.bashrc" || true)
-assert_eq "exactly one marked PATH line after two installs" "1" "${RC_LINE_COUNT}"
+# The escape-hatch promise: install edits NO shell startup file.
+assert_eq "install left ~/.bashrc untouched" "${BASHRC_BEFORE}" "$(cat "${FAKE_HOME}/.bashrc")"
+assert_file_absent "install wrote no ~/.zshenv" "${FAKE_HOME}/.zshenv"
 
-section "install.sh: non-interactive zsh resolves 'br' to the wrapper (PATH shadowing)"
+section "install.sh: no writable PATH dir falls back to full-path guidance"
 
-# A typical zsh user has ~/.zshrc. The installer must guarantee that even a
-# NON-interactive zsh (agent tool calls, scripts, cron, CI) resolves 'br' to
-# the wrapper. Non-interactive zsh sources ~/.zshenv but NOT ~/.zshrc, so a
-# PATH line placed only in ~/.zshrc leaves the real binary shadowing us there.
-if command -v zsh >/dev/null 2>&1; then
-    touch "${FAKE_HOME}/.zshrc"
-    "${REPO_UNDER_TEST}/install.sh" >/dev/null
-
-    # Clean PATH: real br present, wrapper dir absent — only the installer's
-    # shell config can put the wrapper ahead of the real binary. `env -i` keeps
-    # the harness's own (wrapper-prepended) PATH and any ZDOTDIR from leaking in.
-    NONINT_BR=$(env -i HOME="${FAKE_HOME}" PATH="${REAL_BR_DIR}:/usr/bin:/bin" \
-        zsh -c 'command -v br' 2>/dev/null || true)
-    assert_eq "non-interactive zsh resolves br to the installed wrapper" \
-        "$(readlink -f "${INSTALLED_BR}")" "$(readlink -f "${NONINT_BR}" 2>/dev/null)"
-
-    # Interactive zsh must keep working too (regression guard).
-    INT_BR=$(env -i HOME="${FAKE_HOME}" PATH="${REAL_BR_DIR}:/usr/bin:/bin" \
-        zsh -i -c 'command -v br' 2>/dev/null || true)
-    assert_eq "interactive zsh still resolves br to the installed wrapper" \
-        "$(readlink -f "${INSTALLED_BR}")" "$(readlink -f "${INT_BR}" 2>/dev/null)"
-else
-    echo "  zsh not installed; skipping non-interactive zsh PATH check."
-fi
-
-section "install.sh: unrecognized shell gets manual PATH guidance"
-
-# A shell we don't auto-configure (fish, nushell, ...) with no bash/zsh rc files
-# to piggyback on: nothing is written, so the installer must instead PRINT the
-# manual PATH line, name the shell, and offer the full-path fallback.
-FISH_HOME="${WORK}/home-fish"
-mkdir -p "${FISH_HOME}"
-FISH_BIN="${FISH_HOME}/.local/share/br-orphanage/bin/br"
-FISH_OUT=$(env HOME="${FISH_HOME}" XDG_DATA_HOME="${FISH_HOME}/.local/share" \
-    SHELL=/opt/fish "${REPO_UNDER_TEST}/install.sh")
-assert_contains "guidance names the unconfigured shell" "${FISH_OUT}" "fish"
-assert_contains "guidance gives the manual PATH export line" "${FISH_OUT}" \
-    "export PATH=\"${FISH_HOME}/.local/share/br-orphanage/bin"
-assert_contains "guidance offers the full-path fallback" "${FISH_OUT}" "by full path"
-assert_contains "fallback names the wrapper's full path" "${FISH_OUT}" "${FISH_BIN}"
-assert_file_absent "unrecognized shell: no ~/.zshenv written" "${FISH_HOME}/.zshenv"
+# With no writable directory on PATH, install cannot make the command callable
+# by name, so it must PRINT the full path and still lay down the files.
+FB_HOME="${WORK}/fallback-home"
+mkdir -p "${FB_HOME}"
+FB_OUT=$(env HOME="${FB_HOME}" XDG_DATA_HOME="${FB_HOME}/.local/share" \
+    PATH="/usr/bin:/bin" "${REPO_UNDER_TEST}/install.sh")
+assert_contains "fallback names the full path to br-orphanage" "${FB_OUT}" \
+    "${FB_HOME}/.local/share/br-orphanage/bin/br-orphanage"
+assert_file_exists "fallback still installs the canonical wrapper" \
+    "${FB_HOME}/.local/share/br-orphanage/bin/br-orphanage"
 
 # Upgrade reporting: fake an older installed version, re-run installer.
-if grep -q '^VERSION=' "${INSTALLED_BR}"; then
-    sed -i.bak 's/^VERSION=".*"$/VERSION="0.0.0"/' "${INSTALLED_BR}" && rm -f "${INSTALLED_BR}.bak"
+if grep -q '^VERSION=' "${CANON}"; then
+    sed -i.bak 's/^VERSION=".*"$/VERSION="0.0.0"/' "${CANON}" && rm -f "${CANON}.bak"
 else
-    printf 'VERSION="0.0.0"\n' >> "${INSTALLED_BR}"
+    printf 'VERSION="0.0.0"\n' >> "${CANON}"
 fi
 UPGRADE_OUT=$("${REPO_UNDER_TEST}/install.sh")
 assert_contains "upgrade reports old -> new version" "${UPGRADE_OUT}" "updated 0.0.0 ->"
 
-# The wrapper under test comes FIRST on PATH; real binary's dir next so the
-# wrapper's own PATH scan (skipping itself) finds the real one.
+# Shadow mode for the rest of the suite: prepend BIN_DIR so 'br' resolves to the
+# shadow symlink; real binary's dir next so the wrapper's own PATH scan (skipping
+# itself) finds the real one.
 export PATH="${INSTALL_DIR}/bin:${REAL_BR_DIR}:${PATH}"
 assert_eq "PATH resolves 'br' to the installed wrapper" \
-    "$(readlink -f "${INSTALLED_BR}")" "$(readlink -f "$(command -v br)")"
+    "$(readlink -f "${CANON}")" "$(readlink -f "$(command -v br)")"
 
 # --- Regression: executable bits tracked in git ----------------------------------
 

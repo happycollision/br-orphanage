@@ -15,9 +15,8 @@ set -euo pipefail
 RAW_BASE="https://raw.githubusercontent.com/happycollision/br-orphanage/master"
 DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/br-orphanage"
 BIN_DIR="${DATA_DIR}/bin"
-WRAPPER="${BIN_DIR}/br"
-MARKER="# br-orphanage"
-LINE="export PATH=\"${BIN_DIR}:\$PATH\"  ${MARKER}"
+WRAPPER="${BIN_DIR}/br-orphanage"
+SHADOW="${BIN_DIR}/br"
 
 wrapper_version() {
     sed -n 's/^VERSION="\(.*\)"$/\1/p' "$1" | head -n 1
@@ -52,6 +51,35 @@ else
     echo "br-orphanage: installed version ${new_version}"
 fi
 
+# The inert shadow: a 'br' symlink beside the canonical wrapper. Harmless until
+# the user prepends BIN_DIR to PATH — see 'br-orphanage shell-intercept'. The
+# target is relative so the link survives the data dir being moved.
+ln -sf "br-orphanage" "${SHADOW}"
+
+# Make 'br-orphanage' callable by name with no shell edit: symlink it into the
+# first writable directory already on PATH (skipping our own BIN_DIR).
+find_writable_path_dir() {
+    local dir
+    local IFS=':'
+    # shellcheck disable=SC2250,SC2312 # deliberately unbraced/unquoted: word-splits PATH on IFS=':'
+    for dir in $PATH; do
+        [[ -n "${dir}" ]] || continue
+        [[ "${dir}" == "${BIN_DIR}" ]] && continue
+        [[ -d "${dir}" && -w "${dir}" ]] || continue
+        printf '%s\n' "${dir}"
+        return 0
+    done
+    return 1
+}
+
+callable_by_name=0
+# shellcheck disable=SC2310 # failure handled by the if
+if target_dir=$(find_writable_path_dir); then
+    ln -sf "${WRAPPER}" "${target_dir}/br-orphanage"
+    echo "linked: ${target_dir}/br-orphanage -> ${WRAPPER}"
+    callable_by_name=1
+fi
+
 # Warn (don't fail) if the real br isn't installed yet.
 found_real=0
 IFS=':' read -ra dirs <<< "${PATH}"
@@ -67,66 +95,14 @@ if [[ "${found_real}" -eq 0 ]]; then
     echo "         Install it: https://github.com/Dicklesworthstone/beads_rust"
 fi
 
-# Add the PATH line to the user's shell startup files.
-#
-#   bash -> ~/.bashrc  (interactive shells)
-#   zsh  -> ~/.zshenv  (EVERY zsh: interactive, non-interactive, login, script)
-#
-# zsh only sources ~/.zshrc for interactive shells. Non-interactive zsh — agent
-# tool calls, scripts, cron, CI — sources ~/.zshenv instead, so the PATH line
-# must live there or the real 'br' binary shadows the wrapper everywhere but an
-# interactive prompt (br-orphanage-t9m).
-updated=0
-
-append_marked_line() {
-    local rc="$1"
-    if grep -qF "${MARKER}" "${rc}" 2>/dev/null; then
-        echo "already configured: ${rc}"
-    else
-        printf '\n%s\n' "${LINE}" >> "${rc}"
-        echo "updated: ${rc}"
-        updated=1
-    fi
-}
-
-# bash: only touch an rc that already exists.
-if [[ -f "${HOME}/.bashrc" ]]; then
-    append_marked_line "${HOME}/.bashrc"
-fi
-
-# zsh: ensure ~/.zshenv carries the line whenever the user uses zsh — detected
-# by an existing ~/.zshenv or ~/.zshrc, or a zsh login shell. Create ~/.zshenv
-# if needed; it is the only file guaranteed to load for non-interactive zsh.
-if [[ -f "${HOME}/.zshenv" || -f "${HOME}/.zshrc" || "${SHELL:-}" == *zsh ]]; then
-    append_marked_line "${HOME}/.zshenv"
-fi
-
-# Setup guidance. bash's interactive rc and zsh's ~/.zshenv are the only files
-# this installer edits; other shells (fish, nushell, ...) and non-interactive
-# bash have no startup file we can safely configure for every invocation. So we
-# always print the manual PATH line and a full-path fallback that needs no PATH
-# edit at all, and we name the shell when it is not one we auto-configure.
-user_shell=$(basename "${SHELL:-}" 2>/dev/null || true)
-
 echo
-if [[ "${updated}" -eq 1 ]]; then
-    echo "Added the PATH line to your shell startup file(s); open a new shell (or 'source' them)."
+if [[ "${callable_by_name}" -eq 1 ]]; then
+    echo "Installed. 'br-orphanage' is callable now (no shell changes were made)."
 else
-    echo "No shell startup file was auto-configured."
+    echo "Installed. No writable PATH directory was found, so call it by full path:"
+    echo "  ${WRAPPER}"
 fi
-case "${user_shell}" in
-    bash | zsh | "") ;;
-    *) echo "Your shell (${user_shell}) is not one this installer configures automatically." ;;
-esac
-
 echo
-echo "Make sure this directory comes first on PATH — add to your shell's config if needed:"
-echo "  ${BIN_DIR}"
-echo "  # bash/zsh:  export PATH=\"${BIN_DIR}:\$PATH\""
-echo
-echo "Verify:"
-echo "  command -v br              # should print ${WRAPPER}"
-echo "  br orphanage --version     # wrapper version"
-echo
-echo "No PATH changes needed if you invoke the wrapper by full path:"
-echo "  ${WRAPPER} orphanage --version"
+echo "To make the real 'br' route through this wrapper (optional), run:"
+echo "  br-orphanage shell-intercept"
+echo "It prints exactly what to add to your shell config and changes nothing on its own."
