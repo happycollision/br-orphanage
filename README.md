@@ -18,10 +18,35 @@ curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/
 
 This downloads the wrapper to `~/.local/share/br-orphanage/bin/br`
 (respecting `$XDG_DATA_HOME` if set) and `chmod +x`s it, then adds that
-directory to `PATH` via a line marked `# br-orphanage` in `~/.bashrc` and
-`~/.zshrc` (whichever exist) — so the wrapper shadows the real `br`. Running
-it again is safe: it detects the existing marked line and doesn't duplicate
-it.
+directory to the front of `PATH` via a line marked `# br-orphanage` — so the
+wrapper shadows the real `br`. Running it again is safe: it detects the
+existing marked line and doesn't duplicate it.
+
+### Shell PATH setup
+
+The installer edits the shell startup files it knows how to configure:
+
+- **zsh** → `~/.zshenv` (created if needed). zsh sources this for *every*
+  invocation, so the wrapper wins in interactive **and** non-interactive
+  shells — agent tool calls, scripts, `cron`, CI. (Editing only `~/.zshrc`,
+  as older versions did, left the real `br` shadowing the wrapper everywhere
+  but an interactive prompt.)
+- **bash** → `~/.bashrc` (interactive shells).
+
+Other shells (fish, nushell, …) and non-interactive **non-login bash** have no
+startup file that loads for every invocation, so the installer can't configure
+them automatically. In those cases it prints the exact `PATH` line to add to
+your shell's config, and names your shell if it's one it doesn't handle.
+
+**Fallback that always works** — no `PATH` changes at all — is to invoke the
+wrapper by its full path:
+
+```sh
+~/.local/share/br-orphanage/bin/br orphanage --version
+```
+
+Verify the wrapper is winning with `command -v br` — it should print the path
+under `~/.local/share/br-orphanage/bin`, not your real `br`.
 
 **Local dev mode:** running `install.sh` from a checkout of this repo copies the
 local wrapper instead of downloading it, so contributors and the test harness

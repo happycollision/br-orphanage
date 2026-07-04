@@ -171,11 +171,57 @@ assert_file_exists "wrapper installed at data dir" "${INSTALLED_BR}"
 assert_true "installed wrapper is executable" test -x "${INSTALLED_BR}"
 assert_contains "installer reports the installed version" "${INSTALL_OUT}" "installed version"
 assert_true "rc file got the marked PATH line" grep -qF "# br-orphanage" "${FAKE_HOME}/.bashrc"
+assert_contains "installer always documents the full-path fallback" "${INSTALL_OUT}" "by full path"
+assert_contains "fallback names the wrapper's full path" "${INSTALL_OUT}" "${INSTALLED_BR}"
 
 REINSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
 assert_contains "re-install does not duplicate the rc line" "${REINSTALL_OUT}" "already configured"
 RC_LINE_COUNT=$(grep -cF "# br-orphanage" "${FAKE_HOME}/.bashrc" || true)
 assert_eq "exactly one marked PATH line after two installs" "1" "${RC_LINE_COUNT}"
+
+section "install.sh: non-interactive zsh resolves 'br' to the wrapper (PATH shadowing)"
+
+# A typical zsh user has ~/.zshrc. The installer must guarantee that even a
+# NON-interactive zsh (agent tool calls, scripts, cron, CI) resolves 'br' to
+# the wrapper. Non-interactive zsh sources ~/.zshenv but NOT ~/.zshrc, so a
+# PATH line placed only in ~/.zshrc leaves the real binary shadowing us there.
+if command -v zsh >/dev/null 2>&1; then
+    touch "${FAKE_HOME}/.zshrc"
+    "${REPO_UNDER_TEST}/install.sh" >/dev/null
+
+    # Clean PATH: real br present, wrapper dir absent — only the installer's
+    # shell config can put the wrapper ahead of the real binary. `env -i` keeps
+    # the harness's own (wrapper-prepended) PATH and any ZDOTDIR from leaking in.
+    NONINT_BR=$(env -i HOME="${FAKE_HOME}" PATH="${REAL_BR_DIR}:/usr/bin:/bin" \
+        zsh -c 'command -v br' 2>/dev/null || true)
+    assert_eq "non-interactive zsh resolves br to the installed wrapper" \
+        "$(readlink -f "${INSTALLED_BR}")" "$(readlink -f "${NONINT_BR}" 2>/dev/null)"
+
+    # Interactive zsh must keep working too (regression guard).
+    INT_BR=$(env -i HOME="${FAKE_HOME}" PATH="${REAL_BR_DIR}:/usr/bin:/bin" \
+        zsh -i -c 'command -v br' 2>/dev/null || true)
+    assert_eq "interactive zsh still resolves br to the installed wrapper" \
+        "$(readlink -f "${INSTALLED_BR}")" "$(readlink -f "${INT_BR}" 2>/dev/null)"
+else
+    echo "  zsh not installed; skipping non-interactive zsh PATH check."
+fi
+
+section "install.sh: unrecognized shell gets manual PATH guidance"
+
+# A shell we don't auto-configure (fish, nushell, ...) with no bash/zsh rc files
+# to piggyback on: nothing is written, so the installer must instead PRINT the
+# manual PATH line, name the shell, and offer the full-path fallback.
+FISH_HOME="${WORK}/home-fish"
+mkdir -p "${FISH_HOME}"
+FISH_BIN="${FISH_HOME}/.local/share/br-orphanage/bin/br"
+FISH_OUT=$(env HOME="${FISH_HOME}" XDG_DATA_HOME="${FISH_HOME}/.local/share" \
+    SHELL=/opt/fish "${REPO_UNDER_TEST}/install.sh")
+assert_contains "guidance names the unconfigured shell" "${FISH_OUT}" "fish"
+assert_contains "guidance gives the manual PATH export line" "${FISH_OUT}" \
+    "export PATH=\"${FISH_HOME}/.local/share/br-orphanage/bin"
+assert_contains "guidance offers the full-path fallback" "${FISH_OUT}" "by full path"
+assert_contains "fallback names the wrapper's full path" "${FISH_OUT}" "${FISH_BIN}"
+assert_file_absent "unrecognized shell: no ~/.zshenv written" "${FISH_HOME}/.zshenv"
 
 # Upgrade reporting: fake an older installed version, re-run installer.
 if grep -q '^VERSION=' "${INSTALLED_BR}"; then

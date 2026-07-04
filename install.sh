@@ -67,22 +67,66 @@ if [[ "${found_real}" -eq 0 ]]; then
     echo "         Install it: https://github.com/Dicklesworthstone/beads_rust"
 fi
 
-# Add the PATH line to whichever shell rc files exist.
+# Add the PATH line to the user's shell startup files.
+#
+#   bash -> ~/.bashrc  (interactive shells)
+#   zsh  -> ~/.zshenv  (EVERY zsh: interactive, non-interactive, login, script)
+#
+# zsh only sources ~/.zshrc for interactive shells. Non-interactive zsh — agent
+# tool calls, scripts, cron, CI — sources ~/.zshenv instead, so the PATH line
+# must live there or the real 'br' binary shadows the wrapper everywhere but an
+# interactive prompt (br-orphanage-t9m).
 updated=0
-for rc in "${HOME}/.bashrc" "${HOME}/.zshrc"; do
-    [[ -f "${rc}" ]] || continue
-    if grep -qF "${MARKER}" "${rc}"; then
+
+append_marked_line() {
+    local rc="$1"
+    if grep -qF "${MARKER}" "${rc}" 2>/dev/null; then
         echo "already configured: ${rc}"
     else
         printf '\n%s\n' "${LINE}" >> "${rc}"
         echo "updated: ${rc}"
         updated=1
     fi
-done
+}
 
-if [[ "${updated}" -eq 1 ]]; then
-    echo
-    echo "Open a new shell (or 'source' your rc file), then verify:"
-    echo "  command -v br              # should print ${WRAPPER}"
-    echo "  br orphanage --version     # wrapper version"
+# bash: only touch an rc that already exists.
+if [[ -f "${HOME}/.bashrc" ]]; then
+    append_marked_line "${HOME}/.bashrc"
 fi
+
+# zsh: ensure ~/.zshenv carries the line whenever the user uses zsh — detected
+# by an existing ~/.zshenv or ~/.zshrc, or a zsh login shell. Create ~/.zshenv
+# if needed; it is the only file guaranteed to load for non-interactive zsh.
+if [[ -f "${HOME}/.zshenv" || -f "${HOME}/.zshrc" || "${SHELL:-}" == *zsh ]]; then
+    append_marked_line "${HOME}/.zshenv"
+fi
+
+# Setup guidance. bash's interactive rc and zsh's ~/.zshenv are the only files
+# this installer edits; other shells (fish, nushell, ...) and non-interactive
+# bash have no startup file we can safely configure for every invocation. So we
+# always print the manual PATH line and a full-path fallback that needs no PATH
+# edit at all, and we name the shell when it is not one we auto-configure.
+user_shell=$(basename "${SHELL:-}" 2>/dev/null || true)
+
+echo
+if [[ "${updated}" -eq 1 ]]; then
+    echo "Added the PATH line to your shell startup file(s); open a new shell (or 'source' them)."
+else
+    echo "No shell startup file was auto-configured."
+fi
+case "${user_shell}" in
+    bash | zsh | "") ;;
+    *) echo "Your shell (${user_shell}) is not one this installer configures automatically." ;;
+esac
+
+echo
+echo "Make sure this directory comes first on PATH — add to your shell's config if needed:"
+echo "  ${BIN_DIR}"
+echo "  # bash/zsh:  export PATH=\"${BIN_DIR}:\$PATH\""
+echo
+echo "Verify:"
+echo "  command -v br              # should print ${WRAPPER}"
+echo "  br orphanage --version     # wrapper version"
+echo
+echo "No PATH changes needed if you invoke the wrapper by full path:"
+echo "  ${WRAPPER} orphanage --version"
