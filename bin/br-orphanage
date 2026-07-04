@@ -19,6 +19,13 @@ set -euo pipefail
 VERSION="0.1.0"
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
+# How we were invoked: 'br-orphanage' (direct, escape-hatch mode) vs 'br' (the
+# shadow symlink, passthrough mode). Both names resolve to this same file.
+INVOKED_AS=$(basename "$0")
+# The directory this wrapper lives in — the one a user prepends to PATH to shadow
+# 'br' (see 'shell-intercept'). Derived from SELF so it is correct wherever the
+# wrapper was installed.
+BIN_DIR=$(dirname "${SELF}")
 
 DEFAULT_BRANCH_TEMPLATE='<namespace>/<owner>/<project>'
 DEFAULT_NAMESPACE='orphanage'
@@ -81,11 +88,18 @@ find_real_br() {
     return 1
 }
 
-# shellcheck disable=SC2310 # failure handled explicitly by the || block below
-REAL_BR=$(find_real_br) || {
-    echo "br-orphanage: error: real 'br' binary not found in PATH" >&2
-    echo "br-orphanage: install it first: https://github.com/Dicklesworthstone/beads_rust" >&2
-    exit 1
+# Resolved lazily: commands that shell out to the real binary call require_real_br
+# first. Name-only commands (--version, shell-intercept, usage) never need it, so
+# the wrapper stays usable even before the real br is installed.
+REAL_BR=""
+require_real_br() {
+    [[ -n "${REAL_BR}" ]] && return 0
+    # shellcheck disable=SC2310 # failure handled explicitly by the || block below
+    REAL_BR=$(find_real_br) || {
+        echo "br-orphanage: error: real 'br' binary not found in PATH" >&2
+        echo "br-orphanage: install it first: https://github.com/Dicklesworthstone/beads_rust" >&2
+        exit 1
+    }
 }
 
 # --- Shared helpers -----------------------------------------------------------
@@ -167,6 +181,7 @@ run_augmented_init() {
 }
 
 cmd_init() {
+    require_real_br
     require_work_tree
     local target="" passthru=()
     while [[ $# -gt 0 ]]; do
@@ -686,6 +701,7 @@ sync_one() {
 # The index is read on fd 3 so nothing in the loop (the real br, git) can
 # eat the loop's input from stdin.
 cmd_sync_all() {
+    require_real_br
     if [[ ! -f "${PROJECT_PATHS_FILE}" ]]; then
         echo "br-orphanage: no project index yet; nothing to sync."
         return 0
@@ -733,6 +749,7 @@ cmd_sync_all() {
 }
 
 cmd_sync() {
+    require_real_br
     if [[ "${1:-}" == "--all" ]]; then
         shift
         if [[ $# -gt 0 ]]; then
@@ -778,7 +795,54 @@ cmd_orphanage() {
     esac
 }
 
-case "${1:-}" in
-    orphanage|o) shift; cmd_orphanage "$@" ;;
-    *)           exec "${REAL_BR}" "$@" ;;
+# Placeholder until Task 4 (ae1.4) implements the real print-only guidance.
+cmd_shell_intercept() {
+    echo "br-orphanage: shell-intercept not yet implemented" >&2
+    exit 1
+}
+
+usage_direct() {
+    cat <<EOF
+Beads Orphanage ${VERSION} — direct command (real 'br' is not shadowed)
+
+Usage:
+  br-orphanage init [--target <remote-or-url>] [args for real 'br init']
+  br-orphanage target [<remote-or-url>] [--branch <template>] [--namespace <ns>]
+  br-orphanage sync [--all]
+  br-orphanage shell-intercept
+  br-orphanage --version
+
+Normal issue commands (list, ready, create, ...) are NOT handled here;
+run the real 'br' for those, or shadow it with 'br-orphanage shell-intercept'.
+EOF
+}
+
+# Direct escape-hatch mode (invoked as 'br-orphanage'): orphanage verbs only,
+# NO passthrough. Anything unrecognized is an error, not a real-br command.
+cmd_orphanage_direct() {
+    case "${1:-}" in
+        init)            shift; cmd_init "$@" ;;
+        target)          shift; cmd_target "$@" ;;
+        sync)            shift; cmd_sync "$@" ;;
+        shell-intercept) shift; cmd_shell_intercept "$@" ;;
+        --version)       echo "br-orphanage ${VERSION}" ;;
+        -h | --help | "") usage_direct ;;
+        *)
+            echo "br-orphanage: error: unknown command '${1}'" >&2
+            usage_direct >&2
+            exit 1
+            ;;
+    esac
+}
+
+case "${INVOKED_AS}" in
+    br-orphanage)
+        cmd_orphanage_direct "$@"
+        ;;
+    *)  # invoked as 'br' (the shadow symlink): augment orphanage, pass the rest through
+        case "${1:-}" in
+            orphanage | o) shift; cmd_orphanage "$@" ;;
+            *)             require_real_br; exec "${REAL_BR}" "$@" ;;
+        esac
+        ;;
 esac

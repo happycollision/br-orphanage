@@ -256,6 +256,15 @@ assert_eq "install.sh tracked as 100755" "100755" "${INSTALL_MODE}"
 
 # --- Passthrough: real commands reach the real binary transparently --------------
 
+# Wrapper version declared in source; reused by the direct-mode and orphanage
+# namespace sections below.
+SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br-orphanage" | head -n 1)
+if [[ -n "${SRC_VERSION}" ]]; then
+    pass "bin/br-orphanage declares a VERSION (${SRC_VERSION})"
+else
+    fail "bin/br-orphanage has no VERSION= line"
+fi
+
 section "Passthrough: real commands reach the real br binary transparently"
 
 # Fixture initialized with the REAL binary directly, so passthrough tests do
@@ -300,16 +309,27 @@ else
 fi
 assert_eq "wrapper exit code matches real binary's for same failing invocation" "${REAL_EXIT}" "${WRAPPER_EXIT}"
 
+section "Direct mode: 'br-orphanage' runs orphanage verbs only, no passthrough"
+
+BRO="${CANON}"   # invoke by the canonical name to force direct mode
+assert_eq "br-orphanage --version prints wrapper version" \
+    "br-orphanage ${SRC_VERSION}" "$("${BRO}" --version)"
+
+# An unknown verb must NOT fall through to the real br.
+set +e
+UNKNOWN_OUT=$("${BRO}" list 2>&1)
+UNKNOWN_EXIT=$?
+set -e
+assert_eq "br-orphanage <unknown> exits nonzero" "1" "${UNKNOWN_EXIT}"
+assert_contains "br-orphanage <unknown> reports unknown command" "${UNKNOWN_OUT}" "unknown command"
+
+# Contrast: the shadow 'br' still passes 'list' through to the real binary.
+(cd "${PASSTHRU_PROJ}" && br list >/dev/null)
+pass "shadow 'br list' still passes through"
+
 # --- orphanage namespace: version, usage, alias, unknown subcommand -------------
 
 section "br orphanage: version, usage, 'br o' alias, unknown subcommand"
-
-SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br-orphanage" | head -n 1)
-if [[ -n "${SRC_VERSION}" ]]; then
-    pass "bin/br-orphanage declares a VERSION (${SRC_VERSION})"
-else
-    fail "bin/br-orphanage has no VERSION= line"
-fi
 
 ORPH_VERSION_OUT=$(br orphanage --version)
 assert_eq "'br orphanage --version' prints the wrapper version" \
