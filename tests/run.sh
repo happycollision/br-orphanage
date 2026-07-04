@@ -1,34 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tests/run.sh — end-to-end test harness for the beads-sync `br` wrapper.
+# tests/run.sh — end-to-end harness for the Beads Orphanage `br` wrapper.
 #
-# Everything happens inside a throwaway `mktemp -d` directory, cleaned up on
-# exit via trap. Nothing here touches the user's real ~/.local/share/beads-sync
-# checkout, the user's real beads data, or any real git remote.
+# Everything runs inside a throwaway `mktemp -d`, cleaned up on exit via
+# trap. Nothing touches the invoking user's real home directory, data dir,
+# beads data, shell rc files, or any real remote.
 #
-# What gets exercised:
-#   - A bare git repo stands in for the "central" sync remote.
-#   - A fresh CLONE of this repo (the one under test) points at that bare
-#     remote. The clone's bin/br is the wrapper under test: its SYNC_REPO
-#     resolves via `bin/..` to the clone, not to the real checkout.
-#   - The REAL br binary (found on the invoking user's PATH, e.g.
-#     ~/.local/bin/br) is used for actual issue-tracker behavior; no fake.
-#   - Throwaway "project" repos exercise `br init` / `br push` / `br restore`.
+#   - install.sh runs in LOCAL DEV MODE into a fake HOME; the INSTALLED
+#     wrapper (never the checkout's bin/br directly) is what tests exercise.
+#   - The REAL br binary from the invoker's PATH provides issue-tracker
+#     behavior; no fakes.
+#   - Bare repos under $WORK stand in for every remote (project origins and
+#     orphan-branch sync targets).
 #
 # Run: tests/run.sh   (from anywhere; resolves its own path)
-
-# --- Locate repo under test ---------------------------------------------------
 
 SELF=$(readlink -f "${BASH_SOURCE[0]}")
 TESTS_DIR=$(cd "$(dirname "${SELF}")" && pwd)
 REPO_UNDER_TEST=$(cd "${TESTS_DIR}/.." && pwd)
 
-# --- Sandbox: temp dir + trap cleanup -----------------------------------------
-
-WORK=$(mktemp -d "${TMPDIR:-/tmp}/beads-sync-test.XXXXXX")
-
-# shellcheck disable=SC2329 # invoked indirectly via the EXIT trap below, not called directly
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/br-orphanage-test.XXXXXX")
+# shellcheck disable=SC2329 # invoked indirectly via the EXIT trap below
 cleanup() {
     local status=$?
     rm -rf "${WORK}"
@@ -36,28 +29,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Fake HOME so the real br's user-level config
-# (~/.config/beads/config.yaml, per `br config path`) never touches the
-# invoking user's actual home directory.
+# Fake HOME so the real br's user-level config, the installer's rc edits,
+# and the wrapper's data dir never touch the invoking user's real files.
 FAKE_HOME="${WORK}/home"
 mkdir -p "${FAKE_HOME}"
 export HOME="${FAKE_HOME}"
+# Pin the data-dir derivation: installer and wrapper honor XDG_DATA_HOME,
+# and the invoking user may have it set to a real location.
+export XDG_DATA_HOME="${FAKE_HOME}/.local/share"
 
-# Committer identity for every git operation in this harness.
-export GIT_AUTHOR_NAME=test
-export GIT_AUTHOR_EMAIL=test@test.invalid
-export GIT_COMMITTER_NAME=test
-export GIT_COMMITTER_EMAIL=test@test.invalid
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test.invalid
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test.invalid
 
 # --- Locate the REAL br binary on the invoker's PATH --------------------------
-# (Same skip-self logic as bin/br, but we just need any real binary here;
-# the actual skip-self behavior of the wrapper itself is exercised separately
-# once PATH is rearranged to put the clone's bin/ first.)
 
 find_real_br_on_path() {
     local dir cand
     local IFS=':'
-    # shellcheck disable=SC2250 # deliberately unbraced/unquoted: word-splits PATH on the IFS=':' set above to scan each entry
+    # shellcheck disable=SC2250 # deliberately unbraced/unquoted: word-splits PATH on the IFS=':' set above
     for dir in $PATH; do
         [[ -n "${dir}" ]] || continue
         cand="${dir}/br"
@@ -68,7 +57,7 @@ find_real_br_on_path() {
     return 1
 }
 
-# shellcheck disable=SC2310 # failure is handled explicitly by the || block below (exit 1); set -e need not apply here
+# shellcheck disable=SC2310 # failure handled explicitly by the || block
 REAL_BR=$(find_real_br_on_path) || {
     echo "FATAL: no real 'br' binary found on PATH; install beads_rust first." >&2
     exit 1
@@ -81,9 +70,7 @@ REAL_BR_DIR=$(dirname "${REAL_BR_RESOLVED}")
 PASS_COUNT=0
 FAIL_COUNT=0
 
-section() {
-    printf '\n=== %s ===\n' "$1"
-}
+section() { printf '\n=== %s ===\n' "$1"; }
 
 pass() {
     PASS_COUNT=$((PASS_COUNT + 1))
@@ -116,29 +103,19 @@ assert_true() {
 
 assert_file_exists() {
     local desc="$1" path="$2"
-    if [[ -f "${path}" ]]; then
-        pass "${desc}"
-    else
-        fail "${desc} (missing file: ${path})"
-    fi
+    if [[ -f "${path}" ]]; then pass "${desc}"; else fail "${desc} (missing file: ${path})"; fi
 }
 
+# shellcheck disable=SC2329 # reserved for later-task assertions
 assert_file_absent() {
     local desc="$1" path="$2"
-    if [[ ! -e "${path}" ]]; then
-        pass "${desc}"
-    else
-        fail "${desc} (file unexpectedly present: ${path})"
-    fi
+    if [[ ! -e "${path}" ]]; then pass "${desc}"; else fail "${desc} (file unexpectedly present: ${path})"; fi
 }
 
+# shellcheck disable=SC2329 # reserved for later-task assertions
 assert_dir_exists() {
     local desc="$1" path="$2"
-    if [[ -d "${path}" ]]; then
-        pass "${desc}"
-    else
-        fail "${desc} (missing directory: ${path})"
-    fi
+    if [[ -d "${path}" ]]; then pass "${desc}"; else fail "${desc} (missing directory: ${path})"; fi
 }
 
 assert_contains() {
@@ -150,60 +127,11 @@ assert_contains() {
     fi
 }
 
-# --- Step 1: bare "central" remote + clone of this repo -----------------------
+# --- Shared helpers -------------------------------------------------------------
 
-section "Setup: bare remote + clone of beads-sync under test"
-
-BARE_REMOTE="${WORK}/central-beads-sync.git"
-git init -q --bare "${BARE_REMOTE}"
-
-SYNC_CLONE="${WORK}/beads-sync-clone"
-# Clone from the real repo under test, then re-point origin at the bare repo
-# and push, so the clone (and the bare remote) reflect exactly the commit
-# under test without ever touching a real network remote.
-git clone -q --no-hardlinks "${REPO_UNDER_TEST}" "${SYNC_CLONE}"
-git -C "${SYNC_CLONE}" remote set-url origin "${BARE_REMOTE}"
-git -C "${SYNC_CLONE}" push -q origin HEAD:refs/heads/main 2>/dev/null
-git -C "${SYNC_CLONE}" checkout -q -B main
-git -C "${SYNC_CLONE}" branch -q --set-upstream-to=origin/main main
-
-WRAPPER_BR="${SYNC_CLONE}/bin/br"
-
-assert_file_exists "clone contains bin/br" "${WRAPPER_BR}"
-
-# PATH: clone's bin/ first (the wrapper under test), then the real binary's
-# dir, so the wrapper's own find_real_br() skips itself and finds the real
-# one. We deliberately do NOT add REPO_UNDER_TEST/bin — tests must exercise
-# the CLONE's wrapper, never the live checkout's.
-export PATH="${SYNC_CLONE}/bin:${REAL_BR_DIR}:${PATH}"
-
-BR_RESOLVED=$(command -v br)
-WRAPPER_BR_CANON=$(readlink -f "${WRAPPER_BR}")
-BR_RESOLVED_CANON=$(readlink -f "${BR_RESOLVED}")
-assert_eq "PATH resolves 'br' to the clone's wrapper" "${WRAPPER_BR_CANON}" "${BR_RESOLVED_CANON}"
-
-# --- Regression check (Task 1): executable bits survive a fresh clone --------
-
-section "Regression: executable bits survive fresh clone (no chmod)"
-
-if [[ -x "${SYNC_CLONE}/bin/br" ]]; then
-    pass "bin/br is executable post-clone with no chmod"
-else
-    fail "bin/br is NOT executable post-clone (Task 1 regression!)"
-fi
-
-if [[ -x "${SYNC_CLONE}/install.sh" ]]; then
-    pass "install.sh is executable post-clone with no chmod"
-else
-    fail "install.sh is NOT executable post-clone (Task 1 regression!)"
-fi
-
-# --- Helpers for project repos -------------------------------------------------
-
-# `git rev-parse --git-path <p>` returns a path relative to the CURRENT repo
-# root when run from a normal repo, but an ABSOLUTE path when run from a
-# linked worktree (since the common git dir lives elsewhere). Normalize to
-# always-absolute so callers don't have to care which case they're in.
+# `git rev-parse --git-path <p>` is relative from a normal repo but absolute
+# from a linked worktree. Normalize to always-absolute.
+# shellcheck disable=SC2329 # reserved for later-task assertions
 abs_git_path() {
     local repo_dir="$1" rel_path="$2" out
     out=$(cd "${repo_dir}" && git rev-parse --git-path "${rel_path}")
@@ -213,10 +141,8 @@ abs_git_path() {
     esac
 }
 
-# Creates a fresh git repo at $1, with an initial commit, optionally with a
-# fake origin remote pointed at a throwaway bare repo (so project_name()'s
-# `git remote get-url origin` path is exercised without touching any real
-# remote host).
+# Fresh git repo at $1 with an initial commit; optionally a fake bare origin
+# at $WORK/origins/<name>.git (which doubles as an own-repo sync target).
 make_project_repo() {
     local dir="$1" want_origin="${2:-yes}" name="${3:-}"
     mkdir -p "${dir}"
@@ -230,538 +156,835 @@ make_project_repo() {
     fi
 }
 
-# --- Scenario: br init with a pre-existing .gitignore --------------------------
+# --- Setup: run install.sh in local dev mode ------------------------------------
 
-section "br init: pre-existing .gitignore is byte-identical afterward"
+section "Setup: install.sh (local dev mode) into fake HOME"
 
-PROJ1="${WORK}/proj-with-gitignore"
-make_project_repo "${PROJ1}" yes "proj-with-gitignore"
-printf 'node_modules/\n*.log\n' > "${PROJ1}/.gitignore"
-cp "${PROJ1}/.gitignore" "${WORK}/gitignore-snapshot"
+INSTALL_DIR="${XDG_DATA_HOME}/br-orphanage"
+INSTALLED_BR="${INSTALL_DIR}/bin/br"
 
-(cd "${PROJ1}" && br init -q)
+touch "${FAKE_HOME}/.bashrc"
 
-if cmp -s "${WORK}/gitignore-snapshot" "${PROJ1}/.gitignore"; then
-    pass ".gitignore byte-identical after 'br init' (cmp)"
+INSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
+assert_contains "installer reports local-checkout install" "${INSTALL_OUT}" "installed from local checkout"
+assert_file_exists "wrapper installed at data dir" "${INSTALLED_BR}"
+assert_true "installed wrapper is executable" test -x "${INSTALLED_BR}"
+assert_contains "installer reports the installed version" "${INSTALL_OUT}" "installed version"
+assert_true "rc file got the marked PATH line" grep -qF "# br-orphanage" "${FAKE_HOME}/.bashrc"
+
+REINSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
+assert_contains "re-install does not duplicate the rc line" "${REINSTALL_OUT}" "already configured"
+RC_LINE_COUNT=$(grep -cF "# br-orphanage" "${FAKE_HOME}/.bashrc" || true)
+assert_eq "exactly one marked PATH line after two installs" "1" "${RC_LINE_COUNT}"
+
+# Upgrade reporting: fake an older installed version, re-run installer.
+if grep -q '^VERSION=' "${INSTALLED_BR}"; then
+    sed -i.bak 's/^VERSION=".*"$/VERSION="0.0.0"/' "${INSTALLED_BR}" && rm -f "${INSTALLED_BR}.bak"
 else
-    fail ".gitignore CHANGED after 'br init' (cmp mismatch)"
+    printf 'VERSION="0.0.0"\n' >> "${INSTALLED_BR}"
 fi
+UPGRADE_OUT=$("${REPO_UNDER_TEST}/install.sh")
+assert_contains "upgrade reports old -> new version" "${UPGRADE_OUT}" "updated 0.0.0 ->"
 
-# --- Scenario: br init without a pre-existing .gitignore -----------------------
+# The wrapper under test comes FIRST on PATH; real binary's dir next so the
+# wrapper's own PATH scan (skipping itself) finds the real one.
+export PATH="${INSTALL_DIR}/bin:${REAL_BR_DIR}:${PATH}"
+assert_eq "PATH resolves 'br' to the installed wrapper" \
+    "$(readlink -f "${INSTALLED_BR}")" "$(readlink -f "$(command -v br)")"
 
-section "br init: no .gitignore before -> no .gitignore after"
+# --- Regression: executable bits tracked in git ----------------------------------
 
-PROJ2="${WORK}/proj-without-gitignore"
-make_project_repo "${PROJ2}" yes "proj-without-gitignore"
-assert_file_absent "no .gitignore before init" "${PROJ2}/.gitignore"
+section "Regression: executable bits tracked in git (mode 100755)"
 
-(cd "${PROJ2}" && br init -q)
+BIN_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s bin/br | awk '{print $1}')
+assert_eq "bin/br tracked as 100755" "100755" "${BIN_MODE}"
+INSTALL_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s install.sh | awk '{print $1}')
+assert_eq "install.sh tracked as 100755" "100755" "${INSTALL_MODE}"
 
-assert_file_absent "no .gitignore after init" "${PROJ2}/.gitignore"
-
-# --- Scenario: .beads/ in exclude file exactly once, idempotent across reruns --
-
-section "br init: .beads/ appears in info/exclude exactly once (idempotent)"
-
-EXCLUDE_FILE=$(abs_git_path "${PROJ2}" info/exclude)
-count_beads_lines() { grep -cxF '.beads/' "${EXCLUDE_FILE}" 2>/dev/null || true; }
-
-BEADS_LINE_COUNT=$(count_beads_lines)
-assert_eq "exclude has exactly one '.beads/' line after 1st init" "1" "${BEADS_LINE_COUNT}"
-
-# NOTE: the real `br init` (v0.2.16) is NOT idempotent on an already-
-# initialized .beads/ — it exits nonzero ("Already initialized ... Use
-# --force to reinitialize") unless --force is passed. The wrapper does not
-# paper over this (it just runs `"${REAL_BR}" init "$@"` and inherits
-# whatever exit code that produces). So "running init repeatedly" is
-# exercised here with --force, which is the realistic repeat-init path.
-(cd "${PROJ2}" && br init -q --force)
-(cd "${PROJ2}" && br init -q --force)
-
-BEADS_LINE_COUNT=$(count_beads_lines)
-assert_eq "exclude still has exactly one '.beads/' line after 3 total (forced) inits" "1" "${BEADS_LINE_COUNT}"
-
-# Re-check gitignore damage didn't creep back in across repeated inits either.
-assert_file_absent "still no .gitignore after repeated (forced) inits" "${PROJ2}/.gitignore"
-
-# Separately: confirm a *bare* re-init (no --force) on an already-initialized
-# workspace fails, and fails with the same exit code the real binary itself
-# would produce for the same invocation -- i.e. the wrapper doesn't mask or
-# alter that failure.
-set +e
-(cd "${PROJ2}" && br init -q >/dev/null 2>&1)
-WRAPPER_REINIT_EXIT=$?
-(cd "${PROJ2}" && "${REAL_BR_RESOLVED}" init -q >/dev/null 2>&1)
-REAL_REINIT_EXIT=$?
-set -e
-if [[ "${WRAPPER_REINIT_EXIT}" -ne 0 ]]; then
-    pass "bare re-init on already-initialized workspace fails through the wrapper (exit ${WRAPPER_REINIT_EXIT})"
-else
-    fail "bare re-init on already-initialized workspace unexpectedly succeeded through the wrapper"
-fi
-assert_eq "wrapper's re-init exit code matches real binary's for the same invocation" "${REAL_REINIT_EXIT}" "${WRAPPER_REINIT_EXIT}"
-# And the exclude file must still be untouched/correct after that failed attempt.
-BEADS_LINE_COUNT=$(count_beads_lines)
-assert_eq "exclude line count unaffected by the failed bare re-init" "1" "${BEADS_LINE_COUNT}"
-
-# --- Scenario: passthrough of real commands -------------------------------------
+# --- Passthrough: real commands reach the real binary transparently --------------
 
 section "Passthrough: real commands reach the real br binary transparently"
 
-WRAPPER_VERSION=$(br --version)
-REAL_VERSION=$("${REAL_BR_RESOLVED}" --version)
-assert_eq "'br --version' matches real binary output" "${REAL_VERSION}" "${WRAPPER_VERSION}"
+# Fixture initialized with the REAL binary directly, so passthrough tests do
+# not depend on any wrapper init behavior.
+PASSTHRU_PROJ="${WORK}/proj-passthrough"
+make_project_repo "${PASSTHRU_PROJ}" yes "passthrough-demo"
+(cd "${PASSTHRU_PROJ}" && "${REAL_BR_RESOLVED}" init -q)
 
-(cd "${PROJ2}" && br list >/dev/null)
+WRAPPER_VERSION_OUT=$(br --version)
+REAL_VERSION_OUT=$("${REAL_BR_RESOLVED}" --version)
+assert_eq "'br --version' matches real binary output" "${REAL_VERSION_OUT}" "${WRAPPER_VERSION_OUT}"
+
+(cd "${PASSTHRU_PROJ}" && br list >/dev/null)
 pass "'br list' passes through without error"
 
-(cd "${PROJ2}" && br ready >/dev/null)
+(cd "${PASSTHRU_PROJ}" && br ready >/dev/null)
 pass "'br ready' passes through without error"
 
-# Pass JSON_OUT positionally ($1 via the "_" placeholder for $0) rather than
-# splicing it into the -c string: embedding data as shell source would break
-# on awkward quote sequences in the JSON.
-JSON_OUT=$(cd "${PROJ2}" && br list --json)
+JSON_OUT=$(cd "${PASSTHRU_PROJ}" && br list --json)
 if command -v jq >/dev/null 2>&1; then
-    # shellcheck disable=SC2016 # deliberately single-quoted: $1 must be expanded by the inner bash, not spliced in as shell source here
-    assert_true "'br list --json' output parses as JSON (jq)" \
-        bash -c 'printf "%s" "$1" | jq . >/dev/null' _ "${JSON_OUT}"
-else
-    # shellcheck disable=SC2016 # deliberately single-quoted: $1 must be expanded by the inner bash, not spliced in as shell source here
-    assert_true "'br list --json' output parses as JSON (python3 json.tool)" \
+    # shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
+    assert_true "'br list --json' output parses as JSON" \
+        bash -c 'printf "%s" "$1" | jq empty' _ "${JSON_OUT}"
+elif command -v python3 >/dev/null 2>&1; then
+    # shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
+    assert_true "'br list --json' output parses as JSON" \
         bash -c 'printf "%s" "$1" | python3 -m json.tool >/dev/null' _ "${JSON_OUT}"
+else
+    echo "  jq/python3 not installed; skipping JSON parse check."
 fi
 
-# Exit-code transparency: a failing command's exit code passes through
-# unchanged, and matches what the real binary produces for the same
-# invocation.
 set +e
-(cd "${PROJ2}" && br show definitely-not-a-real-id >/dev/null 2>&1)
+(cd "${PASSTHRU_PROJ}" && br show definitely-not-a-real-id >/dev/null 2>&1)
 WRAPPER_EXIT=$?
-(cd "${PROJ2}" && "${REAL_BR_RESOLVED}" show definitely-not-a-real-id >/dev/null 2>&1)
+(cd "${PASSTHRU_PROJ}" && "${REAL_BR_RESOLVED}" show definitely-not-a-real-id >/dev/null 2>&1)
 REAL_EXIT=$?
 set -e
-
 if [[ "${WRAPPER_EXIT}" -ne 0 ]]; then
     pass "failing command's exit code is nonzero through the wrapper (${WRAPPER_EXIT})"
 else
     fail "failing command unexpectedly exited 0 through the wrapper"
 fi
-assert_eq "wrapper exit code matches real binary's exit code for same failing invocation" "${REAL_EXIT}" "${WRAPPER_EXIT}"
+assert_eq "wrapper exit code matches real binary's for same failing invocation" "${REAL_EXIT}" "${WRAPPER_EXIT}"
 
-# --- Scenario: br push lands tracked files, scoped commit, reaches remote -----
+# --- orphanage namespace: version, usage, alias, unknown subcommand -------------
 
-section "br push: tracked files land in projects/<name>/, scoped commit, reaches remote"
+section "br orphanage: version, usage, 'br o' alias, unknown subcommand"
 
-PUSH_PROJ="${WORK}/proj-push"
-make_project_repo "${PUSH_PROJ}" yes "push-demo"
-(cd "${PUSH_PROJ}" && br init -q)
-
-ISSUE_ID=$(cd "${PUSH_PROJ}" && br q "roundtrip test issue")
-if [[ -n "${ISSUE_ID}" ]]; then
-    pass "issue was created and 'br q' returned a nonempty id (${ISSUE_ID})"
+SRC_VERSION=$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "${REPO_UNDER_TEST}/bin/br" | head -n 1)
+if [[ -n "${SRC_VERSION}" ]]; then
+    pass "bin/br declares a VERSION (${SRC_VERSION})"
 else
-    fail "issue creation via 'br q' returned an empty id"
+    fail "bin/br has no VERSION= line"
 fi
 
-PRE_PUSH_HEAD=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
+ORPH_VERSION_OUT=$(br orphanage --version)
+assert_eq "'br orphanage --version' prints the wrapper version" \
+    "br-orphanage ${SRC_VERSION}" "${ORPH_VERSION_OUT}"
 
-PUSH_OUT=$(cd "${PUSH_PROJ}" && br push)
-assert_contains "'br push' reports success" "${PUSH_OUT}" "Beads pushed for push-demo"
+O_VERSION_OUT=$(br o --version)
+assert_eq "'br o --version' matches 'br orphanage --version'" \
+    "${ORPH_VERSION_OUT}" "${O_VERSION_OUT}"
 
-POST_PUSH_HEAD=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
-if [[ "${PRE_PUSH_HEAD}" != "${POST_PUSH_HEAD}" ]]; then
-    pass "'br push' created a new commit in the sync clone"
-else
-    fail "'br push' did not create a new commit"
-fi
-
-PROJECT_DIR="${SYNC_CLONE}/projects/push-demo"
-assert_file_exists "issues.jsonl landed in projects/push-demo/" "${PROJECT_DIR}/issues.jsonl"
-assert_file_exists "config.yaml landed in projects/push-demo/" "${PROJECT_DIR}/config.yaml"
-assert_file_exists "metadata.json landed in projects/push-demo/" "${PROJECT_DIR}/metadata.json"
-assert_file_absent "beads.db did NOT land in projects/push-demo/ (local-only state)" "${PROJECT_DIR}/beads.db"
-
-CHANGED_PATHS=$(git -C "${SYNC_CLONE}" show --name-only --format='' HEAD)
-BAD_PATHS=$(printf '%s\n' "${CHANGED_PATHS}" | grep -v '^projects/push-demo/' || true)
-if [[ -z "${BAD_PATHS}" ]]; then
-    pass "push commit touches ONLY projects/push-demo/"
-else
-    fail "push commit touched paths outside projects/push-demo/: ${BAD_PATHS}"
-fi
-
-if grep -qF "roundtrip test issue" "${PROJECT_DIR}/issues.jsonl"; then
-    pass "pushed issues.jsonl contains the created issue"
-else
-    fail "pushed issues.jsonl missing the created issue"
-fi
-
-# Did it reach the fake central bare remote?
-BARE_HEAD=$(git -C "${BARE_REMOTE}" rev-parse main 2>/dev/null || git -C "${BARE_REMOTE}" rev-parse HEAD)
-assert_eq "push reached the fake central bare remote" "${POST_PUSH_HEAD}" "${BARE_HEAD}"
-
-# --- Scenario: br push records a machine-local index entry, uncommitted -------
-
-section "br push: machine-local project-path index is written but never committed"
-
-INDEX_FILE="${SYNC_CLONE}/.project-paths"
-assert_file_exists "index file (.project-paths) created by 'br push'" "${INDEX_FILE}"
-
-PUSH_PROJ_REAL=$(cd "${PUSH_PROJ}" && pwd -P)
-INDEX_FILE_CONTENTS=$(cat "${INDEX_FILE}")
-if grep -qF "$(printf 'push-demo\t%s' "${PUSH_PROJ_REAL}")" "${INDEX_FILE}"; then
-    pass "index file records 'push-demo' -> its absolute project path"
-else
-    fail "index file does not contain expected 'push-demo <TAB> path' entry (got: ${INDEX_FILE_CONTENTS})"
-fi
-
-# It must never be part of the commit the push just made, nor tracked at all.
-if printf '%s\n' "${CHANGED_PATHS}" | grep -qF '.project-paths'; then
-    fail "push commit unexpectedly included .project-paths"
-else
-    pass "push commit did NOT include .project-paths"
-fi
+BARE_ORPH_OUT=$(br orphanage)
+assert_contains "bare 'br orphanage' prints usage" "${BARE_ORPH_OUT}" "Usage:"
+assert_contains "bare 'br orphanage' includes the version" "${BARE_ORPH_OUT}" "${SRC_VERSION}"
 
 set +e
-git -C "${SYNC_CLONE}" ls-files --error-unmatch .project-paths >/dev/null 2>&1
-INDEX_TRACKED_EXIT=$?
+UNKNOWN_OUT=$(br orphanage frobnicate 2>&1)
+UNKNOWN_EXIT=$?
 set -e
-if [[ "${INDEX_TRACKED_EXIT}" -ne 0 ]]; then
-    pass ".project-paths is not tracked by git in the sync clone"
+if [[ "${UNKNOWN_EXIT}" -ne 0 ]]; then
+    pass "'br orphanage frobnicate' exits nonzero (${UNKNOWN_EXIT})"
 else
-    fail ".project-paths is unexpectedly tracked by git"
+    fail "'br orphanage frobnicate' unexpectedly exited 0"
+fi
+assert_contains "unknown subcommand names the offender" "${UNKNOWN_OUT}" "unknown subcommand 'frobnicate'"
+
+# --- bare 'br init' passes through UNMODIFIED ------------------------------------
+
+section "bare 'br init' passes through to the real binary unmodified"
+
+BAREINIT_PROJ="${WORK}/proj-bare-init"
+make_project_repo "${BAREINIT_PROJ}" yes "bare-init-demo"
+printf 'node_modules/\n' > "${BAREINIT_PROJ}/.gitignore"
+
+(cd "${BAREINIT_PROJ}" && br init -q)
+
+assert_dir_exists "real init created .beads/" "${BAREINIT_PROJ}/.beads"
+BAREINIT_EXCLUDE=$(abs_git_path "${BAREINIT_PROJ}" info/exclude)
+if grep -qxF '.beads/' "${BAREINIT_EXCLUDE}" 2>/dev/null; then
+    fail "bare 'br init' wrongly added '.beads/' to info/exclude (legacy interception still active)"
+else
+    pass "bare 'br init' did NOT touch info/exclude"
 fi
 
-INDEX_STATUS=$(git -C "${SYNC_CLONE}" status --porcelain --ignored .project-paths)
-assert_contains "'git status --ignored' reports .project-paths as ignored (!! prefix)" "${INDEX_STATUS}" "!!"
-
-# --- Scenario: br push again with no changes is a clean no-op -----------------
-
-section "br push: second push with no changes is a clean no-op"
-
-HEAD_BEFORE_NOOP=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
-set +e
-NOOP_OUT=$(cd "${PUSH_PROJ}" && br push 2>&1)
-NOOP_EXIT=$?
-set -e
-assert_eq "no-op push exits 0" "0" "${NOOP_EXIT}"
-assert_contains "no-op push reports no changes" "${NOOP_OUT}" "No beads changes to commit"
-HEAD_AFTER_NOOP=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
-assert_eq "no-op push does not create a new commit" "${HEAD_BEFORE_NOOP}" "${HEAD_AFTER_NOOP}"
-
-# --- Scenario: re-pushing the same project doesn't duplicate its index entry --
-
-section "br push: re-push does not duplicate the index entry"
-
-INDEX_LINE_COUNT=$(grep -cF "$(printf 'push-demo\t')" "${INDEX_FILE}" || true)
-assert_eq "exactly one index line for 'push-demo' after two pushes" "1" "${INDEX_LINE_COUNT}"
-
-# --- Scenario: br push --all pushes multiple known projects in one run --------
-
-section "br push --all: pushes changes from two known projects in one run"
-
-ALLPUSH_PROJ_A="${WORK}/proj-all-a"
-ALLPUSH_PROJ_B="${WORK}/proj-all-b"
-make_project_repo "${ALLPUSH_PROJ_A}" yes "push-all-a"
-make_project_repo "${ALLPUSH_PROJ_B}" yes "push-all-b"
-(cd "${ALLPUSH_PROJ_A}" && br init -q)
-(cd "${ALLPUSH_PROJ_B}" && br init -q)
-(cd "${ALLPUSH_PROJ_A}" && br q "issue in project A" >/dev/null)
-(cd "${ALLPUSH_PROJ_B}" && br q "issue in project B" >/dev/null)
-
-# Establish each project's index entry the same way a real machine would:
-# one plain 'br push' from each project first.
-(cd "${ALLPUSH_PROJ_A}" && br push >/dev/null)
-(cd "${ALLPUSH_PROJ_B}" && br push >/dev/null)
-
-# Now make a further change in each, so --all has real work to do.
-(cd "${ALLPUSH_PROJ_A}" && br q "second issue in project A" >/dev/null)
-(cd "${ALLPUSH_PROJ_B}" && br q "second issue in project B" >/dev/null)
-
-HEAD_BEFORE_ALL=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
-set +e
-ALLPUSH_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
-ALLPUSH_EXIT=$?
-set -e
-
-assert_eq "'br push --all' exits 0 when all known projects push cleanly" "0" "${ALLPUSH_EXIT}"
-assert_contains "'br push --all' reports pushing push-all-a" "${ALLPUSH_OUT}" "pushing 'push-all-a'"
-assert_contains "'br push --all' reports pushing push-all-b" "${ALLPUSH_OUT}" "pushing 'push-all-b'"
-
-HEAD_AFTER_ALL=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
-if [[ "${HEAD_BEFORE_ALL}" != "${HEAD_AFTER_ALL}" ]]; then
-    pass "'br push --all' created new commit(s) in the sync clone"
+# Bare 'br sync' is the real binary's own command: passthrough, no git traffic.
+(cd "${BAREINIT_PROJ}" && br sync >/dev/null)
+pass "bare 'br sync' passes through without error"
+BAREINIT_ORIGIN_REFS=$(git -C "${WORK}/origins/bare-init-demo.git" for-each-ref --format='%(refname)' refs/heads)
+if [[ "${BAREINIT_ORIGIN_REFS}" == *orphanage* ]]; then
+    fail "bare 'br sync' unexpectedly created an orphan branch at the origin"
 else
-    fail "'br push --all' did not create any new commits"
+    pass "bare 'br sync' produced no git traffic (no orphan branch at origin)"
 fi
 
-if grep -qF "second issue in project A" "${SYNC_CLONE}/projects/push-all-a/issues.jsonl"; then
-    pass "push-all-a's second issue landed in the sync clone"
-else
-    fail "push-all-a's second issue missing from the sync clone"
-fi
-if grep -qF "second issue in project B" "${SYNC_CLONE}/projects/push-all-b/issues.jsonl"; then
-    pass "push-all-b's second issue landed in the sync clone"
-else
-    fail "push-all-b's second issue missing from the sync clone"
-fi
+# --- br orphanage target: set, print, resolve, validate --------------------------
 
-# And did both land in the fake central bare remote (not just the local clone)?
-BARE_HEAD_AFTER_ALL=$(git -C "${BARE_REMOTE}" rev-parse main 2>/dev/null || git -C "${BARE_REMOTE}" rev-parse HEAD)
-BARE_HAS_A=$(git -C "${BARE_REMOTE}" show "${BARE_HEAD_AFTER_ALL}:projects/push-all-a/issues.jsonl" 2>/dev/null || true)
-BARE_HAS_B=$(git -C "${BARE_REMOTE}" show "${BARE_HEAD_AFTER_ALL}:projects/push-all-b/issues.jsonl" 2>/dev/null || true)
-assert_contains "fake central remote has push-all-a's second issue" "${BARE_HAS_A}" "second issue in project A"
-assert_contains "fake central remote has push-all-b's second issue" "${BARE_HAS_B}" "second issue in project B"
+section "br orphanage target: unset -> exit 1 with guidance"
 
-# --- Scenario: br push --all skips a projects/ dir with no index entry --------
-
-section "br push --all: unknown project dir (no index entry) is skipped with a warning, run still succeeds"
-
-# Simulate a projects/<name>/ directory that exists (e.g. pushed from another
-# machine) but has no entry in THIS machine's index.
-mkdir -p "${SYNC_CLONE}/projects/orphan-no-index"
-printf '{}\n' > "${SYNC_CLONE}/projects/orphan-no-index/issues.jsonl"
-git -C "${SYNC_CLONE}" add projects/orphan-no-index
-git -C "${SYNC_CLONE}" commit -q -m "seed orphan project with no local index entry"
-git -C "${SYNC_CLONE}" push -q
+TGT_PROJ="${WORK}/proj-target"
+make_project_repo "${TGT_PROJ}" yes "target-demo"
 
 set +e
-ORPHAN_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
-ORPHAN_EXIT=$?
+TGT_UNSET_OUT=$(cd "${TGT_PROJ}" && br orphanage target 2>&1)
+TGT_UNSET_EXIT=$?
 set -e
+if [[ "${TGT_UNSET_EXIT}" -ne 0 ]]; then
+    pass "unset target exits nonzero (${TGT_UNSET_EXIT})"
+else
+    fail "unset target unexpectedly exited 0"
+fi
+assert_contains "unset target names the fix" "${TGT_UNSET_OUT}" "br orphanage target <remote-or-url>"
 
-assert_eq "'br push --all' still exits 0 with an unknown/no-index project present" "0" "${ORPHAN_EXIT}"
-assert_contains "'br push --all' warns about skipping the no-index project" "${ORPHAN_OUT}" "skipping 'orphan-no-index'"
+section "br orphanage target: set by remote name, resolved at print time"
 
-# --- Scenario: br push --all skips a stale index path (deleted project dir) ---
+(cd "${TGT_PROJ}" && br orphanage target origin)
+STORED_TGT=$(git -C "${TGT_PROJ}" config --get beadsOrphanage.target)
+assert_eq "stored config value is the remote name" "origin" "${STORED_TGT}"
 
-section "br push --all: stale index path (deleted project dir) is skipped with a warning"
+TGT_PRINT_OUT=$(cd "${TGT_PROJ}" && br orphanage target)
+TGT_ORIGIN_URL=$(git -C "${TGT_PROJ}" remote get-url origin)
+assert_contains "print shows the resolved URL" "${TGT_PRINT_OUT}" "url:    ${TGT_ORIGIN_URL}"
+# origin URL is $WORK/origins/target-demo.git -> owner=origins project=target-demo
+assert_contains "print shows the default templated branch" "${TGT_PRINT_OUT}" "branch: orphanage/origins/target-demo"
 
-STALE_PROJ="${WORK}/proj-stale"
-make_project_repo "${STALE_PROJ}" yes "push-stale"
-(cd "${STALE_PROJ}" && br init -q)
-(cd "${STALE_PROJ}" && br q "stale project issue" >/dev/null)
-(cd "${STALE_PROJ}" && br push >/dev/null)
+section "br orphanage target: set by URL, template overrides, validation"
 
-assert_dir_exists "push-stale has a projects/ dir before it's deleted" "${SYNC_CLONE}/projects/push-stale"
+EXT_TARGET_BARE="${WORK}/targets/external-issues.git"
+mkdir -p "$(dirname "${EXT_TARGET_BARE}")"
+git init -q --bare "${EXT_TARGET_BARE}"
 
-# Now delete the source project entirely, so its index entry goes stale.
-rm -rf "${STALE_PROJ}"
+(cd "${TGT_PROJ}" && br orphanage target "${EXT_TARGET_BARE}")
+STORED_TGT2=$(git -C "${TGT_PROJ}" config --get beadsOrphanage.target)
+assert_eq "URL target stored literally" "${EXT_TARGET_BARE}" "${STORED_TGT2}"
+
+(cd "${TGT_PROJ}" && br orphanage target --namespace beads --branch '<namespace>/only-<project>')
+TGT_PRINT_OUT2=$(cd "${TGT_PROJ}" && br orphanage target)
+assert_contains "custom template + namespace resolve in print" "${TGT_PRINT_OUT2}" "branch: beads/only-target-demo"
+# Reset overrides for later tasks.
+git -C "${TGT_PROJ}" config --unset beadsOrphanage.branch
+git -C "${TGT_PROJ}" config --unset beadsOrphanage.namespace
 
 set +e
-STALE_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
-STALE_EXIT=$?
+BADREMOTE_OUT=$(cd "${TGT_PROJ}" && br orphanage target upstream 2>&1)
+BADREMOTE_EXIT=$?
 set -e
+if [[ "${BADREMOTE_EXIT}" -ne 0 ]]; then
+    pass "nonexistent remote name rejected (${BADREMOTE_EXIT})"
+else
+    fail "nonexistent remote name unexpectedly accepted"
+fi
+assert_contains "rejection names the missing remote" "${BADREMOTE_OUT}" "upstream"
 
-assert_eq "'br push --all' still exits 0 with a stale index entry present" "0" "${STALE_EXIT}"
-assert_contains "'br push --all' warns about skipping the stale-path project" "${STALE_OUT}" "skipping 'push-stale'"
-assert_contains "stale-path warning mentions the path no longer exists" "${STALE_OUT}" "no longer exists"
+section "br orphanage target: slash-in-remote-name resolves as a remote, not a URL"
 
-# --- Scenario: br push --all reports nonzero when a real per-project push fails
+(cd "${TGT_PROJ}" && git remote add fork/thing "${EXT_TARGET_BARE}")
+(cd "${TGT_PROJ}" && br orphanage target fork/thing)
+SLASH_PRINT=$(cd "${TGT_PROJ}" && br orphanage target)
+assert_contains "slash-named remote resolves to its URL at print time" \
+    "${SLASH_PRINT}" "url:    ${EXT_TARGET_BARE}"
+# Restore prior state (URL target, no extra remote) for later sections.
+(cd "${TGT_PROJ}" && br orphanage target "${EXT_TARGET_BARE}")
+git -C "${TGT_PROJ}" remote remove fork/thing
 
-section "br push --all: exits nonzero when a known project's push actually fails"
-
-FAILPUSH_PROJ="${WORK}/proj-all-fail"
-make_project_repo "${FAILPUSH_PROJ}" yes "push-all-fail"
-(cd "${FAILPUSH_PROJ}" && br init -q)
-(cd "${FAILPUSH_PROJ}" && br q "issue before induced failure" >/dev/null)
-
-# Give this project an index entry directly (same format push_one writes),
-# without ever running a successful 'br push' from it, then induce a real
-# per-project push failure that push --all must hit and report. Note:
-# `br sync --flush-only` regenerates issues.jsonl etc. from beads.db on
-# every run, so simply deleting tracked files wouldn't reproduce a failure
-# (they'd just get re-exported and re-copied). Instead, pre-create
-# projects/push-all-fail/ as a directory with NO write permission -- cp
-# can't create new files in a read-only directory, `copied` stays 0, and
-# push_one hits its "no trackable beads files found" guard and returns
-# nonzero. Scoped to this one throwaway project only.
-FAILPUSH_PROJ_REAL=$(cd "${FAILPUSH_PROJ}" && pwd -P)
-printf 'push-all-fail\t%s\n' "${FAILPUSH_PROJ_REAL}" >> "${SYNC_CLONE}/.project-paths"
-mkdir -p "${SYNC_CLONE}/projects/push-all-fail"
-chmod 555 "${SYNC_CLONE}/projects/push-all-fail"
+section "br orphanage target: argument validation edge cases"
 
 set +e
-FAIL_ALL_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --all 2>&1)
-FAIL_ALL_EXIT=$?
+EXTRA_OUT=$(cd "${TGT_PROJ}" && br orphanage target origin bogus-extra 2>&1)
+EXTRA_EXIT=$?
 set -e
-
-# Restore write permission immediately so the harness's own cleanup trap
-# (rm -rf "${WORK}") can remove this directory tree without leftover cruft.
-chmod 755 "${SYNC_CLONE}/projects/push-all-fail"
-
-if [[ "${FAIL_ALL_EXIT}" -ne 0 ]]; then
-    pass "'br push --all' exits nonzero when a known project's push actually fails"
+if [[ "${EXTRA_EXIT}" -ne 0 ]]; then
+    pass "extra positional argument rejected (${EXTRA_EXIT})"
 else
-    fail "'br push --all' unexpectedly exited 0 despite an induced per-project push failure"
+    fail "extra positional argument unexpectedly accepted"
 fi
-assert_contains "'br push --all' warns about the failed push" "${FAIL_ALL_OUT}" "push failed for 'push-all-fail'"
-# The failure of one project must not have blocked the others from pushing;
-# push-all-a/b should still be reported as pushed in the same run.
-assert_contains "'br push --all' still pushes healthy projects despite one failure" "${FAIL_ALL_OUT}" "pushing 'push-all-a'"
+assert_contains "extra positional names the problem" "${EXTRA_OUT}" "unexpected extra argument"
 
-# --- Scenario: unknown push option is rejected, not silently ignored ----------
-
-section "br push: unknown option is rejected with an error (no silent single-project push)"
-
-HEAD_BEFORE_BOGUS=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
 set +e
-BOGUS_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --bogus 2>&1)
-BOGUS_EXIT=$?
+OPTVAL_OUT=$(cd "${TGT_PROJ}" && br orphanage target --branch --namespace 2>&1)
+OPTVAL_EXIT=$?
 set -e
-if [[ "${BOGUS_EXIT}" -ne 0 ]]; then
-    pass "'br push --bogus' exits nonzero (${BOGUS_EXIT})"
+if [[ "${OPTVAL_EXIT}" -ne 0 ]]; then
+    pass "option-looking --branch value rejected (${OPTVAL_EXIT})"
 else
-    fail "'br push --bogus' unexpectedly exited 0"
+    fail "option-looking --branch value unexpectedly accepted"
 fi
-assert_contains "'br push --bogus' reports the unknown option" "${BOGUS_OUT}" "unknown push option '--bogus'"
+assert_contains "rejection says --branch requires a value" "${OPTVAL_OUT}" "--branch requires a value"
+if git -C "${TGT_PROJ}" config --get beadsOrphanage.branch >/dev/null 2>&1; then
+    fail "beadsOrphanage.branch wrongly set after rejected --branch"
+else
+    pass "beadsOrphanage.branch left unset after rejected --branch"
+fi
 
-# A typo'd --all variant must not quietly degrade to a single-project push.
+section "br orphanage target: invalid resolved branch name rejected at print time"
+
+(cd "${TGT_PROJ}" && br orphanage target --branch 'bad branch')
 set +e
-TYPO_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push --al 2>&1)
-TYPO_EXIT=$?
+BADBRANCH_OUT=$(cd "${TGT_PROJ}" && br orphanage target 2>&1)
+BADBRANCH_EXIT=$?
 set -e
-if [[ "${TYPO_EXIT}" -ne 0 ]]; then
-    pass "'br push --al' (typo of --all) exits nonzero (${TYPO_EXIT})"
+if [[ "${BADBRANCH_EXIT}" -ne 0 ]]; then
+    pass "invalid resolved branch name rejected (${BADBRANCH_EXIT})"
 else
-    fail "'br push --al' unexpectedly exited 0 (silent single-project push)"
+    fail "invalid resolved branch name unexpectedly accepted"
 fi
-assert_contains "'br push --al' reports the unknown option" "${TYPO_OUT}" "unknown push option '--al'"
-HEAD_AFTER_BOGUS=$(git -C "${SYNC_CLONE}" rev-parse HEAD)
-assert_eq "rejected push options created no sync-repo commits" "${HEAD_BEFORE_BOGUS}" "${HEAD_AFTER_BOGUS}"
+assert_contains "invalid branch error names the problem" "${BADBRANCH_OUT}" "not a valid git branch name"
+# Restore for later tasks.
+git -C "${TGT_PROJ}" config --unset beadsOrphanage.branch
 
-# --- Scenario: index-write failure fails the push (record_project_path) -------
+section "br orphanage target: fallbacks with no origin remote"
 
-section "br push: index-write failure (read-only sync repo root) fails the push"
+NOORIGIN_TGT_PROJ="${WORK}/proj-target-no-origin"
+make_project_repo "${NOORIGIN_TGT_PROJ}" no
+NOORIGIN_BARE="${WORK}/targets/no-origin-target.git"
+git init -q --bare "${NOORIGIN_BARE}"
+(cd "${NOORIGIN_TGT_PROJ}" && br orphanage target "${NOORIGIN_BARE}")
+NOORIGIN_PRINT=$(cd "${NOORIGIN_TGT_PROJ}" && br orphanage target)
+NOORIGIN_DIRNAME=$(basename "${NOORIGIN_TGT_PROJ}")
+assert_contains "no-origin fallback branch is orphanage/local/<dirname>" \
+    "${NOORIGIN_PRINT}" "branch: orphanage/local/${NOORIGIN_DIRNAME}"
 
-# record_project_path's mktemp lands in the sync repo ROOT; making that one
-# directory read-only breaks index writing while leaving .git/ and
-# projects/<name>/ (both subdirectories with their own perms) fully
-# functional, so everything up to the index write succeeds and the failure
-# is attributable to record_project_path specifically.
-chmod 555 "${SYNC_CLONE}"
+# --- br orphanage init: gitignore preservation, exclude entry, --target ----------
+
+section "br orphanage init: pre-existing .gitignore is byte-identical afterward"
+
+OINIT1="${WORK}/proj-oinit-gitignore"
+make_project_repo "${OINIT1}" yes "oinit-gitignore"
+printf 'node_modules/\n*.log\n' > "${OINIT1}/.gitignore"
+cp "${OINIT1}/.gitignore" "${WORK}/oinit-gitignore-snapshot"
+
+(cd "${OINIT1}" && br orphanage init -q)
+
+if cmp -s "${WORK}/oinit-gitignore-snapshot" "${OINIT1}/.gitignore"; then
+    pass ".gitignore byte-identical after 'br orphanage init'"
+else
+    fail ".gitignore CHANGED after 'br orphanage init'"
+fi
+
+section "br orphanage init: no .gitignore before -> none after; exclude idempotent"
+
+OINIT2="${WORK}/proj-oinit-clean"
+make_project_repo "${OINIT2}" yes "oinit-clean"
+
+(cd "${OINIT2}" && br orphanage init -q)
+
+assert_file_absent "no .gitignore created" "${OINIT2}/.gitignore"
+assert_dir_exists ".beads/ created" "${OINIT2}/.beads"
+OINIT2_EXCLUDE=$(abs_git_path "${OINIT2}" info/exclude)
+count_oinit2_excl() { grep -cxF '.beads/' "${OINIT2_EXCLUDE}" 2>/dev/null || true; }
+assert_eq "exclude has exactly one '.beads/' line" "1" "$(count_oinit2_excl)"
+
+# Repeat init (real br needs --force on an initialized workspace).
+(cd "${OINIT2}" && br orphanage init -q --force)
+(cd "${OINIT2}" && br orphanage init -q --force)
+assert_eq "still exactly one '.beads/' line after repeated forced inits" "1" "$(count_oinit2_excl)"
+assert_file_absent "still no .gitignore after repeated inits" "${OINIT2}/.gitignore"
+
+section "br orphanage init: double init without --force fails like the real binary"
+
 set +e
-ROIDX_OUT=$(cd "${ALLPUSH_PROJ_A}" && br push 2>&1)
-ROIDX_EXIT=$?
+(cd "${OINIT2}" && br orphanage init -q >/dev/null 2>&1)
+DBLINIT_WRAPPER_EXIT=$?
+(cd "${OINIT2}" && "${REAL_BR_RESOLVED}" init -q >/dev/null 2>&1)
+DBLINIT_REAL_EXIT=$?
 set -e
-# Restore write permission immediately so later scenarios and the cleanup
-# trap are unaffected.
-chmod 755 "${SYNC_CLONE}"
-
-if [[ "${ROIDX_EXIT}" -ne 0 ]]; then
-    pass "'br push' exits nonzero when the index cannot be written (${ROIDX_EXIT})"
+if [[ "${DBLINIT_WRAPPER_EXIT}" -ne 0 ]]; then
+    pass "double init without --force exits nonzero (${DBLINIT_WRAPPER_EXIT})"
 else
-    fail "'br push' unexpectedly exited 0 despite an unwritable index"
+    fail "double init without --force unexpectedly exited 0"
 fi
-assert_contains "index-write failure is reported explicitly" "${ROIDX_OUT}" "failed to record project path for push-all-a"
+assert_eq "wrapper double-init exit code matches the real binary's" \
+    "${DBLINIT_REAL_EXIT}" "${DBLINIT_WRAPPER_EXIT}"
+assert_eq "exclude still has exactly one '.beads/' line after failed double init" "1" "$(count_oinit2_excl)"
 
-# --- Scenario: br restore into a fresh clone (round-trip) ----------------------
+section "br orphanage init --target: inline target set"
 
-section "br restore: fresh clone bootstraps workspace and round-trips issues"
+OINIT3="${WORK}/proj-oinit-target"
+make_project_repo "${OINIT3}" yes "oinit-target"
 
-# Clone the *project* repo fresh (simulating a new machine), with no .beads/.
-RESTORE_PROJ="${WORK}/proj-push-restored"
-git clone -q "${PUSH_PROJ}" "${RESTORE_PROJ}"
-# The clone's origin now points at PUSH_PROJ's local path, not the fake
-# "origin" bare repo PUSH_PROJ itself uses — reset it to the same origin
-# PUSH_PROJ has, so project_name() resolves identically ("push-demo").
-PUSH_PROJ_ORIGIN=$(git -C "${PUSH_PROJ}" remote get-url origin)
-git -C "${RESTORE_PROJ}" remote set-url origin "${PUSH_PROJ_ORIGIN}"
+(cd "${OINIT3}" && br orphanage init -q --target origin)
 
-assert_file_absent "fresh clone has no .beads/ before restore" "${RESTORE_PROJ}/.beads"
+OINIT3_TGT=$(git -C "${OINIT3}" config --get beadsOrphanage.target)
+assert_eq "--target stored in git config" "origin" "${OINIT3_TGT}"
+assert_dir_exists "--target didn't break the real init" "${OINIT3}/.beads"
 
-RESTORE_OUT=$(cd "${RESTORE_PROJ}" && br restore)
-assert_contains "'br restore' reports files restored" "${RESTORE_OUT}" "Restored"
+section "br orphanage init --target: failing target still leaves a successful init"
 
-assert_dir_exists "workspace bootstrapped: .beads/ exists after restore" "${RESTORE_PROJ}/.beads"
-assert_file_exists "issues.jsonl restored into .beads/" "${RESTORE_PROJ}/.beads/issues.jsonl"
+OINIT4="${WORK}/proj-oinit-badtarget"
+make_project_repo "${OINIT4}" yes "oinit-badtarget"
 
-RESTORE_EXCLUDE=$(abs_git_path "${RESTORE_PROJ}" info/exclude)
-if grep -qxF '.beads/' "${RESTORE_EXCLUDE}" 2>/dev/null; then
-    pass "restore's bootstrap init added '.beads/' to info/exclude"
+set +e
+BADTGT_OUT=$(cd "${OINIT4}" && br orphanage init -q --target bogus-nonexistent 2>&1)
+BADTGT_EXIT=$?
+set -e
+if [[ "${BADTGT_EXIT}" -ne 0 ]]; then
+    pass "failing --target exits nonzero (${BADTGT_EXIT})"
 else
-    fail "restore's bootstrap init did NOT add '.beads/' to info/exclude"
+    fail "failing --target unexpectedly exited 0"
 fi
-assert_file_absent "restore's bootstrap init did not create a stray .gitignore" "${RESTORE_PROJ}/.gitignore"
+assert_contains "output notes init succeeded but target was not set" "${BADTGT_OUT}" "init succeeded"
+assert_dir_exists "real init still completed (.beads/ exists)" "${OINIT4}/.beads"
+if git -C "${OINIT4}" config --get beadsOrphanage.target >/dev/null 2>&1; then
+    fail "beadsOrphanage.target wrongly set after rejected --target"
+else
+    pass "beadsOrphanage.target left unset after rejected --target"
+fi
 
-# The real payoff: does the issue survive the round trip?
-RESTORED_LIST=$(cd "${RESTORE_PROJ}" && br list)
-assert_contains "issue visible via 'br list' after restore" "${RESTORED_LIST}" "roundtrip test issue"
-
-RESTORED_SHOW=$(cd "${RESTORE_PROJ}" && br show "${ISSUE_ID}")
-assert_contains "issue visible via 'br show <id>' after restore" "${RESTORED_SHOW}" "roundtrip test issue"
-
-# --- Scenario: project-name fallback (no origin remote) ------------------------
-
-section "Project-name fallback: no origin remote -> projects/<dirname>/"
-
-NOORIGIN_PROJ="${WORK}/proj-no-origin-fallback"
-make_project_repo "${NOORIGIN_PROJ}" no
-(cd "${NOORIGIN_PROJ}" && br init -q)
-(cd "${NOORIGIN_PROJ}" && br q "fallback naming issue" >/dev/null)
-
-DIRNAME=$(basename "${NOORIGIN_PROJ}")
-PUSH_NOORIGIN_OUT=$(cd "${NOORIGIN_PROJ}" && br push)
-assert_contains "push with no origin reports success under dirname" "${PUSH_NOORIGIN_OUT}" "Beads pushed for ${DIRNAME}"
-assert_file_exists "data landed under projects/<dirname>/ (fallback)" "${SYNC_CLONE}/projects/${DIRNAME}/issues.jsonl"
-
-# --- Scenario: git worktree — exclude file lands in the shared common git dir -
-
-section "git worktree: br init resolves the common (shared) info/exclude"
+section "br orphanage init: worktree resolves the shared info/exclude"
 
 WT_MAIN="${WORK}/proj-worktree-main"
 make_project_repo "${WT_MAIN}" yes "worktree-demo"
 WT_LINKED="${WORK}/proj-worktree-linked"
 git -C "${WT_MAIN}" worktree add -q -b wt-feature-branch "${WT_LINKED}"
 
+(cd "${WT_LINKED}" && br orphanage init -q)
+
 COMMON_EXCLUDE=$(abs_git_path "${WT_MAIN}" info/exclude)
-LINKED_EXCLUDE_AS_SEEN=$(abs_git_path "${WT_LINKED}" info/exclude)
-COMMON_EXCLUDE_CANON=$(readlink -f "${COMMON_EXCLUDE}")
-LINKED_EXCLUDE_CANON=$(readlink -f "${LINKED_EXCLUDE_AS_SEEN}")
-assert_eq "worktree's --git-path info/exclude resolves to the main repo's shared exclude file" "${COMMON_EXCLUDE_CANON}" "${LINKED_EXCLUDE_CANON}"
-
-(cd "${WT_LINKED}" && br init -q)
-
 if grep -qxF '.beads/' "${COMMON_EXCLUDE}" 2>/dev/null; then
-    pass "'.beads/' landed in the shared/common info/exclude from inside the worktree"
+    pass "'.beads/' landed in the shared/common info/exclude from a linked worktree"
 else
     fail "'.beads/' did NOT land in the shared info/exclude (${COMMON_EXCLUDE})"
 fi
 
-# Make sure it did NOT create a separate, wrong exclude file under the
-# worktree's own .git file location.
-WT_GIT_FILE="${WT_LINKED}/.git"
-if [[ -f "${WT_GIT_FILE}" ]]; then
-    pass "worktree's .git is a file (linked worktree), confirming shared common dir setup"
+# --- br orphanage sync: outbound core --------------------------------------------
+
+INDEX_FILE="${INSTALL_DIR}/project-paths"
+
+section "br orphanage sync: first sync creates the orphan root at the target"
+
+SYNC_PROJ="${WORK}/proj-sync"
+make_project_repo "${SYNC_PROJ}" yes "sync-demo"
+SYNC_ORIGIN_BARE="${WORK}/origins/sync-demo.git"
+(cd "${SYNC_PROJ}" && br orphanage init -q --target origin)
+SYNC_ISSUE_ID=$(cd "${SYNC_PROJ}" && br q "orphan roundtrip issue")
+
+SYNC_OUT1=$(cd "${SYNC_PROJ}" && br orphanage sync)
+assert_contains "first sync reports success" "${SYNC_OUT1}" "Beads synced for sync-demo"
+
+# Hardcodes the default template resolution (namespace/owner-from-origin-path/
+# project); that resolution logic is independently covered by the target tests.
+SYNC_BRANCH="orphanage/origins/sync-demo"
+SYNC_TIP1=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+if [[ -n "${SYNC_TIP1}" ]]; then
+    pass "orphan branch exists at the target (${SYNC_BRANCH})"
 else
-    fail "expected ${WT_GIT_FILE} to be a file pointing at the common git dir"
+    fail "orphan branch missing at the target"
 fi
 
-# --- Empirical check: does real br init touch a top-level .gitignore at all? --
+PARENT_COUNT=$(git -C "${SYNC_ORIGIN_BARE}" cat-file -p "${SYNC_TIP1}" | grep -c '^parent ' || true)
+assert_eq "first sync commit is an orphan root (no parents)" "0" "${PARENT_COUNT}"
 
-section "Empirical: does real br init (v0.2.16) touch top-level .gitignore?"
-
-EMPIRICAL_PROJ="${WORK}/proj-empirical-gitignore"
-mkdir -p "${EMPIRICAL_PROJ}"
-git init -q "${EMPIRICAL_PROJ}"
-git -C "${EMPIRICAL_PROJ}" commit -q --allow-empty -m "initial commit"
-
-if [[ -e "${EMPIRICAL_PROJ}/.gitignore" ]]; then
-    fail "unexpected: .gitignore already present before init in pristine repo"
-fi
-
-(cd "${EMPIRICAL_PROJ}" && "${REAL_BR_RESOLVED}" init -q)
-
-if [[ -e "${EMPIRICAL_PROJ}/.gitignore" ]]; then
-    fail "EMPIRICAL FINDING CHANGED: real br init v0.2.16 now DOES create a top-level .gitignore -- update README/bin/br comments"
+SYNC_TREE_LS=$(git -C "${SYNC_ORIGIN_BARE}" ls-tree --name-only "${SYNC_TIP1}")
+assert_contains "branch tree contains issues.jsonl" "${SYNC_TREE_LS}" "issues.jsonl"
+assert_contains "branch tree contains config.yaml" "${SYNC_TREE_LS}" "config.yaml"
+if printf '%s\n' "${SYNC_TREE_LS}" | grep -qx 'beads.db'; then
+    fail "beads.db leaked into the branch tree"
 else
-    pass "empirically confirmed: real br init v0.2.16 does NOT create/modify a top-level .gitignore (only .beads/ is created)"
+    pass "beads.db NOT in the branch tree"
+fi
+REMOTE_ISSUES=$(git -C "${SYNC_ORIGIN_BARE}" show "${SYNC_TIP1}:issues.jsonl")
+assert_contains "synced issues.jsonl contains the created issue" "${REMOTE_ISSUES}" "orphan roundtrip issue"
+
+LOCAL_PUSHED=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/pushed)
+assert_eq "local refs/orphanage/pushed matches the remote tip" "${SYNC_TIP1}" "${LOCAL_PUSHED}"
+
+section "br orphanage sync: index entry, second sync chains, no-op"
+
+assert_file_exists "machine-local index created" "${INDEX_FILE}"
+SYNC_PROJ_REAL=$(cd "${SYNC_PROJ}" && pwd -P)
+assert_true "index records sync-demo -> its absolute path" \
+    grep -qF "$(printf 'sync-demo\t%s' "${SYNC_PROJ_REAL}")" "${INDEX_FILE}"
+
+(cd "${SYNC_PROJ}" && br q "second orphan issue" >/dev/null)
+SYNC_OUT2=$(cd "${SYNC_PROJ}" && br orphanage sync)
+assert_contains "second sync reports success" "${SYNC_OUT2}" "Beads synced for sync-demo"
+SYNC_TIP2=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+SYNC_TIP2_PARENT=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "${SYNC_TIP2}^")
+assert_eq "second sync commit's parent is the first sync commit" "${SYNC_TIP1}" "${SYNC_TIP2_PARENT}"
+
+# The second sync fetched the branch tip as it stood BEFORE committing on top:
+# refs/orphanage/fetched == SYNC_TIP1, while refs/orphanage/pushed == SYNC_TIP2.
+LOCAL_FETCHED2=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/fetched)
+assert_eq "refs/orphanage/fetched holds the pre-commit remote tip after second sync" \
+    "${SYNC_TIP1}" "${LOCAL_FETCHED2}"
+LOCAL_PUSHED2=$(git -C "${SYNC_PROJ}" rev-parse refs/orphanage/pushed)
+assert_eq "refs/orphanage/pushed holds the new tip after second sync" \
+    "${SYNC_TIP2}" "${LOCAL_PUSHED2}"
+
+INDEX_LINES=$(grep -cF "$(printf 'sync-demo\t')" "${INDEX_FILE}" || true)
+assert_eq "re-sync does not duplicate the index entry" "1" "${INDEX_LINES}"
+
+set +e
+NOOP_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync 2>&1)
+NOOP_EXIT=$?
+set -e
+assert_eq "no-op sync exits 0" "0" "${NOOP_EXIT}"
+assert_contains "no-op sync reports already in sync" "${NOOP_OUT}" "Already in sync for sync-demo"
+SYNC_TIP3=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+assert_eq "no-op sync created no new commit" "${SYNC_TIP2}" "${SYNC_TIP3}"
+
+section "br orphanage sync: external (non-origin) target"
+
+EXT_PROJ="${WORK}/proj-sync-external"
+make_project_repo "${EXT_PROJ}" yes "sync-external"
+EXT_BARE="${WORK}/targets/private-issues.git"
+mkdir -p "$(dirname "${EXT_BARE}")"
+git init -q --bare "${EXT_BARE}"
+(cd "${EXT_PROJ}" && br orphanage init -q --target "${EXT_BARE}")
+(cd "${EXT_PROJ}" && br q "external target issue" >/dev/null)
+(cd "${EXT_PROJ}" && br orphanage sync >/dev/null)
+EXT_BRANCH="orphanage/origins/sync-external"
+EXT_ISSUES=$(git -C "${EXT_BARE}" show "refs/heads/${EXT_BRANCH}:issues.jsonl")
+assert_contains "issue landed at the external target" "${EXT_ISSUES}" "external target issue"
+EXT_ORIGIN_BRANCHES=$(git -C "${WORK}/origins/sync-external.git" for-each-ref --format='%(refname)' refs/heads)
+if [[ "${EXT_ORIGIN_BRANCHES}" == *orphanage* ]]; then
+    fail "external-target sync leaked an orphan branch to the project's origin"
+else
+    pass "project origin has no orphan branch (data went only to the external target)"
 fi
 
-REAL_BR_VERSION_STR=$("${REAL_BR_RESOLVED}" --version)
-printf '  (real binary under test: %s)\n' "${REAL_BR_VERSION_STR}"
+section "br orphanage sync: errors (unset target, unknown option)"
 
-# --- Optional: shellcheck on bin/br, install.sh, and this script --------------
+NOTGT_PROJ="${WORK}/proj-sync-no-target"
+make_project_repo "${NOTGT_PROJ}" yes "sync-no-target"
+(cd "${NOTGT_PROJ}" && br orphanage init -q)
+set +e
+NOTGT_OUT=$(cd "${NOTGT_PROJ}" && br orphanage sync 2>&1)
+NOTGT_EXIT=$?
+set -e
+if [[ "${NOTGT_EXIT}" -ne 0 ]]; then
+    pass "sync without a target exits nonzero (${NOTGT_EXIT})"
+else
+    fail "sync without a target unexpectedly exited 0"
+fi
+assert_contains "unset-target error names the fix" "${NOTGT_OUT}" "br orphanage target <remote-or-url>"
+
+set +e
+BOGUS_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync --bogus 2>&1)
+BOGUS_EXIT=$?
+set -e
+if [[ "${BOGUS_EXIT}" -ne 0 ]]; then
+    pass "'sync --bogus' exits nonzero (${BOGUS_EXIT})"
+else
+    fail "'sync --bogus' unexpectedly exited 0"
+fi
+assert_contains "'sync --bogus' names the unknown option" "${BOGUS_OUT}" "unknown sync option '--bogus'"
+
+# --- Divergence: two machines, one target ----------------------------------------
+
+section "divergence: two clones alternate syncs; issues merge to the union"
+
+# "Machine A" = a project + its origin bare (also the sync target).
+DIV_A="${WORK}/proj-div-a"
+make_project_repo "${DIV_A}" yes "div-demo"
+DIV_BARE="${WORK}/origins/div-demo.git"
+# Push code so machine B can clone the project like a real second machine.
+git -C "${DIV_A}" push -q origin HEAD:refs/heads/main
+(cd "${DIV_A}" && br orphanage init -q --target origin)
+(cd "${DIV_A}" && br q "issue from machine A" >/dev/null)
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+
+# "Machine B" = a fresh clone with its own empty workspace (bootstrap-by-init;
+# the dedicated bootstrap path is exercised in its own section later).
+DIV_B="${WORK}/proj-div-b"
+git clone -q "${DIV_BARE}" "${DIV_B}"
+(cd "${DIV_B}" && br orphanage init -q --target origin)
+(cd "${DIV_B}" && br q "issue from machine B" >/dev/null)
+set +e
+(cd "${DIV_B}" && br orphanage sync >/dev/null 2>&1)
+DIV_B_SYNC_EXIT=$?
+set -e
+assert_eq "machine B's divergent sync exits 0" "0" "${DIV_B_SYNC_EXIT}"
+
+DIV_BRANCH="orphanage/origins/div-demo"
+DIV_REMOTE_ISSUES=$(git -C "${DIV_BARE}" show "refs/heads/${DIV_BRANCH}:issues.jsonl")
+assert_contains "union contains machine A's issue" "${DIV_REMOTE_ISSUES}" "issue from machine A"
+assert_contains "union contains machine B's issue" "${DIV_REMOTE_ISSUES}" "issue from machine B"
+
+DIV_B_LIST=$(cd "${DIV_B}" && br list)
+assert_contains "machine B's DB gained machine A's issue" "${DIV_B_LIST}" "issue from machine A"
+
+# History stayed linear: B's commit has A's commit as parent, no force.
+DIV_TIP=$(git -C "${DIV_BARE}" rev-parse "refs/heads/${DIV_BRANCH}")
+DIV_TIP_PARENTS=$(git -C "${DIV_BARE}" cat-file -p "${DIV_TIP}" | grep -c '^parent ' || true)
+assert_eq "merged commit has exactly one parent (linear history)" "1" "${DIV_TIP_PARENTS}"
+
+section "divergence: A picks up B's issue; deletion propagates via tombstone"
+
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+DIV_A_LIST=$(cd "${DIV_A}" && br list)
+assert_contains "machine A's DB gained machine B's issue" "${DIV_A_LIST}" "issue from machine B"
+
+# A deletes its own issue; sync; B syncs; the issue must be gone on B and
+# must NOT resurrect on any later sync from either side.
+DIV_A_DEL_ID=$(cd "${DIV_A}" && br list --json | jq -r '.issues[] | select(.title | contains("issue from machine A")) | .id' | head -n 1)
+(cd "${DIV_A}" && br delete "${DIV_A_DEL_ID}" >/dev/null)
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_B}" && br orphanage sync >/dev/null)
+DIV_B_LIST2=$(cd "${DIV_B}" && br list)
+if [[ "${DIV_B_LIST2}" == *"issue from machine A"* ]]; then
+    fail "deleted issue still visible on machine B after sync"
+else
+    pass "deletion propagated to machine B"
+fi
+# This round is A's tombstone-protected import (no DB changes, equal issue-id
+# sets): the byte-convergence adoption path must fire here, or br's tombstone
+# closed_at serialization asymmetry would flap the tree hash between the two
+# machines forever.
+DIV_ADOPT_OUT=$(cd "${DIV_A}" && br orphanage sync 2>&1)
+assert_contains "A's post-deletion sync adopts remote serialization" \
+    "${DIV_ADOPT_OUT}" "adopted remote serialization"
+DIV_A_LIST2=$(cd "${DIV_A}" && br list)
+if [[ "${DIV_A_LIST2}" == *"issue from machine A"* ]]; then
+    fail "deleted issue RESURRECTED on machine A (tombstone not honored)"
+else
+    pass "no resurrection on machine A after another sync round"
+fi
+
+section "divergence: three-way non-issue files (converge, no flap, both-changed)"
+
+# A edits config.yaml; the edit must reach B and then settle (no flapping).
+printf '\n# marker-from-A\n' >> "${DIV_A}/.beads/config.yaml"
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+(cd "${DIV_B}" && br orphanage sync >/dev/null 2>&1)
+assert_true "A's config edit reached machine B" \
+    grep -qF "# marker-from-A" "${DIV_B}/.beads/config.yaml"
+
+set +e
+DIV_SETTLE_OUT=$(cd "${DIV_B}" && br orphanage sync 2>&1)
+set -e
+assert_contains "B's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_OUT}" "Already in sync"
+set +e
+DIV_SETTLE_A=$(cd "${DIV_A}" && br orphanage sync 2>&1)
+set -e
+assert_contains "A's follow-up sync is a no-op (no flapping)" "${DIV_SETTLE_A}" "Already in sync"
+
+# Byte-level convergence: after settling, both machines hold the SAME
+# serialization of issues.jsonl (adoption picked one canonical byte form).
+if cmp -s "${DIV_A}/.beads/issues.jsonl" "${DIV_B}/.beads/issues.jsonl"; then
+    pass "both machines' issues.jsonl are byte-identical after settling"
+else
+    fail "both machines' issues.jsonl differ after settling"
+fi
+
+# Both-changed: A and B edit config.yaml differently; syncing machine keeps
+# local and warns with the recovery command.
+printf '\n# conflict-from-A\n' >> "${DIV_A}/.beads/config.yaml"
+printf '\n# conflict-from-B\n' >> "${DIV_B}/.beads/config.yaml"
+(cd "${DIV_A}" && br orphanage sync >/dev/null)
+set +e
+DIV_CONFLICT_OUT=$(cd "${DIV_B}" && br orphanage sync 2>&1)
+DIV_CONFLICT_EXIT=$?
+set -e
+assert_eq "both-changed sync still exits 0" "0" "${DIV_CONFLICT_EXIT}"
+assert_contains "both-changed warns" "${DIV_CONFLICT_OUT}" "both local and remote changed config.yaml"
+assert_contains "warning includes the recovery command" "${DIV_CONFLICT_OUT}" "git cat-file blob"
+assert_true "machine B kept its local config" \
+    grep -qF "# conflict-from-B" "${DIV_B}/.beads/config.yaml"
+DIV_REMOTE_CONFIG=$(git -C "${DIV_BARE}" show "refs/heads/${DIV_BRANCH}:config.yaml")
+assert_contains "B's (local-wins) config was published" "${DIV_REMOTE_CONFIG}" "# conflict-from-B"
+
+# --- Bootstrap: fresh clone converges from the orphan branch ----------------------
+
+section "bootstrap: fresh clone + target + sync restores the workspace"
+
+# Reuse the sync-demo project from the outbound-core section: clone it fresh.
+git -C "${SYNC_PROJ}" push -q origin HEAD:refs/heads/main
+BOOT_PROJ="${WORK}/proj-bootstrap"
+git clone -q "${SYNC_ORIGIN_BARE}" "${BOOT_PROJ}"
+assert_file_absent "fresh clone has no .beads/" "${BOOT_PROJ}/.beads"
+
+(cd "${BOOT_PROJ}" && br orphanage target origin)
+BOOT_OUT=$(cd "${BOOT_PROJ}" && br orphanage sync)
+assert_contains "bootstrap reports success" "${BOOT_OUT}" "Bootstrapped sync-demo"
+
+assert_dir_exists "workspace bootstrapped: .beads/ exists" "${BOOT_PROJ}/.beads"
+assert_file_exists "issues.jsonl restored" "${BOOT_PROJ}/.beads/issues.jsonl"
+BOOT_EXCLUDE=$(abs_git_path "${BOOT_PROJ}" info/exclude)
+assert_true "bootstrap's init added '.beads/' to info/exclude" \
+    grep -qxF '.beads/' "${BOOT_EXCLUDE}"
+
+BOOT_LIST=$(cd "${BOOT_PROJ}" && br list)
+assert_contains "issue visible via 'br list' after bootstrap" "${BOOT_LIST}" "orphan roundtrip issue"
+BOOT_SHOW=$(cd "${BOOT_PROJ}" && br show "${SYNC_ISSUE_ID}")
+assert_contains "issue visible via 'br show <id>' after bootstrap" "${BOOT_SHOW}" "orphan roundtrip issue"
+
+BOOT_PUSHED=$(git -C "${BOOT_PROJ}" rev-parse refs/orphanage/pushed)
+BOOT_REMOTE_TIP=$(git -C "${SYNC_ORIGIN_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+assert_eq "bootstrap set refs/orphanage/pushed to the remote tip" "${BOOT_REMOTE_TIP}" "${BOOT_PUSHED}"
+
+set +e
+BOOT_NOOP=$(cd "${BOOT_PROJ}" && br orphanage sync 2>&1)
+BOOT_NOOP_EXIT=$?
+set -e
+assert_eq "post-bootstrap sync exits 0" "0" "${BOOT_NOOP_EXIT}"
+assert_contains "post-bootstrap sync is a no-op" "${BOOT_NOOP}" "Already in sync"
+
+section "bootstrap: never-synced branch is a clear error"
+
+NEVER_PROJ="${WORK}/proj-never-synced"
+make_project_repo "${NEVER_PROJ}" yes "never-synced"
+NEVER_CLONE="${WORK}/proj-never-synced-clone"
+git -C "${NEVER_PROJ}" push -q origin HEAD:refs/heads/main
+git clone -q "${WORK}/origins/never-synced.git" "${NEVER_CLONE}"
+(cd "${NEVER_CLONE}" && br orphanage target origin)
+set +e
+NEVER_OUT=$(cd "${NEVER_CLONE}" && br orphanage sync 2>&1)
+NEVER_EXIT=$?
+set -e
+if [[ "${NEVER_EXIT}" -ne 0 ]]; then
+    pass "sync against a never-synced branch exits nonzero (${NEVER_EXIT})"
+else
+    fail "sync against a never-synced branch unexpectedly exited 0"
+fi
+assert_contains "never-synced error suggests 'br orphanage init'" "${NEVER_OUT}" "br orphanage init"
+
+section "bootstrap: partial failure cleans up and stays re-bootstrappable"
+
+BF_PROJ="${WORK}/proj-bootfail"
+make_project_repo "${BF_PROJ}" yes "bootfail"
+(cd "${BF_PROJ}" && br orphanage init -q --target origin)
+(cd "${BF_PROJ}" && br q "bootfail recovery issue" >/dev/null)
+(cd "${BF_PROJ}" && br orphanage sync >/dev/null)
+git -C "${BF_PROJ}" push -q origin HEAD:refs/heads/main
+
+BF_BARE="${WORK}/origins/bootfail.git"
+BF_BRANCH="orphanage/origins/bootfail"
+BF_GOOD_TIP=$(git -C "${BF_BARE}" rev-parse "refs/heads/${BF_BRANCH}")
+
+# Corrupt the branch tip via plumbing: a commit whose issues.jsonl is garbage,
+# so a bootstrap fails deterministically AFTER .beads/ has been created (the
+# import step rejects the invalid JSONL).
+BF_BAD_BLOB=$(printf 'this is not json {{{\n' | git -C "${BF_BARE}" hash-object -w --stdin)
+BF_BAD_TREE=$(printf '100644 blob %s\tissues.jsonl\n' "${BF_BAD_BLOB}" | git -C "${BF_BARE}" mktree)
+BF_BAD_COMMIT=$(git -C "${BF_BARE}" -c user.name=corruptor -c user.email=c@test \
+    commit-tree "${BF_BAD_TREE}" -p "${BF_GOOD_TIP}" -m "corrupt issues.jsonl")
+git -C "${BF_BARE}" update-ref "refs/heads/${BF_BRANCH}" "${BF_BAD_COMMIT}"
+
+BF_CLONE="${WORK}/proj-bootfail-clone"
+git clone -q "${BF_BARE}" "${BF_CLONE}"
+(cd "${BF_CLONE}" && br orphanage target origin)
+set +e
+BF_OUT=$(cd "${BF_CLONE}" && br orphanage sync 2>&1)
+BF_EXIT=$?
+set -e
+if [[ "${BF_EXIT}" -ne 0 ]]; then
+    pass "bootstrap against corrupt data exits nonzero (${BF_EXIT})"
+else
+    fail "bootstrap against corrupt data unexpectedly exited 0"
+fi
+assert_contains "failure output explains the partial-bootstrap cleanup" "${BF_OUT}" "bootstrap failed partway"
+assert_file_absent "partially-created .beads/ was removed" "${BF_CLONE}/.beads"
+
+# Repair the branch and confirm the same clone re-bootstraps cleanly: the
+# failed attempt must not have dead-ended the workspace.
+git -C "${BF_BARE}" update-ref "refs/heads/${BF_BRANCH}" "${BF_GOOD_TIP}"
+BF_RETRY=$(cd "${BF_CLONE}" && br orphanage sync)
+assert_contains "re-bootstrap after repair succeeds" "${BF_RETRY}" "Bootstrapped bootfail"
+BF_LIST=$(cd "${BF_CLONE}" && br list)
+assert_contains "issue visible after recovered bootstrap" "${BF_LIST}" "bootfail recovery issue"
+
+section "retargeting: new empty target receives a fresh orphan root"
+
+RETGT_BARE="${WORK}/targets/retarget-home.git"
+git init -q --bare "${RETGT_BARE}"
+(cd "${SYNC_PROJ}" && br orphanage target "${RETGT_BARE}")
+RETGT_OUT=$(cd "${SYNC_PROJ}" && br orphanage sync)
+assert_contains "retargeted sync reports success" "${RETGT_OUT}" "Beads synced for sync-demo"
+RETGT_TIP=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+RETGT_PARENTS=$(git -C "${RETGT_BARE}" cat-file -p "${RETGT_TIP}" | grep -c '^parent ' || true)
+assert_eq "retargeted commit is a fresh orphan root (no parents)" "0" "${RETGT_PARENTS}"
+RETGT_ISSUES=$(git -C "${RETGT_BARE}" show "${RETGT_TIP}:issues.jsonl")
+assert_contains "full current state landed at the new target" "${RETGT_ISSUES}" "orphan roundtrip issue"
+# Point sync-demo back at origin for any later sections. Output is kept so a
+# failing settle sync prints its diagnostics before set -e stops the harness.
+(cd "${SYNC_PROJ}" && br orphanage target origin)
+(cd "${SYNC_PROJ}" && br orphanage sync)
+RETGT_TIP_AFTER=$(git -C "${RETGT_BARE}" rev-parse "refs/heads/${SYNC_BRANCH}")
+assert_eq "old retarget target left untouched after repointing to origin" "${RETGT_TIP}" "${RETGT_TIP_AFTER}"
+
+# --- sync --all: iterate the machine-local index ----------------------------------
+
+section "sync --all: syncs multiple projects with different targets in one run"
+
+ALL_A="${WORK}/proj-all-a"
+ALL_B="${WORK}/proj-all-b"
+make_project_repo "${ALL_A}" yes "all-a"
+make_project_repo "${ALL_B}" yes "all-b"
+ALL_B_TARGET="${WORK}/targets/all-b-private.git"
+git init -q --bare "${ALL_B_TARGET}"
+(cd "${ALL_A}" && br orphanage init -q --target origin)
+(cd "${ALL_B}" && br orphanage init -q --target "${ALL_B_TARGET}")
+(cd "${ALL_A}" && br q "first in all-a" >/dev/null)
+(cd "${ALL_B}" && br q "first in all-b" >/dev/null)
+(cd "${ALL_A}" && br orphanage sync >/dev/null)
+(cd "${ALL_B}" && br orphanage sync >/dev/null)
+
+(cd "${ALL_A}" && br q "second in all-a" >/dev/null)
+(cd "${ALL_B}" && br q "second in all-b" >/dev/null)
+
+# Runnable from anywhere, including outside any git repo.
+set +e
+ALL_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+ALL_EXIT=$?
+set -e
+assert_eq "'sync --all' exits 0 when all known projects sync cleanly" "0" "${ALL_EXIT}"
+assert_contains "reports syncing all-a" "${ALL_OUT}" "syncing 'all-a'"
+assert_contains "reports syncing all-b" "${ALL_OUT}" "syncing 'all-b'"
+assert_contains "prints a summary" "${ALL_OUT}" "sync --all summary:"
+assert_contains "first --all run reports zero failures" "${ALL_OUT}" "0 failed"
+
+ALL_A_REMOTE=$(git -C "${WORK}/origins/all-a.git" show "refs/heads/orphanage/origins/all-a:issues.jsonl")
+assert_contains "all-a's second issue reached its target" "${ALL_A_REMOTE}" "second in all-a"
+ALL_B_REMOTE=$(git -C "${ALL_B_TARGET}" show "refs/heads/orphanage/origins/all-b:issues.jsonl")
+assert_contains "all-b's second issue reached its (different) target" "${ALL_B_REMOTE}" "second in all-b"
+
+section "sync --all: skips (with warnings) without failing the run"
+
+# Stale path: recorded project deleted from disk.
+STALE_ALL="${WORK}/proj-all-stale"
+make_project_repo "${STALE_ALL}" yes "all-stale"
+(cd "${STALE_ALL}" && br orphanage init -q --target origin)
+(cd "${STALE_ALL}" && br q "stale issue" >/dev/null)
+(cd "${STALE_ALL}" && br orphanage sync >/dev/null)
+rm -rf "${STALE_ALL}"
+
+# No-target project: synced once (so it's in the index), then target unset.
+NOTGT_ALL="${WORK}/proj-all-no-target"
+make_project_repo "${NOTGT_ALL}" yes "all-no-target"
+(cd "${NOTGT_ALL}" && br orphanage init -q --target origin)
+(cd "${NOTGT_ALL}" && br q "no-target issue" >/dev/null)
+(cd "${NOTGT_ALL}" && br orphanage sync >/dev/null)
+git -C "${NOTGT_ALL}" config --unset beadsOrphanage.target
+
+set +e
+SKIP_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+SKIP_EXIT=$?
+set -e
+assert_eq "'sync --all' still exits 0 with skips present" "0" "${SKIP_EXIT}"
+assert_contains "warns about the stale path" "${SKIP_OUT}" "skipping 'all-stale'"
+assert_contains "stale warning says the path is gone" "${SKIP_OUT}" "no longer exists"
+assert_contains "warns about the unconfigured project" "${SKIP_OUT}" "skipping 'all-no-target'"
+assert_contains "unconfigured warning names the cause" "${SKIP_OUT}" "no sync target configured"
+# Restore the target so later full-suite runs stay deterministic.
+git -C "${NOTGT_ALL}" config beadsOrphanage.target origin
+
+section "sync --all: a real per-project failure yields nonzero exit"
+
+FAIL_ALL="${WORK}/proj-all-fail"
+make_project_repo "${FAIL_ALL}" yes "all-fail"
+(cd "${FAIL_ALL}" && br orphanage init -q --target origin)
+(cd "${FAIL_ALL}" && br q "doomed issue" >/dev/null)
+(cd "${FAIL_ALL}" && br orphanage sync >/dev/null)
+# Induce a real failure: point the target at a URL that doesn't exist.
+git -C "${FAIL_ALL}" config beadsOrphanage.target "${WORK}/definitely/not/a/repo.git"
+
+set +e
+FAILRUN_OUT=$(cd "${WORK}" && br orphanage sync --all 2>&1)
+FAILRUN_EXIT=$?
+set -e
+if [[ "${FAILRUN_EXIT}" -ne 0 ]]; then
+    pass "'sync --all' exits nonzero when a known project's sync fails (${FAILRUN_EXIT})"
+else
+    fail "'sync --all' unexpectedly exited 0 despite an induced failure"
+fi
+assert_contains "failure is warned per-project" "${FAILRUN_OUT}" "sync failed for 'all-fail'"
+assert_contains "healthy projects still synced in the same run" "${FAILRUN_OUT}" "syncing 'all-a'"
+# Restore all-fail's target so later runs are deterministic.
+git -C "${FAIL_ALL}" config beadsOrphanage.target origin
+
+# --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
 
@@ -777,7 +1000,7 @@ else
     echo "  shellcheck not installed; skipping."
 fi
 
-# --- Summary --------------------------------------------------------------------
+# --- Summary ---------------------------------------------------------------------
 
 section "Summary"
 echo "  passed: ${PASS_COUNT}"
