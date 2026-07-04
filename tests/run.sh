@@ -356,6 +356,39 @@ assert_contains "unknown subcommand names the offender" "${UNKNOWN_OUT}" "unknow
 
 # --- bare 'br init' passes through UNMODIFIED ------------------------------------
 
+section "shell-intercept: prints per-shell guidance, edits nothing"
+
+BRO="${CANON}"
+# The wrapper derives its bin dir from readlink -f of itself, so compare against
+# the resolved path (macOS resolves /var -> /private/var).
+RESOLVED_BIN=$(readlink -f "${INSTALL_DIR}/bin")
+EXPORT_LINE="export PATH=\"${RESOLVED_BIN}:\$PATH\""
+
+# bash -> ~/.bashrc
+SI_BASH_HOME="${WORK}/si-bash"
+mkdir -p "${SI_BASH_HOME}"
+BASH_OUT=$(env HOME="${SI_BASH_HOME}" SHELL=/bin/bash "${BRO}" shell-intercept)
+assert_contains "bash guidance names ~/.bashrc" "${BASH_OUT}" ".bashrc"
+assert_contains "bash guidance gives the export line" "${BASH_OUT}" "${EXPORT_LINE}"
+assert_contains "bash guidance offers the full-path fallback" "${BASH_OUT}" "${RESOLVED_BIN}/br-orphanage"
+assert_file_absent "shell-intercept wrote no ~/.bashrc" "${SI_BASH_HOME}/.bashrc"
+
+# zsh -> ~/.zshenv, and must NOT steer the user to ~/.zshrc (br-orphanage-t9m).
+ZSH_OUT=$(env SHELL=/bin/zsh "${BRO}" shell-intercept)
+assert_contains "zsh guidance names ~/.zshenv" "${ZSH_OUT}" ".zshenv"
+# shellcheck disable=SC2016 # deliberately single-quoted: $1 expands in the inner bash
+assert_true "zsh guidance does not steer to .zshrc" \
+    bash -c '! grep -q "\.zshrc" <<<"$1"' _ "${ZSH_OUT}"
+
+# unknown shell -> named + generic guidance
+FISH_OUT=$(env SHELL=/opt/fish "${BRO}" shell-intercept)
+assert_contains "unknown-shell guidance names the shell" "${FISH_OUT}" "fish"
+assert_contains "unknown-shell guidance still gives the export line" "${FISH_OUT}" "${EXPORT_LINE}"
+
+# Reachable through the shadow 'br' too.
+SHADOW_SI=$(br orphanage shell-intercept)
+assert_contains "'br orphanage shell-intercept' works in shadow mode" "${SHADOW_SI}" "${EXPORT_LINE}"
+
 section "bare 'br init' passes through to the real binary unmodified"
 
 BAREINIT_PROJ="${WORK}/proj-bare-init"

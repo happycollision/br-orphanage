@@ -112,6 +112,7 @@ Usage:
   br orphanage init [--target <remote-or-url>] [args for real 'br init']
   br orphanage target [<remote-or-url>] [--branch <template>] [--namespace <ns>]
   br orphanage sync [--all]
+  br orphanage shell-intercept
   br orphanage --version
 
 'br o ...' is an alias for 'br orphanage ...'.
@@ -782,11 +783,12 @@ cmd_sync() {
 
 cmd_orphanage() {
     case "${1:-}" in
-        init)      shift; cmd_init "$@" ;;
-        target)    shift; cmd_target "$@" ;;
-        sync)      shift; cmd_sync "$@" ;;
-        --version) echo "br-orphanage ${VERSION}" ;;
-        "")        usage ;;
+        init)            shift; cmd_init "$@" ;;
+        target)          shift; cmd_target "$@" ;;
+        sync)            shift; cmd_sync "$@" ;;
+        shell-intercept) shift; cmd_shell_intercept "$@" ;;
+        --version)       echo "br-orphanage ${VERSION}" ;;
+        "")              usage ;;
         *)
             echo "br-orphanage: error: unknown subcommand '${1}'" >&2
             usage >&2
@@ -795,10 +797,50 @@ cmd_orphanage() {
     esac
 }
 
-# Placeholder until Task 4 (ae1.4) implements the real print-only guidance.
+# Print-only guidance for shadowing the real 'br'. Detects the shell and prints
+# the exact line and target file, but NEVER edits anything — the escape-hatch
+# promise is that the user stays in control of their shell config.
 cmd_shell_intercept() {
-    echo "br-orphanage: shell-intercept not yet implemented" >&2
-    exit 1
+    local shell_name line
+    shell_name=$(basename "${SHELL:-}" 2>/dev/null || true)
+    line="export PATH=\"${BIN_DIR}:\$PATH\""
+
+    cat <<EOF
+Shadowing makes the real 'br' route through this wrapper by putting
+
+  ${BIN_DIR}
+
+first on your PATH. After that, 'br orphanage ...' is augmented and every
+other 'br' command passes through to the real binary untouched.
+
+EOF
+    case "${shell_name}" in
+        bash)
+            printf 'Detected bash. Add this line to ~/.bashrc:\n\n  %s\n\n' "${line}"
+            ;;
+        zsh)
+            # Deliberately steer to ~/.zshenv, not the interactive-only rc:
+            # non-interactive zsh (scripts, agents, cron) never sources the
+            # latter, so a PATH line placed there would miss them (t9m).
+            printf 'Detected zsh. Add this line to ~/.zshenv (loaded by every zsh,\n'
+            printf 'including the non-interactive shells that scripts, agents, and cron\n'
+            printf 'use — an interactive-only startup file would miss those):\n\n  %s\n\n' "${line}"
+            ;;
+        "")
+            printf 'Could not detect your shell. Add this line to its startup file:\n\n  %s\n\n' "${line}"
+            ;;
+        *)
+            printf 'Detected %s, which this tool does not configure automatically.\n' "${shell_name}"
+            printf 'Add the equivalent of this to its startup file:\n\n  %s\n\n' "${line}"
+            ;;
+    esac
+
+    cat <<EOF
+Nothing was changed — copy the line above yourself.
+
+Prefer no PATH changes? Skip shadowing and call the wrapper directly:
+  ${BIN_DIR}/br-orphanage sync
+EOF
 }
 
 usage_direct() {
