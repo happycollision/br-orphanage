@@ -79,30 +79,34 @@ checkout). `br-orphanage --version` prints what you currently have installed.
 
 ```sh
 # Private repo: host issues on the project's own origin.
-br orphanage init --target origin
+br-orphanage init --target origin
 
 # Public project: keep issues elsewhere, private.
-br orphanage init --target git@github.com:you/private-issues.git
+br-orphanage init --target git@github.com:you/private-issues.git
 
 # Anytime after that:
-br orphanage sync
+br-orphanage sync
 
 # Every known project on this machine, in one run:
-br orphanage sync --all
+br-orphanage sync --all
 ```
 
+After optional shadowing, the same commands are available as `br orphanage ...`;
 `br o` is a shorthand alias for `br orphanage`.
 
 ## Commands
 
 | Command | Behavior |
 |---|---|
-| `br orphanage init [--target <t>] [args...]` | Runs the real `br init`, then reverts any top-level `.gitignore` changes it made (deleting it if it didn't exist before), and adds `.beads/` to the repo's exclude file (`git rev-parse --git-path info/exclude`, worktree/submodule-safe). Unrecognized args pass through to the real init. `--target` sets the sync target inline (stripped before the real init sees the args). |
-| `br orphanage target` | Print the resolved target, URL, and branch. Exits 1 with guidance if unset. |
-| `br orphanage target <remote-or-url> [--branch <template>] [--namespace <ns>]` | Store the target (and optional overrides) in the project's git config. A bare word naming an existing remote is stored as a remote name; anything else is stored as a literal URL. A named remote must exist at set time. |
-| `br orphanage sync` | Converge this project with its orphan branch. Records the project's absolute path in the machine-local index. |
-| `br orphanage sync --all` | Iterate the machine-local index; for each entry, `cd` to the recorded path and sync. Stale/missing paths, non-repos, missing `.beads/`, and unconfigured targets are skipped with a warning rather than failing the run. Exits 0 iff no known project's sync actually failed. |
-| `br orphanage --version` | Print the wrapper version. Bare `br orphanage` prints usage (which includes the version). |
+| `br-orphanage init [--target <t>] [args...]` | Runs the real `br init`, then reverts any top-level `.gitignore` changes it made (deleting it if it didn't exist before), and adds `.beads/` to the repo's exclude file (`git rev-parse --git-path info/exclude`, worktree/submodule-safe). Unrecognized args pass through to the real init. `--target` sets the sync target inline (stripped before the real init sees the args). |
+| `br-orphanage target` | Print the resolved target, URL, and branch. Exits 1 with guidance if unset. |
+| `br-orphanage target <remote-or-url> [--branch <template>] [--namespace <ns>]` | Store the target (and optional overrides) in the project's git config. A bare word naming an existing remote is stored as a remote name; anything else is stored as a literal URL. A named remote must exist at set time. |
+| `br-orphanage sync` | Converge this project with its orphan branch. Records the project's absolute path in the machine-local index. |
+| `br-orphanage sync --all` | Iterate the machine-local index; for each entry, `cd` to the recorded path and sync. Stale/missing paths, non-repos, missing `.beads/`, and unconfigured targets are skipped with a warning rather than failing the run. Exits 0 iff no known project's sync actually failed. |
+| `br-orphanage --version` | Print the wrapper version. Bare `br-orphanage` prints usage (which includes the version). |
+
+With optional shadowing enabled, replace `br-orphanage ...` with
+`br orphanage ...` (or `br o ...`) for the same commands.
 
 **Passthrough guarantee:** everything else — including bare `br init` and
 bare `br sync`, which are the real binary's own commands — reaches the real
@@ -129,7 +133,7 @@ origin remote, `<project>` falls back to the toplevel directory name and
 `<owner>` falls back to `local`. Tokens never resolve empty.
 
 Configuration is **per-clone**: each new clone or machine runs
-`br orphanage target` once (or passes `--target` to `br orphanage init`).
+`br-orphanage target` once (or passes `--target` to `br-orphanage init`).
 That's the point — a private target URL lives only in that machine's
 `.git/config`, never in anything committed, so it can't leak through a
 public project repo.
@@ -200,19 +204,19 @@ A fresh clone (or a machine that has never synced this project) has no
 `.beads/` yet. Set a target and sync:
 
 ```sh
-br orphanage target <remote-or-url>
-br orphanage sync
+br-orphanage target <remote-or-url>
+br-orphanage sync
 ```
 
 This requires the orphan branch to already exist at the target — it
 extracts the branch's tracked files into a freshly-initialized `.beads/`
 and imports them. For a **brand-new** project with no branch yet, run
-`br orphanage init` (optionally with `--target`) instead, which creates the
+`br-orphanage init` (optionally with `--target`) instead, which creates the
 orphan root on the first sync.
 
 A bootstrap that fails partway cleans up after itself (removes the
 partially-created `.beads/`) rather than stranding the project — just fix
-the underlying problem and re-run `br orphanage sync`.
+the underlying problem and re-run `br-orphanage sync`.
 
 **Retargeting** is nothing special: set a new target and sync. A branch
 that doesn't exist yet at the new target receives the full current state as
@@ -221,7 +225,7 @@ its orphan root.
 ## Privacy notes
 
 - There is **no fallback target**. A project with none configured fails
-  sync hard, pointing at `br orphanage target` — nothing can silently
+  sync hard, pointing at `br-orphanage target` — nothing can silently
   publish issue data to an unintended place.
 - **Orphan ≠ hidden.** An orphan branch shares no history with any code
   branch, but pushing it to a *public* repo still publishes the issues.
@@ -254,7 +258,7 @@ its orphan root.
 
 `~/.local/share/br-orphanage/project-paths` (respecting `$XDG_DATA_HOME`) —
 one `name<TAB>absolute-path` line per project, written on every successful
-sync (including no-ops). It powers `br orphanage sync --all`, which
+sync (including no-ops). It powers `br-orphanage sync --all`, which
 iterates it, skipping with a warning (not a failure) for a stale recorded
 path, a path that's no longer a git repo, a missing `.beads/`, or a project
 with no target configured. Only real per-project sync failures make the
