@@ -751,6 +751,56 @@ run_cmd_in "${RM_PROJ}" "${NOOK}" add
 assert_exit_nonzero "missing name/target shows usage error"
 assert_contains "usage error printed" "${RUN_OUT}" "usage: git nook add"
 
+# --- isolation: ignore machinery and byte identity ---------------------------------
+
+section "isolation: the nook's own .gitignore filters; the host's never does"
+
+ISO_PROJ="${WORK}/proj-isolation"
+make_project_repo "${ISO_PROJ}" yes "iso-demo"
+(cd "${ISO_PROJ}" && "${NOOK}" add data origin >/dev/null)
+
+# Host-side ignore machinery that must NOT leak into the nook:
+printf '*.kept\n' >> "$(abs_git_path "${ISO_PROJ}" info/exclude)"
+printf '*.kept\n' > "${ISO_PROJ}/.gitignore"
+
+# The nook's own .gitignore is authoritative:
+printf '*.local\n' > "${ISO_PROJ}/.data/.gitignore"
+printf 'keep me\n' > "${ISO_PROJ}/.data/file.kept"
+printf 'never publish\n' > "${ISO_PROJ}/.data/state.local"
+
+(cd "${ISO_PROJ}" && "${NOOK}" data add --all && "${NOOK}" data commit -q -m files)
+ISO_TRACKED=$(cd "${ISO_PROJ}" && "${NOOK}" data ls-files)
+assert_contains "host-excluded pattern still committed in the nook" "${ISO_TRACKED}" "file.kept"
+assert_contains "the nook's .gitignore itself is tracked" "${ISO_TRACKED}" ".gitignore"
+if [[ "${ISO_TRACKED}" == *"state.local"* ]]; then
+    fail "nook .gitignore was not honored"
+else
+    pass "nook .gitignore honored"
+fi
+rm -f "${ISO_PROJ}/.gitignore"
+
+section "isolation: byte identity under hostile autocrlf"
+
+# Hostile conversion settings everywhere git would look — except the inner
+# repo, whose add-time core.autocrlf=false must win.
+git config --global core.autocrlf true
+git -C "${ISO_PROJ}" config core.autocrlf true
+
+printf 'crlf line one\r\ncrlf line two\r\n' > "${ISO_PROJ}/.data/windows.txt"
+CRLF_HASH_BEFORE=$(shasum "${ISO_PROJ}/.data/windows.txt" | awk '{print $1}')
+(cd "${ISO_PROJ}" && "${NOOK}" data add --all && "${NOOK}" data commit -q -m crlf && "${NOOK}" data push -q)
+
+# Round trip on a second machine (also with hostile global config).
+git -C "${ISO_PROJ}" push -q origin HEAD:refs/heads/main
+ISO_B="${WORK}/proj-isolation-b"
+git clone -q "${WORK}/origins/iso-demo.git" "${ISO_B}"
+(cd "${ISO_B}" && "${NOOK}" add data origin >/dev/null)
+CRLF_HASH_AFTER=$(shasum "${ISO_B}/.data/windows.txt" | awk '{print $1}')
+assert_eq "CRLF file round-trips byte-identically despite global autocrlf=true" \
+    "${CRLF_HASH_BEFORE}" "${CRLF_HASH_AFTER}"
+
+git config --global --unset core.autocrlf
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
