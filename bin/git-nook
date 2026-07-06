@@ -154,7 +154,7 @@ add_exclude_entry() {
     fi
 }
 
-# shellcheck disable=SC2329 # consumed by the remove subcommand added in a later task
+# Consumed by bootstrap rollback (cmd_add) and by cmd_remove.
 remove_exclude_entry() {
     local entry="$1" file tmp
     file=$(exclude_file)
@@ -369,6 +369,26 @@ cmd_show() {
     echo "state:   ${state}"
 }
 
+cmd_remove() {
+    require_work_tree
+    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
+    cd "$(git rev-parse --show-toplevel)"
+    local name="${1:-}" dir gitdir
+    [[ -n "${name}" ]] || { err "usage: git nook remove <name>"; exit 1; }
+    if ! dir=$(channel_dir "${name}"); then
+        err "no nook named '${name}' (see: git nook list)"
+        exit 1
+    fi
+    gitdir=$(inner_git_dir "${name}")
+    git config --remove-section "nook.${name}"
+    remove_exclude_entry "/${dir}/"
+    echo "git-nook: removed nook '${name}' from config."
+    echo "git-nook: kept your files:   ${dir}/"
+    echo "git-nook: kept its history:  ${gitdir}"
+    echo "git-nook: (the history may hold unpushed commits) delete both yourself when sure:"
+    echo "git-nook:   rm -rf '${dir}' '${gitdir}'"
+}
+
 run_passthrough() {
     local name="$1"; shift
     local toplevel dir gitdir worktree
@@ -407,6 +427,7 @@ main() {
         add)    shift; cmd_add "$@" ;;
         list)   shift; cmd_list "$@" ;;
         show)   shift; cmd_show "$@" ;;
+        remove) shift; cmd_remove "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;
         -h | --help | help | "") usage ;;
         -*)

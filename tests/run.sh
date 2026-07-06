@@ -693,6 +693,64 @@ else
 fi
 assert_file_absent "failed add leaked no inner repo" "${REF_PROJ}/.git/nook/nested.git"
 
+# --- remove -------------------------------------------------------------------------
+
+section "remove: config-only, never destroys files or history"
+
+RM_PROJ="${WORK}/proj-remove"
+make_project_repo "${RM_PROJ}" yes "remove-demo"
+(cd "${RM_PROJ}" && "${NOOK}" add notes origin >/dev/null)
+printf 'unpushed work\n' > "${RM_PROJ}/.notes/keep.md"
+(cd "${RM_PROJ}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m keep)
+
+RM_OUT=$(cd "${RM_PROJ}" && "${NOOK}" remove notes)
+assert_contains "remove says what it kept" "${RM_OUT}" "kept"
+assert_contains "remove prints the manual deletion command" "${RM_OUT}" "rm -rf"
+
+if git -C "${RM_PROJ}" config --get nook.notes.dir >/dev/null 2>&1; then
+    fail "config still present after remove"
+else
+    pass "config gone after remove"
+fi
+RM_EXCLUDE=$(abs_git_path "${RM_PROJ}" info/exclude)
+if grep -qxF '/.notes/' "${RM_EXCLUDE}" 2>/dev/null; then
+    fail "exclude entry still present after remove"
+else
+    pass "exclude entry gone after remove"
+fi
+assert_file_exists "content untouched" "${RM_PROJ}/.notes/keep.md"
+assert_dir_exists "inner repo (history) untouched" "${RM_PROJ}/.git/nook/notes.git"
+
+run_cmd_in "${RM_PROJ}" "${NOOK}" notes status
+assert_exit_nonzero "passthrough for a removed nook fails cleanly"
+
+run_cmd_in "${RM_PROJ}" "${NOOK}" remove notes
+assert_exit_nonzero "removing a nonexistent nook fails cleanly"
+
+section "remove then re-add: stale inner repo is refused with a hint, then works"
+
+run_cmd_in "${RM_PROJ}" "${NOOK}" add notes origin
+assert_exit_nonzero "re-add with stale inner repo refused (history is never silently adopted or destroyed)"
+assert_contains "refusal names the stale path" "${RUN_OUT}" ".git/nook/notes.git"
+
+rm -rf "${RM_PROJ}/.git/nook/notes.git" "${RM_PROJ}/.notes"
+RM_READD=$(cd "${RM_PROJ}" && "${NOOK}" add notes origin)
+assert_contains "re-add succeeds after manual cleanup" "${RM_READD}" "added nook 'notes'"
+
+section "add argument parsing: missing values and extra args"
+
+run_cmd_in "${RM_PROJ}" "${NOOK}" add other origin --dir
+assert_exit_nonzero "--dir without a value refused"
+assert_contains "--dir error names the flag" "${RUN_OUT}" "--dir requires a value"
+run_cmd_in "${RM_PROJ}" "${NOOK}" add other origin --ref
+assert_exit_nonzero "--ref without a value refused"
+run_cmd_in "${RM_PROJ}" "${NOOK}" add other origin surplus
+assert_exit_nonzero "extra positional argument refused"
+assert_contains "extra positional named" "${RUN_OUT}" "surplus"
+run_cmd_in "${RM_PROJ}" "${NOOK}" add
+assert_exit_nonzero "missing name/target shows usage error"
+assert_contains "usage error printed" "${RUN_OUT}" "usage: git nook add"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
