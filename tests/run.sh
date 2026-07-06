@@ -68,7 +68,6 @@ assert_eq() {
     fi
 }
 
-# shellcheck disable=SC2329 # reserved for later-task assertions
 assert_true() {
     local desc="$1"
     shift
@@ -79,19 +78,16 @@ assert_true() {
     fi
 }
 
-# shellcheck disable=SC2329 # reserved for later-task assertions
 assert_file_exists() {
     local desc="$1" path="$2"
     if [[ -f "${path}" ]]; then pass "${desc}"; else fail "${desc} (missing file: ${path})"; fi
 }
 
-# shellcheck disable=SC2329 # reserved for later-task assertions
 assert_file_absent() {
     local desc="$1" path="$2"
     if [[ ! -e "${path}" ]]; then pass "${desc}"; else fail "${desc} (file unexpectedly present: ${path})"; fi
 }
 
-# shellcheck disable=SC2329 # reserved for later-task assertions
 assert_dir_exists() {
     local desc="$1" path="$2"
     if [[ -d "${path}" ]]; then pass "${desc}"; else fail "${desc} (missing directory: ${path})"; fi
@@ -139,7 +135,6 @@ assert_exit_nonzero() {
 
 # `git rev-parse --git-path <p>` is relative from a normal repo but absolute
 # from a linked worktree. Normalize to always-absolute.
-# shellcheck disable=SC2329 # reserved for later-task assertions
 abs_git_path() {
     local repo_dir="$1" rel_path="$2" out
     out=$(cd "${repo_dir}" && git rev-parse --git-path "${rel_path}")

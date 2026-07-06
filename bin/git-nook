@@ -22,7 +22,6 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 VERSION="0.2.0"
 
 DEFAULT_REF_TEMPLATE='refs/nook/<owner>/<project>/<name>'
-# shellcheck disable=SC2034 # consumed by the add/list/show/remove dispatch arms added in later tasks
 RESERVED_NAMES=(add list show remove help version)
 
 usage() {
