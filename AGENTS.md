@@ -99,20 +99,10 @@ real `br` (per-issue, newest-wins, tombstone-protected).
 
 ## Planning (designs and implementation plans)
 
-> **Branch override (git-nook rework, in effect on this branch as of
-> 2026-07-06):** while the tool is being restructured into `git nook`
-> (see `docs/plans/2026-07-05-git-nook-design.md`), designs and
-> implementation plans for that effort are tracked as **plain markdown
-> under `docs/plans/`, committed on this working branch** — do NOT
-> convert them to beads epics/tasks (the machinery that publishes beads
-> is the thing being rebuilt). The design/plan commits will be removed
-> from history before this branch merges to master. The beads-based
-> planning below resumes once `git nook` is stable and migrated.
-
 Track designs and implementation plans **in beads**, not as committed markdown in
 `docs/plans/` on `master`. The whole point of this tool is tracking project work
 without leaving a trace on the main repo — so planning artifacts belong on the
-orphan branch, and `master` stays pristine. (Bonus: it dogfoods the tool.)
+beads nook, and `master` stays pristine. (Bonus: it dogfoods the tool.)
 
 - Model a design as an `epic`, and each plan step as a child `task`/`feature` via
   `br create --parent <epic>`.
@@ -122,9 +112,9 @@ orphan branch, and `master` stays pristine. (Bonus: it dogfoods the tool.)
 - Beads descriptions are plain-text JSONL (not rendered markdown), and the issue
   is the *only* record — so inline the full detail: files touched, key code, exact
   test assertions.
-- After creating them, run `br-orphanage sync` and verify the orphan branch
-  received them (`git show refs/orphanage/pushed:issues.jsonl | grep <id>`). Do
-  **not** commit the design/plan markdown to `master`.
+- After creating them, publish via the session protocol and verify the nook's
+  ref received them (`git nook beads show origin/main:issues.jsonl | grep <id>`).
+  Do **not** commit the design/plan markdown to `master`.
 
 ## Observation
 
