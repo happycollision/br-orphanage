@@ -576,6 +576,57 @@ else
     echo "  [SKIP] nested --dir rollback test: tip commit is not a loose object (already packed) in this environment"
 fi
 
+# --- two clones: concurrency and conflicts ----------------------------------------
+
+section "two clones: non-fast-forward push rejected, then pull/push succeeds"
+
+TC_A="${WORK}/proj-tc-a"
+make_project_repo "${TC_A}" yes "tc-demo"
+TC_BARE="${WORK}/origins/tc-demo.git"
+git -C "${TC_A}" push -q origin HEAD:refs/heads/main
+(cd "${TC_A}" && "${NOOK}" add notes origin)
+printf 'base\n' > "${TC_A}/.notes/doc.md"
+(cd "${TC_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m base && "${NOOK}" notes push -q)
+
+TC_B="${WORK}/proj-tc-b"
+git clone -q "${TC_BARE}" "${TC_B}"
+(cd "${TC_B}" && "${NOOK}" add notes origin >/dev/null)
+
+# A pushes a new commit; B commits independently -> B's push must be rejected.
+printf 'from A\n' > "${TC_A}/.notes/a-only.md"
+(cd "${TC_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m from-a && "${NOOK}" notes push -q)
+printf 'from B\n' > "${TC_B}/.notes/b-only.md"
+(cd "${TC_B}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m from-b)
+run_cmd_in "${TC_B}" "${NOOK}" notes push
+assert_exit_nonzero "non-fast-forward push rejected"
+
+(cd "${TC_B}" && "${NOOK}" notes pull -q --no-edit --no-rebase)
+(cd "${TC_B}" && "${NOOK}" notes push -q)
+TC_TIP=$(git -C "${TC_BARE}" rev-parse refs/nook/origins/tc-demo/notes)
+assert_contains "merged tree holds A's file" "$(git -C "${TC_BARE}" ls-tree -r --name-only "${TC_TIP}")" "a-only.md"
+assert_contains "merged tree holds B's file" "$(git -C "${TC_BARE}" ls-tree -r --name-only "${TC_TIP}")" "b-only.md"
+
+section "two clones: conflicting edits produce real conflict markers"
+
+(cd "${TC_A}" && "${NOOK}" notes pull -q --no-edit --no-rebase)
+printf 'line edited by A\n' > "${TC_A}/.notes/doc.md"
+(cd "${TC_A}" && "${NOOK}" notes commit -q -am edit-a && "${NOOK}" notes push -q)
+printf 'line edited by B\n' > "${TC_B}/.notes/doc.md"
+(cd "${TC_B}" && "${NOOK}" notes commit -q -am edit-b)
+run_cmd_in "${TC_B}" "${NOOK}" notes pull --no-edit --no-rebase
+assert_exit_nonzero "conflicting pull exits nonzero"
+assert_true "conflict markers present in the working file" \
+    grep -q '^<<<<<<<' "${TC_B}/.notes/doc.md"
+
+# Resolve like any git repo: pick a merged line, commit, push.
+printf 'line edited by A and B\n' > "${TC_B}/.notes/doc.md"
+(cd "${TC_B}" && "${NOOK}" notes add doc.md && "${NOOK}" notes commit -q --no-edit)
+(cd "${TC_B}" && "${NOOK}" notes push -q)
+assert_contains "resolution published" \
+    "$(git -C "${TC_BARE}" show 'refs/nook/origins/tc-demo/notes:doc.md')" "A and B"
+assert_eq "parent repos stayed clean through all of it" \
+    "" "$(git -C "${TC_A}" status --porcelain)$(git -C "${TC_B}" status --porcelain)"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
