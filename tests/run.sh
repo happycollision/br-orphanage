@@ -347,6 +347,25 @@ printf 'branchy\n' > "${PT_PROJ}/.notes/branch-file.txt"
 assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/.notes/branch-file.txt"
 assert_eq "parent status STILL clean after branch dance" "" "$(git -C "${PT_PROJ}" status --porcelain)"
 
+section "passthrough: missing content dir fails cleanly and is recoverable"
+
+# Throwaway repo: we rm -rf the content dir while the inner git-dir survives.
+GONE_PROJ="${WORK}/proj-gone-worktree"
+make_project_repo "${GONE_PROJ}" yes "gone-worktree"
+(cd "${GONE_PROJ}" && "${NOOK}" add stash origin >/dev/null)
+printf 'keep me\n' > "${GONE_PROJ}/.stash/keeper.txt"
+(cd "${GONE_PROJ}" && "${NOOK}" stash add --all && "${NOOK}" stash commit -q -m "keeper")
+rm -rf "${GONE_PROJ}/.stash"
+
+run_cmd_in "${GONE_PROJ}" "${NOOK}" stash status
+assert_exit_nonzero "passthrough with missing content dir exits nonzero"
+assert_contains "missing content dir error is a clean err()" "${RUN_OUT}" "no content dir"
+
+# The recovery procedure the error message prints actually works.
+mkdir -p "${GONE_PROJ}/.stash"
+(cd "${GONE_PROJ}" && "${NOOK}" stash checkout -- .)
+assert_file_exists "recovery hint restores the nook's files" "${GONE_PROJ}/.stash/keeper.txt"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"

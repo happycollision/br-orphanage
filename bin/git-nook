@@ -334,6 +334,10 @@ run_passthrough() {
         err "nook '${name}' has no inner repo at ${gitdir} (was it deleted?)"
         exit 1
     fi
+    if [[ ! -d "${worktree}" ]]; then
+        err "nook '${name}' has no content dir at ${worktree} (was it deleted?); recreate it with: mkdir -p '${worktree}' then restore via: git nook ${name} checkout -- ."
+        exit 1
+    fi
     # Resolve physically: pwd -P below resolves symlinks, so worktree must
     # too (toplevel can come back through a symlinked path, e.g. macOS
     # /tmp -> /private/tmp) or the containment check below never matches.
