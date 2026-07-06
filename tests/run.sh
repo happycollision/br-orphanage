@@ -35,6 +35,13 @@ export GIT_CONFIG_NOSYSTEM=1
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@test.invalid
 export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@test.invalid
 
+# Modern git (>=2.27) refuses a plain `pull` on diverged branches unless a
+# reconcile strategy is configured, even with --no-edit --allow-unrelated-histories
+# on the command line. Pin the merge strategy globally in FAKE_HOME so the
+# bootstrap reconcile test (and any other bare `pull`) behaves deterministically
+# regardless of the host's git version or global config.
+git config --global pull.rebase false
+
 # --- Pass/fail bookkeeping -----------------------------------------------------
 
 PASS_COUNT=0
@@ -421,6 +428,133 @@ printf 'visible\n' > "${BR_PROJ}/.docs/readme.txt"
 (cd "${BR_PROJ}" && "${NOOK}" docs add --all && "${NOOK}" docs commit -q -m "docs" && "${NOOK}" docs push -q)
 assert_true "branch override published under refs/heads/" \
     git -C "${BR_BARE}" rev-parse --verify -q refs/heads/shadow/docs
+
+# --- bootstrap: add on a machine where the ref already exists ---------------------
+
+section "bootstrap: fresh clone materializes the nook on add"
+
+# Publisher machine.
+BS_A="${WORK}/proj-bs-a"
+make_project_repo "${BS_A}" yes "bs-demo"
+BS_BARE="${WORK}/origins/bs-demo.git"
+git -C "${BS_A}" push -q origin HEAD:refs/heads/main
+(cd "${BS_A}" && "${NOOK}" add notes origin)
+printf 'from machine A\n' > "${BS_A}/.notes/shared.md"
+mkdir -p "${BS_A}/.notes/sub"
+printf 'nested\n' > "${BS_A}/.notes/sub/inner.md"
+(cd "${BS_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "A1" && "${NOOK}" notes push -q)
+
+# Fresh clone = second machine.
+BS_B="${WORK}/proj-bs-b"
+git clone -q "${BS_BARE}" "${BS_B}"
+BS_B_OUT=$(cd "${BS_B}" && "${NOOK}" add notes origin)
+assert_contains "add reports the bootstrap" "${BS_B_OUT}" "bootstrapped"
+assert_file_exists "content materialized" "${BS_B}/.notes/shared.md"
+assert_file_exists "nested content materialized" "${BS_B}/.notes/sub/inner.md"
+assert_eq "nook clean right after bootstrap" \
+    "" "$(cd "${BS_B}" && "${NOOK}" notes status --porcelain)"
+BS_B_LOG=$(cd "${BS_B}" && "${NOOK}" notes log --oneline)
+assert_contains "history came along" "${BS_B_LOG}" "A1"
+assert_eq "parent clone status stays clean" "" "$(git -C "${BS_B}" status --porcelain)"
+
+section "bootstrap: both-sides-exist refuses to touch local files"
+
+BS_C="${WORK}/proj-bs-c"
+git clone -q "${BS_BARE}" "${BS_C}"
+mkdir -p "${BS_C}/.notes"
+printf 'precious local-only work\n' > "${BS_C}/.notes/local.md"
+BS_C_OUT=$(cd "${BS_C}" && "${NOOK}" add notes origin)
+assert_contains "add warns about the existing remote ref" "${BS_C_OUT}" "not empty"
+assert_contains "add names the reconcile command" "${BS_C_OUT}" "--allow-unrelated-histories"
+assert_eq "local file untouched" \
+    "precious local-only work" "$(cat "${BS_C}/.notes/local.md")"
+
+# The printed procedure actually works:
+(cd "${BS_C}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "local files")
+(cd "${BS_C}" && "${NOOK}" notes pull -q --no-edit --allow-unrelated-histories)
+assert_file_exists "remote content merged in" "${BS_C}/.notes/shared.md"
+assert_file_exists "local content survived" "${BS_C}/.notes/local.md"
+(cd "${BS_C}" && "${NOOK}" notes push -q)
+
+section "bootstrap: failure rolls the add back cleanly"
+
+# Deterministic failure AFTER ls-remote succeeds: publish real data to the
+# target, then make the (pre-existing, user-created) content dir read-only so
+# the materializing reset --hard cannot write into it. (Assumes tests do not
+# run as root, which would ignore permissions.)
+BS_D="${WORK}/proj-bs-d"
+make_project_repo "${BS_D}" yes "bs-fail"
+git -C "${BS_D}" push -q origin HEAD:refs/heads/main
+BS_D_SEED="${WORK}/proj-bs-d-seed"
+git clone -q "${WORK}/origins/bs-fail.git" "${BS_D_SEED}"
+(cd "${BS_D_SEED}" && "${NOOK}" add notes origin >/dev/null)
+printf 'seeded\n' > "${BS_D_SEED}/.notes/seed.md"
+(cd "${BS_D_SEED}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m seed && "${NOOK}" notes push -q)
+
+mkdir -p "${BS_D}/.notes"
+chmod 555 "${BS_D}/.notes"
+run_cmd_in "${BS_D}" "${NOOK}" add notes origin
+chmod 755 "${BS_D}/.notes"
+assert_exit_nonzero "bootstrap materialize failure exits nonzero"
+assert_contains "failure says it rolled back" "${RUN_OUT}" "rolled back"
+if git -C "${BS_D}" config --get nook.notes.dir >/dev/null 2>&1; then
+    fail "config not rolled back after bootstrap failure"
+else
+    pass "config rolled back after bootstrap failure"
+fi
+assert_file_absent "inner repo rolled back" "${BS_D}/.git/nook/notes.git"
+BS_D_EXCLUDE=$(abs_git_path "${BS_D}" info/exclude)
+if grep -qxF '/.notes/' "${BS_D_EXCLUDE}" 2>/dev/null; then
+    fail "exclude entry not rolled back after bootstrap failure"
+else
+    pass "exclude entry rolled back after bootstrap failure"
+fi
+assert_dir_exists "user-created dir kept (add did not create it)" "${BS_D}/.notes"
+
+# Once writable again, the same add succeeds (nothing stale left behind).
+BS_D_OUT2=$(cd "${BS_D}" && "${NOOK}" add notes origin)
+assert_contains "re-add after repair bootstraps" "${BS_D_OUT2}" "bootstrapped"
+assert_file_exists "content materialized on retry" "${BS_D}/.notes/seed.md"
+
+section "bootstrap: nested --dir rollback removes only the created ancestor (created_root)"
+
+# Publisher for a distinct nook name/target so its ref (derived from the
+# origin URL) differs from the ones above; seed real published data so
+# ls-remote succeeds and the code proceeds to the materialize step.
+BS_E_PUB="${WORK}/proj-bs-e-pub"
+make_project_repo "${BS_E_PUB}" yes "bs-nested"
+git -C "${BS_E_PUB}" push -q origin HEAD:refs/heads/main
+(cd "${BS_E_PUB}" && "${NOOK}" add deep origin --dir deep/nested/path >/dev/null)
+printf 'nested seed\n' > "${BS_E_PUB}/deep/nested/path/seed.md"
+(cd "${BS_E_PUB}" && "${NOOK}" deep add --all && "${NOOK}" deep commit -q -m seed && "${NOOK}" deep push -q)
+
+# Second machine: none of deep/, deep/nested/, deep/nested/path/ exist yet, so
+# add must create all three and created_root must record "deep" (the
+# topmost). Force materialize (fetch) to fail deterministically by making the
+# target's objects unreadable after ls-remote would already see the ref
+# (ls-remote only needs refs, not object data).
+BS_E="${WORK}/proj-bs-e"
+git clone -q "${WORK}/origins/bs-nested.git" "${BS_E}"
+BS_E_BARE="${WORK}/origins/bs-nested.git"
+BS_E_REF="refs/nook/origins/bs-nested/deep"
+BS_E_TIP=$(git -C "${BS_E_BARE}" rev-parse "${BS_E_REF}")
+# ls-remote only lists refs (succeeds even if the object is unreadable), but
+# fetch must actually transfer the commit object, so making just that one
+# loose object unreadable fails fetch specifically, after ls-remote passed.
+BS_E_OBJPATH="${BS_E_BARE}/objects/${BS_E_TIP:0:2}/${BS_E_TIP:2}"
+if [[ -f "${BS_E_OBJPATH}" ]]; then
+    chmod 000 "${BS_E_OBJPATH}"
+    run_cmd_in "${BS_E}" "${NOOK}" add deep origin --dir deep/nested/path
+    chmod 644 "${BS_E_OBJPATH}"
+    if [[ "${RUN_EXIT}" -ne 0 ]] && [[ "${RUN_OUT}" == *"rolled back"* ]]; then
+        pass "nested --dir bootstrap failure rolls back"
+        assert_file_absent "created_root (deep/) removed entirely" "${BS_E}/deep"
+    else
+        echo "  [SKIP] nested --dir rollback test: could not force a deterministic fetch failure in this environment (exit=${RUN_EXIT}, out='${RUN_OUT}')"
+    fi
+else
+    echo "  [SKIP] nested --dir rollback test: tip commit is not a loose object (already packed) in this environment"
+fi
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 

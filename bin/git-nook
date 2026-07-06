@@ -258,14 +258,21 @@ cmd_add() {
         exit 1
     fi
 
-    # NOTE: mkdir -p may create multiple ancestor levels for a nested --dir;
-    # created_dir only records the leaf. The bootstrap rollback (later task)
-    # must not assume ancestors are cleaned up.
-    local created_dir=0
+    # Track the TOPMOST ancestor this add creates, so bootstrap rollback can
+    # remove exactly what we made (a nested --dir may create several levels)
+    # and nothing the user already had. Empty when ${dir} already existed.
+    local created_root="" probe="" component
+    local -a _dir_components=()
     if [[ ! -d "${dir}" ]]; then
+        IFS='/' read -ra _dir_components <<< "${dir}"
+        for component in "${_dir_components[@]}"; do
+            probe="${probe:+${probe}/}${component}"
+            if [[ ! -e "${probe}" ]]; then
+                created_root="${probe}"
+                break
+            fi
+        done
         mkdir -p "${dir}"
-        # shellcheck disable=SC2034 # tracked for rollback-on-failure cleanup added in a later task
-        created_dir=1
     fi
     add_exclude_entry "/${dir}/"
 
@@ -283,8 +290,35 @@ cmd_add() {
     git config "nook.${name}.dir" "${dir}"
 
     echo "git-nook: added nook '${name}' (dir ${dir}/, target ${url}, ref ${ref})"
-    # Bootstrap of an existing remote ref arrives in a later task; for now a
-    # brand-new nook is immediately usable for local commits.
+
+    # Bootstrap when the published ref already exists (never destructive).
+    local lsout
+    if ! lsout=$(git --git-dir="${gitdir}" ls-remote origin "${ref}" 2>/dev/null); then
+        echo "git-nook: warning: could not contact ${url} to check for existing data; if some exists, run: git nook ${name} pull" >&2
+        return 0
+    fi
+    [[ -n "${lsout}" ]] || return 0
+    if [[ -n "$(ls -A "${dir}" 2>/dev/null)" ]]; then
+        echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
+        echo "git-nook: commit your local files, then reconcile:"
+        echo "git-nook:   git nook ${name} add --all && git nook ${name} commit -m 'local files'"
+        echo "git-nook:   git nook ${name} pull --allow-unrelated-histories"
+        return 0
+    fi
+    if git --git-dir="${gitdir}" fetch --quiet origin \
+        && git --git-dir="${gitdir}" --work-tree="${dir}" reset --hard --quiet refs/remotes/origin/main; then
+        echo "git-nook: bootstrapped ${dir}/ from ${ref}"
+    else
+        # Roll back everything this add created so a retry starts clean.
+        rm -rf "${gitdir}"
+        git config --remove-section "nook.${name}" 2>/dev/null || true
+        remove_exclude_entry "/${dir}/"
+        if [[ -n "${created_root}" ]]; then
+            rm -rf "${created_root}"
+        fi
+        err "bootstrap from ${url} failed; the nook was rolled back — fix the problem above and re-run add"
+        exit 1
+    fi
 }
 
 cmd_list() {
