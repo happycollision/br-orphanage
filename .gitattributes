@@ -1,0 +1,5 @@
+# Force LF on checkout for all text files, regardless of the user's
+# core.autocrlf. This repo ships bash scripts (bin/git-nook, install.sh,
+# tests/run.sh); a CRLF checkout breaks their shebangs and every line of
+# shell they contain.
+* text=auto eol=lf
