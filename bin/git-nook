@@ -258,6 +258,13 @@ cmd_add() {
         exit 1
     fi
 
+    # A file, fifo, or dangling symlink at ${dir} would otherwise surface as a
+    # raw mkdir error below (-L catches dangling symlinks, which fail -e).
+    if [[ -e "${dir}" || -L "${dir}" ]] && [[ ! -d "${dir}" ]]; then
+        err "'${dir}' exists but is not a directory"
+        exit 1
+    fi
+
     # Track the TOPMOST ancestor this add creates, so bootstrap rollback can
     # remove exactly what we made (a nested --dir may create several levels)
     # and nothing the user already had. Empty when ${dir} already existed.
@@ -302,7 +309,7 @@ cmd_add() {
         echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
         echo "git-nook: commit your local files, then reconcile:"
         echo "git-nook:   git nook ${name} add --all && git nook ${name} commit -m 'local files'"
-        echo "git-nook:   git nook ${name} pull --no-rebase --allow-unrelated-histories"
+        echo "git-nook:   git nook ${name} pull --no-rebase --no-edit --allow-unrelated-histories"
         return 0
     fi
     if git --git-dir="${gitdir}" fetch --quiet origin \

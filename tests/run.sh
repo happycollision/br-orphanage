@@ -263,6 +263,14 @@ assert_eq "non-refs/ template lands under refs/heads/" \
 assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
 assert_true "custom dir excluded" grep -qxF '/tmp/scratch/' "${ADD_EXCLUDE}"
 
+# A --dir that exists but is not a directory (here: a dangling symlink, which
+# even fails -e) must be refused cleanly, not crash with a raw mkdir error.
+ln -s /nonexistent-target "${ADD_PROJ}/badlink"
+run_cmd_in "${ADD_PROJ}" "${NOOK}" add badnook origin --dir badlink
+assert_exit_nonzero "--dir pointing at a non-directory refused"
+assert_contains "non-directory --dir error is a clean err()" "${RUN_OUT}" "not a directory"
+rm "${ADD_PROJ}/badlink"
+
 # Names differing only by case would collide on case-insensitive filesystems.
 CASE_PROJ="${WORK}/proj-case-collide"
 make_project_repo "${CASE_PROJ}" yes "case-collide"
@@ -470,57 +478,63 @@ assert_contains "add names the reconcile command" "${BS_C_OUT}" "--allow-unrelat
 # pull.rebase get "Need to specify how to reconcile divergent branches"
 # (git >= 2.27) from the exact command we told them to run.
 assert_contains "reconcile hint pins the merge strategy" "${BS_C_OUT}" "--no-rebase"
+# ...and --no-edit, so interactive users aren't dropped into an editor.
+assert_contains "reconcile hint skips the merge-message editor" "${BS_C_OUT}" "--no-edit"
 assert_eq "local file untouched" \
     "precious local-only work" "$(cat "${BS_C}/.notes/local.md")"
 
 # The printed procedure actually works (same flags as the printed hint, plus
-# -q --no-edit for harness quietness; the explicit --no-rebase validates the
-# hint as printed rather than leaning on the harness's global pull.rebase pin):
+# -q for harness quietness; the explicit flags validate the hint as printed
+# rather than leaning on the harness's global pull.rebase pin):
 (cd "${BS_C}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "local files")
-(cd "${BS_C}" && "${NOOK}" notes pull -q --no-edit --no-rebase --allow-unrelated-histories)
+(cd "${BS_C}" && "${NOOK}" notes pull -q --no-rebase --no-edit --allow-unrelated-histories)
 assert_file_exists "remote content merged in" "${BS_C}/.notes/shared.md"
 assert_file_exists "local content survived" "${BS_C}/.notes/local.md"
 (cd "${BS_C}" && "${NOOK}" notes push -q)
 
 section "bootstrap: failure rolls the add back cleanly"
 
-# Deterministic failure AFTER ls-remote succeeds: publish real data to the
-# target, then make the (pre-existing, user-created) content dir read-only so
-# the materializing reset --hard cannot write into it. (Assumes tests do not
-# run as root, which would ignore permissions.)
-BS_D="${WORK}/proj-bs-d"
-make_project_repo "${BS_D}" yes "bs-fail"
-git -C "${BS_D}" push -q origin HEAD:refs/heads/main
-BS_D_SEED="${WORK}/proj-bs-d-seed"
-git clone -q "${WORK}/origins/bs-fail.git" "${BS_D_SEED}"
-(cd "${BS_D_SEED}" && "${NOOK}" add notes origin >/dev/null)
-printf 'seeded\n' > "${BS_D_SEED}/.notes/seed.md"
-(cd "${BS_D_SEED}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m seed && "${NOOK}" notes push -q)
-
-mkdir -p "${BS_D}/.notes"
-chmod 555 "${BS_D}/.notes"
-run_cmd_in "${BS_D}" "${NOOK}" add notes origin
-chmod 755 "${BS_D}/.notes"
-assert_exit_nonzero "bootstrap materialize failure exits nonzero"
-assert_contains "failure says it rolled back" "${RUN_OUT}" "rolled back"
-if git -C "${BS_D}" config --get nook.notes.dir >/dev/null 2>&1; then
-    fail "config not rolled back after bootstrap failure"
+if [[ "$(id -u)" -eq 0 ]]; then
+    echo "  [SKIP] running as root; permission-based failure injection unavailable"
 else
-    pass "config rolled back after bootstrap failure"
-fi
-assert_file_absent "inner repo rolled back" "${BS_D}/.git/nook/notes.git"
-BS_D_EXCLUDE=$(abs_git_path "${BS_D}" info/exclude)
-if grep -qxF '/.notes/' "${BS_D_EXCLUDE}" 2>/dev/null; then
-    fail "exclude entry not rolled back after bootstrap failure"
-else
-    pass "exclude entry rolled back after bootstrap failure"
-fi
-assert_dir_exists "user-created dir kept (add did not create it)" "${BS_D}/.notes"
+    # Deterministic failure AFTER ls-remote succeeds: publish real data to the
+    # target, then make the (pre-existing, user-created) content dir read-only
+    # so the materializing reset --hard cannot write into it. (Root ignores
+    # permissions, hence the skip above.)
+    BS_D="${WORK}/proj-bs-d"
+    make_project_repo "${BS_D}" yes "bs-fail"
+    git -C "${BS_D}" push -q origin HEAD:refs/heads/main
+    BS_D_SEED="${WORK}/proj-bs-d-seed"
+    git clone -q "${WORK}/origins/bs-fail.git" "${BS_D_SEED}"
+    (cd "${BS_D_SEED}" && "${NOOK}" add notes origin >/dev/null)
+    printf 'seeded\n' > "${BS_D_SEED}/.notes/seed.md"
+    (cd "${BS_D_SEED}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m seed && "${NOOK}" notes push -q)
 
-# Once writable again, the same add succeeds (nothing stale left behind).
-BS_D_OUT2=$(cd "${BS_D}" && "${NOOK}" add notes origin)
-assert_contains "re-add after repair bootstraps" "${BS_D_OUT2}" "bootstrapped"
-assert_file_exists "content materialized on retry" "${BS_D}/.notes/seed.md"
+    mkdir -p "${BS_D}/.notes"
+    chmod 555 "${BS_D}/.notes"
+    run_cmd_in "${BS_D}" "${NOOK}" add notes origin
+    chmod 755 "${BS_D}/.notes"
+    assert_exit_nonzero "bootstrap materialize failure exits nonzero"
+    assert_contains "failure says it rolled back" "${RUN_OUT}" "rolled back"
+    if git -C "${BS_D}" config --get nook.notes.dir >/dev/null 2>&1; then
+        fail "config not rolled back after bootstrap failure"
+    else
+        pass "config rolled back after bootstrap failure"
+    fi
+    assert_file_absent "inner repo rolled back" "${BS_D}/.git/nook/notes.git"
+    BS_D_EXCLUDE=$(abs_git_path "${BS_D}" info/exclude)
+    if grep -qxF '/.notes/' "${BS_D_EXCLUDE}" 2>/dev/null; then
+        fail "exclude entry not rolled back after bootstrap failure"
+    else
+        pass "exclude entry rolled back after bootstrap failure"
+    fi
+    assert_dir_exists "user-created dir kept (add did not create it)" "${BS_D}/.notes"
+
+    # Once writable again, the same add succeeds (nothing stale left behind).
+    BS_D_OUT2=$(cd "${BS_D}" && "${NOOK}" add notes origin)
+    assert_contains "re-add after repair bootstraps" "${BS_D_OUT2}" "bootstrapped"
+    assert_file_exists "content materialized on retry" "${BS_D}/.notes/seed.md"
+fi
 
 section "bootstrap: nested --dir rollback removes only the created ancestor (created_root)"
 
