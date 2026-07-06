@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The tool always resolves the parent repo from $PWD; ambient git env
+# vars (from wrapper scripts, hooks, prompts) would silently redirect
+# every git call below.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 # git-nook — git for a hidden directory.
 #
 # A nook is an ordinary git repository whose git-dir hides under the parent
@@ -343,12 +348,15 @@ run_passthrough() {
     # /tmp -> /private/tmp) or the containment check below never matches.
     worktree=$(cd "${worktree}" && pwd -P)
     # Predictable relative pathspecs: run from the nook's worktree unless the
-    # caller is already somewhere inside it.
-    case "$(pwd -P)/" in
-        "${worktree}/"*) ;;
-        *) cd "${worktree}" ;;
-    esac
+    # caller is already somewhere inside it. ([[ ]] with the variable quoted
+    # compares literally even if the path contains glob metacharacters.)
+    if [[ "$(pwd -P)/" != "${worktree}/"* ]]; then
+        cd "${worktree}"
+    fi
     exec git --git-dir="${gitdir}" --work-tree="${worktree}" "$@"
+    # exec never returns; guard against a future edit accidentally falling
+    # through to the dispatch's unknown-nook error after doing real work.
+    exit 1
 }
 
 # --- Dispatch -------------------------------------------------------------------

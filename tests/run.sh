@@ -366,6 +366,15 @@ mkdir -p "${GONE_PROJ}/.stash"
 (cd "${GONE_PROJ}" && "${NOOK}" stash checkout -- .)
 assert_file_exists "recovery hint restores the nook's files" "${GONE_PROJ}/.stash/keeper.txt"
 
+section "passthrough: ambient git env vars are ignored"
+
+# Wrapper scripts, hooks, and shell prompts export GIT_DIR/GIT_WORK_TREE;
+# git-nook must resolve the parent repo from $PWD regardless.
+ENVLEAK_OUT=$(cd "${PT_PROJ}" && GIT_DIR=/nonexistent "${NOOK}" notes log --oneline)
+assert_contains "exported GIT_DIR is ignored" "${ENVLEAK_OUT}" "first nook commit"
+ENVLEAK_WT_OUT=$(cd "${PT_PROJ}" && GIT_WORK_TREE="${WORK}/bogus-worktree" "${NOOK}" notes log --oneline)
+assert_contains "exported GIT_WORK_TREE is ignored" "${ENVLEAK_WT_OUT}" "first nook commit"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
