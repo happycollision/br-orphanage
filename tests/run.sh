@@ -256,6 +256,14 @@ assert_eq "non-refs/ template lands under refs/heads/" \
 assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
 assert_true "custom dir excluded" grep -qxF '/tmp/scratch/' "${ADD_EXCLUDE}"
 
+# Names differing only by case would collide on case-insensitive filesystems.
+CASE_PROJ="${WORK}/proj-case-collide"
+make_project_repo "${CASE_PROJ}" yes "case-collide"
+(cd "${CASE_PROJ}" && "${NOOK}" add Casey origin >/dev/null)
+run_cmd_in "${CASE_PROJ}" "${NOOK}" add casey origin
+assert_exit_nonzero "case-colliding nook name refused"
+assert_contains "case-collision error names the existing nook" "${RUN_OUT}" "Casey"
+
 section "list / show"
 
 LIST_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" list)
@@ -270,6 +278,19 @@ assert_contains "show prints branch state" "${SHOW_OUT}" "state:"
 
 run_cmd_in "${ADD_PROJ}" "${NOOK}" show nope
 assert_exit_nonzero "show of unknown nook exits nonzero"
+
+# Regression: show/list must degrade gracefully (not crash with git's raw
+# 128 under pipefail) when a nook's inner git-dir is missing or broken.
+# Throwaway repo: rm -rf'ing the inner git-dir corrupts state for reuse.
+BROKEN_PROJ="${WORK}/proj-broken-show"
+make_project_repo "${BROKEN_PROJ}" yes "broken-show"
+(cd "${BROKEN_PROJ}" && "${NOOK}" add wrecked origin >/dev/null)
+rm -rf "${BROKEN_PROJ}/.git/nook/wrecked.git"
+run_cmd_in "${BROKEN_PROJ}" "${NOOK}" show wrecked
+assert_eq "show of nook with missing inner git-dir exits 0" "0" "${RUN_EXIT}"
+assert_contains "show of broken nook prints url (none)" "${RUN_OUT}" "url:     (none)"
+BROKEN_LIST=$(cd "${BROKEN_PROJ}" && "${NOOK}" list)
+assert_contains "list flags the missing inner repo" "${BROKEN_LIST}" "(no inner repo)"
 
 EMPTY_PROJ="${WORK}/proj-empty-list"
 make_project_repo "${EMPTY_PROJ}" no

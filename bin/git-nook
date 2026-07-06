@@ -193,6 +193,20 @@ cmd_add() {
         err "nook '${name}' already exists (see: git nook show ${name})"
         exit 1
     fi
+    # Case-insensitive duplicate check: git config subsections are
+    # case-sensitive, but the content dir and the inner git-dir live on a
+    # filesystem that may not be. (tr, not ${var,,}: macOS ships bash 3.2.)
+    local dup_key dup_name name_lc dup_lc
+    name_lc=$(printf '%s' "${name}" | tr '[:upper:]' '[:lower:]')
+    while read -r dup_key _; do
+        [[ -n "${dup_key}" ]] || continue
+        dup_name="${dup_key#nook.}"; dup_name="${dup_name%.dir}"
+        dup_lc=$(printf '%s' "${dup_name}" | tr '[:upper:]' '[:lower:]')
+        if [[ "${dup_lc}" == "${name_lc}" ]]; then
+            err "nook '${dup_name}' already exists and differs from '${name}' only by case (unsafe on case-insensitive filesystems)"
+            exit 1
+        fi
+    done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
 
     # Target: an existing parent remote name wins (resolved to its URL once,
     # now); otherwise anything with ':' or '/' is accepted as a literal URL.
@@ -209,7 +223,7 @@ cmd_add() {
     [[ -n "${dir}" ]] || dir=".${name}"
     dir="${dir%/}"
     case "${dir}" in
-        /* | . | .. | ./* | ../* | */.. | */../* | .git | .git/*)
+        /* | . | .. | ./* | ../* | */.. | */../* | .git | .git/* | */.git | */.git/*)
             err "--dir must be a repo-relative path (no '..', not under .git)"
             exit 1 ;;
     esac
@@ -239,6 +253,9 @@ cmd_add() {
         exit 1
     fi
 
+    # NOTE: mkdir -p may create multiple ancestor levels for a nested --dir;
+    # created_dir only records the leaf. The bootstrap rollback (later task)
+    # must not assume ancestors are cleaned up.
     local created_dir=0
     if [[ ! -d "${dir}" ]]; then
         mkdir -p "${dir}"
@@ -294,8 +311,10 @@ cmd_show() {
         exit 1
     fi
     gitdir=$(inner_git_dir "${name}")
-    # shellcheck disable=SC2312 # a broken inner repo shows empty fields rather than aborting show
-    state=$(git --git-dir="${gitdir}" --work-tree="${dir}" status -sb 2>/dev/null | head -n 1)
+    # A broken/missing inner repo degrades to empty fields rather than
+    # aborting show; without the || guard, pipefail + set -e would kill the
+    # script with git's raw 128.
+    state=$(git --git-dir="${gitdir}" --work-tree="${dir}" status -sb 2>/dev/null | head -n 1) || state=""
     echo "name:    ${name}"
     echo "dir:     ${dir}/"
     echo "git-dir: ${gitdir}"
