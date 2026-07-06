@@ -164,6 +164,44 @@ make_project_repo() {
     fi
 }
 
+# --- install.sh (local dev mode into the fake HOME) --------------------------------
+
+section "install.sh: local dev mode"
+
+LOCALBIN="${FAKE_HOME}/.local/bin"
+INSTALL_OUT=$("${REPO_UNDER_TEST}/install.sh")
+assert_contains "installer reports local-checkout install" "${INSTALL_OUT}" "installed from local checkout"
+assert_file_exists "git-nook installed at the default user-bin path" "${LOCALBIN}/git-nook"
+assert_true "installed git-nook is executable" test -x "${LOCALBIN}/git-nook"
+assert_contains "installer reports the installed version" "${INSTALL_OUT}" "installed version"
+if [[ "${INSTALL_OUT}" == *"br-orphanage"* || "${INSTALL_OUT}" == *" br "* ]]; then
+    fail "installer output still mentions br-orphanage or a br dependency"
+else
+    pass "installer output has no br-orphanage/br references"
+fi
+
+section "install.sh: override path, PATH guidance, upgrade reporting"
+
+FB_HOME="${WORK}/fallback-home"
+mkdir -p "${FB_HOME}"
+FB_INSTALL="${FB_HOME}/tools/git-nook"
+FB_OUT=$(env HOME="${FB_HOME}" GIT_NOOK_INSTALL_PATH="${FB_INSTALL}" PATH="/usr/bin:/bin" \
+    "${REPO_UNDER_TEST}/install.sh")
+assert_contains "override install names the selected path" "${FB_OUT}" "${FB_INSTALL}"
+assert_contains "override install prints PATH guidance" "${FB_OUT}" "${FB_HOME}/tools"
+assert_file_exists "override install wrote the selected executable" "${FB_INSTALL}"
+
+sed -i.bak 's/^VERSION=".*"$/VERSION="0.0.0"/' "${LOCALBIN}/git-nook" && rm -f "${LOCALBIN}/git-nook.bak"
+UPGRADE_OUT=$("${REPO_UNDER_TEST}/install.sh")
+assert_contains "upgrade reports old -> new version" "${UPGRADE_OUT}" "updated 0.0.0 ->"
+
+section "install.sh: notes a leftover br-orphanage binary"
+
+touch "${LOCALBIN}/br-orphanage"
+OLDBIN_OUT=$("${REPO_UNDER_TEST}/install.sh")
+assert_contains "installer flags the old binary for removal" "${OLDBIN_OUT}" "br-orphanage"
+rm -f "${LOCALBIN}/br-orphanage"
+
 # --- Command surface: version, help, unknown commands ---------------------------
 
 section "command surface: version, help, unknown commands"
