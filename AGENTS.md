@@ -48,11 +48,14 @@ br sync --status      # Check sync status
 **Before ending any session, run this checklist:**
 
 ```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads changes to JSONL
-git commit -m "..."     # Commit everything
-git push                # Push to remote
+git status                        # Check what changed
+git add <files>                   # Stage code changes
+br sync --flush-only              # Export beads changes to JSONL
+git nook beads add --all          # Stage issue data in the nook
+git nook beads commit -m "issues" # Commit it (skip if nothing changed)
+git nook beads push               # Publish the hidden ref
+git commit -m "..."               # Commit code
+git push                          # Push code
 ```
 
 ### Best Practices
@@ -67,38 +70,39 @@ git push                # Push to remote
 
 ## This project
 
-...is a standalone companion command for `br`. Everything above is true: normal
-issue work uses the real `br` (`br ready`, `br list`, `br create`, `br close`,
-and so on).
+...develops `git-nook` ("git for a hidden directory"): real git tracking for
+files the host repo cannot track, hidden in an inner repository under
+`.git/nook/<name>.git` and published to a custom ref (`refs/nook/...`) that
+never appears in branch listings or default clones.
 
-This project also installs a `br-orphanage` command for orphan-branch setup and
-publication:
+This project's own issues (beads) are tracked in exactly such a nook:
 
 ```bash
-br-orphanage init
-br-orphanage target <remote-or-url>
-br-orphanage sync
-br-orphanage --help
-br-orphanage --version
+git nook list                 # see this repo's nooks (expect: beads)
+git nook beads status         # any git command works against the nook
 ```
 
-This project's own issues are tracked on an orphan branch using this tool.
+The daily beads flow on this repo:
 
-`br-orphanage sync` runs `br sync --flush-only` under the hood, then manages
-actually syncing to origin. (So yes, these commands do in fact run some git
-commands, contrary to the docs for `br` proper.)
+```bash
+br sync --flush-only          # beads DB -> .beads/issues.jsonl
+git nook beads add --all
+git nook beads commit -m "issues"
+git nook beads pull --no-rebase   # only needed when another machine pushed
+git nook beads push
+```
 
-In a nutshell, the point of this project is to give users a nice, repeatable way
-to use beads on repos where they don't want to leave a trace of the fact that
-they use beads at all. (You can, after all, target a completely separate repo
-for your beads sync, unlike this one.)
+If a pull merges `issues.jsonl` from another machine, do NOT hand-resolve
+JSONL conflicts; run the helper script committed on the beads nook itself
+(see `git nook beads ls-files` for its name) — it re-imports through the
+real `br` (per-issue, newest-wins, tombstone-protected).
 
 ## Planning (designs and implementation plans)
 
 Track designs and implementation plans **in beads**, not as committed markdown in
 `docs/plans/` on `master`. The whole point of this tool is tracking project work
 without leaving a trace on the main repo — so planning artifacts belong on the
-orphan branch, and `master` stays pristine. (Bonus: it dogfoods the tool.)
+beads nook, and `master` stays pristine. (Bonus: it dogfoods the tool.)
 
 - Model a design as an `epic`, and each plan step as a child `task`/`feature` via
   `br create --parent <epic>`.
@@ -108,14 +112,18 @@ orphan branch, and `master` stays pristine. (Bonus: it dogfoods the tool.)
 - Beads descriptions are plain-text JSONL (not rendered markdown), and the issue
   is the *only* record — so inline the full detail: files touched, key code, exact
   test assertions.
-- After creating them, run `br-orphanage sync` and verify the orphan branch
-  received them (`git show refs/orphanage/pushed:issues.jsonl | grep <id>`). Do
-  **not** commit the design/plan markdown to `master`.
+- After creating them, publish via the session protocol and verify the nook's
+  ref received them (`git nook beads show origin/main:issues.jsonl | grep <id>`).
+  Do **not** commit the design/plan markdown to `master`.
 
 ## Observation
 
-Since we develop this `br-orphanage` tool, it is important that we use it and always observe its behavior. Whenever you use the tool, check that it actually did what you expected it to do. For example, if you run `br-orphanage sync`, please check that the orphan branch you expect gets the changes you expect. If anything seems off, open an issue using beads.
+Since we develop `git-nook`, always use it and observe its behavior. After
+any `git nook beads push`, verify the ref actually updated:
 
-Any time you use beads, please then run `br-orphanage sync` and verify
-`refs/orphanage/pushed:issues.jsonl` contains the expected issue changes. We
-always want the remote orphan branch to get all our issues.
+```bash
+git ls-remote origin 'refs/nook/*'
+git nook beads status -sb     # expect: up to date with origin/main
+```
+
+If anything seems off, open an issue with `br create` and push the nook.
