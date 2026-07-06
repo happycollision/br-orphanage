@@ -466,12 +466,18 @@ printf 'precious local-only work\n' > "${BS_C}/.notes/local.md"
 BS_C_OUT=$(cd "${BS_C}" && "${NOOK}" add notes origin)
 assert_contains "add warns about the existing remote ref" "${BS_C_OUT}" "not empty"
 assert_contains "add names the reconcile command" "${BS_C_OUT}" "--allow-unrelated-histories"
+# The hint must specify --no-rebase: without it, users lacking a configured
+# pull.rebase get "Need to specify how to reconcile divergent branches"
+# (git >= 2.27) from the exact command we told them to run.
+assert_contains "reconcile hint pins the merge strategy" "${BS_C_OUT}" "--no-rebase"
 assert_eq "local file untouched" \
     "precious local-only work" "$(cat "${BS_C}/.notes/local.md")"
 
-# The printed procedure actually works:
+# The printed procedure actually works (same flags as the printed hint, plus
+# -q --no-edit for harness quietness; the explicit --no-rebase validates the
+# hint as printed rather than leaning on the harness's global pull.rebase pin):
 (cd "${BS_C}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "local files")
-(cd "${BS_C}" && "${NOOK}" notes pull -q --no-edit --allow-unrelated-histories)
+(cd "${BS_C}" && "${NOOK}" notes pull -q --no-edit --no-rebase --allow-unrelated-histories)
 assert_file_exists "remote content merged in" "${BS_C}/.notes/shared.md"
 assert_file_exists "local content survived" "${BS_C}/.notes/local.md"
 (cd "${BS_C}" && "${NOOK}" notes push -q)

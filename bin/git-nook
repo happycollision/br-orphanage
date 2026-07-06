@@ -302,7 +302,7 @@ cmd_add() {
         echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
         echo "git-nook: commit your local files, then reconcile:"
         echo "git-nook:   git nook ${name} add --all && git nook ${name} commit -m 'local files'"
-        echo "git-nook:   git nook ${name} pull --allow-unrelated-histories"
+        echo "git-nook:   git nook ${name} pull --no-rebase --allow-unrelated-histories"
         return 0
     fi
     if git --git-dir="${gitdir}" fetch --quiet origin \
