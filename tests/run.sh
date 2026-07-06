@@ -201,6 +201,81 @@ assert_eq "bin/git-nook tracked as 100755" "100755" "${BIN_MODE}"
 INSTALL_MODE=$(git -C "${REPO_UNDER_TEST}" ls-files -s install.sh | awk '{print $1}')
 assert_eq "install.sh tracked as 100755" "100755" "${INSTALL_MODE}"
 
+# --- add / list / show: inner repo creation and wiring ---------------------------
+
+section "add: creates a wired hidden inner repo"
+
+ADD_PROJ="${WORK}/proj-add"
+make_project_repo "${ADD_PROJ}" yes "add-demo"
+
+ADD_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" add notes origin)
+assert_contains "add reports the new nook" "${ADD_OUT}" "added nook 'notes'"
+
+assert_dir_exists "content dir created with default name" "${ADD_PROJ}/.notes"
+assert_file_absent "content dir contains NO .git entry" "${ADD_PROJ}/.notes/.git"
+ADD_GITDIR="${ADD_PROJ}/.git/nook/notes.git"
+assert_dir_exists "inner git dir hidden under parent .git" "${ADD_GITDIR}"
+
+assert_eq "parent config maps name -> dir" \
+    ".notes" "$(git -C "${ADD_PROJ}" config --get nook.notes.dir)"
+ADD_EXCLUDE=$(abs_git_path "${ADD_PROJ}" info/exclude)
+assert_true "content dir excluded (anchored) in parent info/exclude" \
+    grep -qxF '/.notes/' "${ADD_EXCLUDE}"
+
+inner_cfg() { git --git-dir="${ADD_GITDIR}" config --get "$1"; }
+ADD_ORIGIN_URL=$(git -C "${ADD_PROJ}" remote get-url origin)
+# origin URL is $WORK/origins/add-demo.git -> owner=origins project=add-demo
+ADD_REF="refs/nook/origins/add-demo/notes"
+assert_eq "inner core.bare false" "false" "$(inner_cfg core.bare)"
+assert_eq "inner autocrlf pinned off" "false" "$(inner_cfg core.autocrlf)"
+assert_eq "inner remote url resolved from parent remote" "${ADD_ORIGIN_URL}" "$(inner_cfg remote.origin.url)"
+assert_eq "inner fetch refspec targets the custom ref" \
+    "+${ADD_REF}:refs/remotes/origin/main" "$(inner_cfg remote.origin.fetch)"
+assert_eq "inner push refspec publishes main to the custom ref" \
+    "refs/heads/main:${ADD_REF}" "$(inner_cfg remote.origin.push)"
+assert_eq "branch.main.remote wired" "origin" "$(inner_cfg branch.main.remote)"
+assert_eq "branch.main.merge wired to the custom ref" "${ADD_REF}" "$(inner_cfg branch.main.merge)"
+assert_eq "inner HEAD is main regardless of init.defaultBranch" \
+    "refs/heads/main" "$(git --git-dir="${ADD_GITDIR}" symbolic-ref HEAD)"
+
+assert_eq "parent git status stays clean after add" \
+    "" "$(git -C "${ADD_PROJ}" status --porcelain)"
+
+section "add: --dir and --ref overrides; URL targets"
+
+ADD_TGT_BARE="${WORK}/targets/add-ext.git"
+mkdir -p "$(dirname "${ADD_TGT_BARE}")"
+git init -q --bare "${ADD_TGT_BARE}"
+(cd "${ADD_PROJ}" && "${NOOK}" add scratch "${ADD_TGT_BARE}" --dir tmp/scratch --ref 'my-nooks/<name>')
+SCRATCH_GITDIR="${ADD_PROJ}/.git/nook/scratch.git"
+assert_eq "URL target stored literally on the inner remote" \
+    "${ADD_TGT_BARE}" "$(git --git-dir="${SCRATCH_GITDIR}" config --get remote.origin.url)"
+assert_eq "non-refs/ template lands under refs/heads/" \
+    "refs/heads/main:refs/heads/my-nooks/scratch" \
+    "$(git --git-dir="${SCRATCH_GITDIR}" config --get remote.origin.push)"
+assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
+assert_true "custom dir excluded" grep -qxF '/tmp/scratch/' "${ADD_EXCLUDE}"
+
+section "list / show"
+
+LIST_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" list)
+assert_contains "list shows notes" "${LIST_OUT}" "notes"
+assert_contains "list shows scratch's dir" "${LIST_OUT}" "tmp/scratch/"
+
+SHOW_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" show notes)
+assert_contains "show prints the dir" "${SHOW_OUT}" "dir:     .notes/"
+assert_contains "show prints the url" "${SHOW_OUT}" "url:     ${ADD_ORIGIN_URL}"
+assert_contains "show prints the push refspec" "${SHOW_OUT}" "refs/heads/main:${ADD_REF}"
+assert_contains "show prints branch state" "${SHOW_OUT}" "state:"
+
+run_cmd_in "${ADD_PROJ}" "${NOOK}" show nope
+assert_exit_nonzero "show of unknown nook exits nonzero"
+
+EMPTY_PROJ="${WORK}/proj-empty-list"
+make_project_repo "${EMPTY_PROJ}" no
+EMPTY_LIST=$(cd "${EMPTY_PROJ}" && "${NOOK}" list)
+assert_contains "empty list explains how to create one" "${EMPTY_LIST}" "git nook add"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
