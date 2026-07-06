@@ -1,258 +1,230 @@
-# Beads Orphanage (br-orphanage)
+# git-nook
 
-A standalone companion command for
-[`br`](https://github.com/Dicklesworthstone/beads_rust) that syncs each
-project's beads issue data to an **orphan branch** on a git repo you choose,
-per project. Issue data never has to live in - or leak from - a repo you
-didn't pick for it. The name: orphan branches live in the orphanage.
+**Git for a hidden directory.**
 
-`br-orphanage` handles orphan-branch setup and publication. Normal issue work
-still uses the real `br`: `br ready`, `br list`, `br create`, `br close`, and
-the rest of beads' own command surface.
+`git-nook` gives a directory of files real git tracking — status, commits,
+diffs, log, branches, merges, conflicts, push, pull — even when the host
+repo cannot or should not track them itself. Each tracked directory (a
+"nook") is backed by a genuine git repository hidden inside the host repo's
+`.git/`, and published to a custom ref that appears in no branch listing, no
+host web UI, and no default clone. Once a nook exists, every day-to-day
+operation is a plain git command you already know; the tool's only jobs are
+creating nooks and handing your git invocations to the right one.
 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/happycollision/br-orphanage/master/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/happycollision/git-nook/master/install.sh | bash
 ```
 
-This installs the command directly to `~/.local/bin/br-orphanage`, creating
-`~/.local/bin` when needed, and `chmod +x`s it. It changes no shell startup
-files and never installs anything named `br`. If `~/.local/bin` is not on
-`PATH`, it prints focused PATH guidance and the full path to invoke instead.
-Running it again is safe; it refreshes the executable in place.
+This installs `git-nook` to `~/.local/bin/git-nook` (override with
+`GIT_NOOK_INSTALL_PATH`), making it callable as `git nook` anywhere git looks
+for subcommands on your `PATH`. Running the one-liner again upgrades it in
+place.
 
-To install somewhere else:
+From a checkout of this repo, run the local copy instead of downloading a
+release:
 
 ```sh
-BR_ORPHANAGE_INSTALL_PATH=/opt/bin/br-orphanage bash install.sh
+./install.sh
 ```
-
-For a cautious install, download `install.sh`, inspect it, then run it. Release
-downloads verify the `br-orphanage` executable against the release
-`br-orphanage.sha256` file. That protects against corrupt downloads or asset
-mismatches, but not against a compromised release account that replaces both
-files. Once release automation exists, GitHub artifact attestations or
-Sigstore/cosign signatures should provide the stronger provenance signal; for
-GitHub attestations, the expected shape is `gh attestation verify ... -R
-happycollision/br-orphanage`.
-
-Use it directly:
-
-```sh
-br-orphanage init
-br-orphanage target origin
-br-orphanage sync
-```
-
-**Local dev mode:** running `install.sh` from a checkout of this repo copies the
-local command instead of downloading it, so contributors and the test harness
-exercise the local source.
-
-**Update:** To update the command, re-run the one-liner (or `install.sh` in a
-checkout). `br-orphanage --version` prints what you currently have installed.
 
 ## Quick start
 
 ```sh
-# Private repo: host issues on the project's own origin.
-br-orphanage init --target origin
-
-# Public project: keep issues elsewhere, private.
-br-orphanage init --target git@github.com:you/private-issues.git
-
-# Anytime after that:
-br-orphanage sync
-
-# Every known project on this machine, in one run:
-br-orphanage sync --all
-
-# Normal issue work stays on the real br:
-br ready
-br list --status=open
-br create --title="..." --type=task --priority=2
-br close <id> --reason="Completed"
+git nook add notes origin
 ```
+
+This creates a hidden inner git repository for a nook named `notes`, wires
+its remote to a custom ref on `origin`, and gives you a worktree at
+`.notes/` (excluded from the host repo via `.git/info/exclude`, so `git
+status` in the host repo never mentions it). Edit files there like any
+other directory:
+
+```sh
+echo "today's notes" > .notes/today.md
+git nook notes status
+git nook notes add --all
+git nook notes commit -m "today's notes"
+git nook notes push
+```
+
+On another machine (or a fresh clone of the host repo), one command
+bootstraps the whole thing — inner repo, exclude entry, and content —
+straight from the published ref:
+
+```sh
+git nook add notes origin
+```
+
+If the ref already has history, `add` fetches it and materializes `.notes/`
+automatically; there's nothing else to run.
+
+## How it works
+
+A nook is two paths:
+
+```
+.git/nook/notes.git   # a real git repository (hidden inside your .git)
+.notes/               # its worktree; excluded via .git/info/exclude
+```
+
+`.notes/` has no `.git` file — `git nook add` never runs a plain `git init`
+inside it, so the host repo sees only plain excluded files: no gitlink, no
+submodule confusion, no trace that another repository is involved at all.
+The inner repository is reachable only through the wrapper:
+
+```
+git nook <name> <any-git-args...>
+# ≈ git --git-dir=.git/nook/<name>.git --work-tree=<content-dir> <any-git-args...>
+```
+
+So `git nook notes log -p`, `git nook notes branch`, `git nook notes stash`
+— anything git can do — works exactly as it would in a normal checkout.
+Local branches, stash, reflog, your merge tool: all available. The one
+branch-shaped constraint is that publication is single-ref — `add` bakes a
+push refspec that always publishes the inner repo's `main` branch to one
+custom ref, so `push`/`pull` and tracking output (`ahead 1`, `behind 2`)
+work out of the box without you configuring anything.
+
+Conflicts are ordinary git conflicts: markers land in your working files,
+you resolve them with whatever tooling you already use, and you commit the
+resolution — no special merge mode, no policy machinery.
+
+## Choosing a target and ref
+
+`git nook add <name> <target> [--dir <dir>] [--ref <template>]`
+
+`<target>` is either the name of an existing remote in the host repo (most
+commonly `origin`) or a literal git URL, resolved to a URL once, at `add`
+time.
+
+- **Same-repo `origin` (the default posture)** — hidden in plain sight.
+  Nothing shows up in branch listings or the web UI, but anyone with read
+  access to the repo can still discover the ref with `git ls-remote
+  origin`. This is the right choice when the goal is keeping clutter out of
+  normal git workflows, not restricting who can see the content.
+- **A private repo you own** — full access-control separation. Point
+  `add` at a URL (or a remote name) for a repo whose access list you
+  control independently of the host repo's. The host repo stays exactly as
+  traceless either way; only the target changes.
+
+By default the published ref is `refs/nook/<owner>/<project>/<name>`, with
+`<owner>` and `<project>` derived from the host repo's `origin` URL. Pass
+`--ref` to override the template:
+
+- A value starting with `refs/` is used verbatim — e.g. `--ref
+  refs/heads/notes` publishes to a normal, browsable branch instead of a
+  hidden custom ref.
+- Anything else is treated as a branch name and prefixed with
+  `refs/heads/` automatically (useful for hosts that restrict which ref
+  namespaces can be pushed).
+
+`--dir` sets the content directory (default `.<name>/`); use it to put a
+nook's files somewhere other than the default, e.g. `--dir .beads`.
+
+## Worked example: hidden issue tracking with beads
+
+A common motivating case: tracking [beads](https://github.com/Dicklesworthstone/beads_rust)
+(`br`/`bd`) issues for a project without adding a `.beads/` directory to the
+project's own git history. Point a nook's content dir straight at `.beads`:
+
+```sh
+git nook add beads origin --dir .beads
+```
+
+`br` already ships its own `.beads/.gitignore` that excludes local state
+(`*.db*`, lock files, daemon files, and so on) — the inner repo honors it
+natively, since filtering authority always belongs to the nook's own
+`.gitignore`. The one thing worth excluding from tracking entirely is that
+`.gitignore` file itself, since `br` regenerates it and syncing it across
+machines just invites version churn. Add one line to the *inner* repo's own
+exclude file (not the host repo's `.git/info/exclude`, which never applies
+here):
+
+```sh
+echo .gitignore >> "$(git rev-parse --git-common-dir)/nook/beads.git/info/exclude"
+```
+
+A typical session:
+
+```sh
+br sync --flush-only          # flush the local beads DB to issues.jsonl
+git nook beads add --all
+git nook beads commit -m "issues"
+git nook beads pull            # reconcile if another machine pushed since
+git nook beads push
+```
+
+On a fresh machine, `git nook add beads origin --dir .beads` bootstraps
+`.beads/` from the published ref; run `br init` first if the local `br`
+workspace files (config, DB) aren't present yet, then `br sync
+--import-only` to load the fetched issues into the local database.
+
+## Prior art
+
+The standard community answers to "track files the host repo can't track"
+are: a nested repo in an excluded subdirectory; a separate repo elsewhere
+plus symlinks; the classic dotfiles bare-repo trick (`git
+--git-dir=<repo> --work-tree=<dir>` behind a shell alias); or a worktree
+checked out on a dedicated branch. `git-nook`'s architecture *is* the
+bare-repo technique — deliberately, since it's the strongest of the four —
+with a few deltas:
+
+- **Remote-side hiding.** The other three approaches still need a second,
+  visible repository to push to, which is itself a trace. `git-nook`
+  publishes to hidden custom refs on an *existing* remote, even the host's
+  own `origin`: no second repo, no branch listing, no UI footprint, same
+  transport and credentials you already use.
+- **A scoped worktree.** The dotfiles technique sets the whole home
+  directory (or repo) as the work-tree and needs
+  `status.showUntrackedFiles no` to stay usable, which blinds `status` to
+  your own new files and makes `clean` dangerous. A nook's worktree is just
+  the content directory, so `status`, `add --all`, and `clean` all behave
+  with full fidelity.
+- **History survives `git clean -fdx`.** A nested repo's `.git` lives
+  inside the host's working tree and dies with an aggressive clean. A
+  nook's git-dir lives under the host's own `.git/`, which `clean` never
+  touches.
+- **One-command setup.** `git nook add` encodes the whole per-machine
+  ritual — exclude entry, byte-identity config, refspecs, branch tracking,
+  safety refusals, bootstrap from an existing ref — that the alias
+  approach leaves as a wiki page for you to remember.
+
+The remaining trade-offs are per-nook choices, not tool limitations:
+
+- **Hidden refs get no host UI.** No web view, no PRs, no CI triggers.
+  When browsability matters more than invisibility, `--ref
+  refs/heads/...` publishes to a normal branch on the target today.
+- **Hidden is not secret.** Anyone with read access to the target can
+  `ls-remote` the refs, and nothing is encrypted. When access control
+  matters, point `add` at a private target you control — see "Choosing a
+  target and ref" above.
 
 ## Commands
 
-| Command | Behavior |
-|---|---|
-| `br-orphanage init [--target <t>] [args...]` | Runs the real `br init`, then reverts any top-level `.gitignore` changes it made (deleting it if it didn't exist before), and adds `.beads/` to the repo's exclude file (`git rev-parse --git-path info/exclude`, worktree/submodule-safe). Unrecognized args pass through to the real init. `--target` sets the sync target inline (stripped before the real init sees the args). |
-| `br-orphanage target` | Print the resolved target, URL, and branch. Exits 1 with guidance if unset. |
-| `br-orphanage target <remote-or-url> [--branch <template>] [--namespace <ns>]` | Store the target (and optional overrides) in the project's git config. A bare word naming an existing remote is stored as a remote name; anything else is stored as a literal URL. A named remote must exist at set time. |
-| `br-orphanage sync` | Converge this project with its orphan branch. Records the project's absolute path in the machine-local index. |
-| `br-orphanage sync --all` | Iterate the machine-local index; for each entry, `cd` to the recorded path and sync. Stale/missing paths, non-repos, missing `.beads/`, and unconfigured targets are skipped with a warning rather than failing the run. Exits 0 iff no known project's sync actually failed. |
-| `br-orphanage --help` | Print usage. |
-| `br-orphanage --version` | Print the wrapper version. Bare `br-orphanage` prints usage (which includes the version). |
-
-## Configuration
-
-Stored in the **project's own git config** (`.git/config`) — per-clone,
-machine-local, never committed, so a private target URL never ends up
-inside a public project repo.
-
-| Key | Meaning | Default |
-|---|---|---|
-| `beadsOrphanage.target` | A remote name (resolved to a URL at run time — `origin` naturally means "this project's own repo") or a literal git URL. Precedence is remote-first: a value that names an existing remote wins even if it also looks URL-shaped. | unset → hard error on sync |
-| `beadsOrphanage.branch` | Branch-name template. Tokens: `<namespace>`, `<owner>`, `<project>`. | `<namespace>/<owner>/<project>` |
-| `beadsOrphanage.namespace` | Value substituted for the `<namespace>` token. | `orphanage` |
-
-`<owner>`/`<project>` are parsed from the **origin** remote URL (e.g.
-`git@github.com:happycollision/foo.git` → owner `happycollision`, project
-`foo`; `https://` URLs parse the same way; `.git` suffix stripped). With no
-origin remote, `<project>` falls back to the toplevel directory name and
-`<owner>` falls back to `local`. Tokens never resolve empty.
-
-Configuration is **per-clone**: each new clone or machine runs
-`br-orphanage target` once (or passes `--target` to `br-orphanage init`).
-That's the point — a private target URL lives only in that machine's
-`.git/config`, never in anything committed, so it can't leak through a
-public project repo.
-
-## How sync works
-
-Everything happens as plumbing inside the project's own `.git` — no managed
-clones, no temporary worktrees, no temp directories. The local ref
-`refs/orphanage/pushed` records the commit this machine last published; it
-anchors objects against gc and serves as the merge base for divergence
-detection and the three-way rule below.
-
-1. Flush the local DB to JSONL (`br sync --flush-only`), resolve the
-   target and branch, then fetch the branch tip into a dedicated ref
-   (`refs/orphanage/fetched` — never `FETCH_HEAD`, which a concurrent
-   unrelated fetch could clobber).
-2. If the fetched tip differs from `refs/orphanage/pushed` (the remote has
-   changes this machine hasn't merged), merge inbound:
-   - **Issues** merge through the real `br`'s own import: per-issue,
-     newest-wins, tombstone-protected (see below). The remote's
-     `issues.jsonl` is extracted over the local one, `br sync
-     --import-only` runs, then `br sync --flush-only --force` re-exports
-     the full merged DB. The `--force` matters: a non-forced flush only
-     exports *dirty* rows, so without it the just-clobbered file would
-     silently drop already-flushed local issues instead of reflecting the
-     full post-merge union.
-   - **Non-issue files** (`config.yaml`, `metadata.json`, `README.md`, and
-     `interactions.jsonl`) use a cheap three-way rule by blob SHA, with
-     base = the file's blob in the `refs/orphanage/pushed` tree:
-     local-unchanged-since-base takes the remote version (convergence);
-     remote-unchanged keeps local (propagates on this sync); both changed
-     keeps local **and warns**, e.g. `kept local config.yaml; remote
-     version preserved at <tip-sha> — view it with git cat-file blob
-     <tip-sha>:config.yaml`. Local wins on conflict because recoverability
-     is asymmetric: the remote version is committed on the branch and
-     lives in its history forever, while the local edit exists nowhere
-     else (`.beads/` is excluded from the project's own git) and would be
-     destroyed with no undo.
-   - **Byte-convergence adoption:** br 0.2.16 serializes tombstones
-     asymmetrically — a machine that *creates* a tombstone (`br delete`)
-     exports it without `closed_at`, but a machine that *imports* that
-     tombstone backfills `closed_at` and exports it with the field. Left
-     alone, this flaps the published tree hash between machines forever.
-     So: if the inbound import made no DB changes (no `Created:`/`Updated:`
-     lines) and the freshly-flushed file contains exactly the same
-     issue-id set as the remote tip's `issues.jsonl`, the wrapper adopts
-     the remote file's bytes verbatim — the two files are semantically
-     identical at that point and differ only in serialization. Any guard
-     failure just degrades to keeping the force-flushed bytes: correct
-     union, possibly one extra commit, never data loss.
-3. Build a tree from the tracked files present in `.beads/` and compare
-   its SHA to the fetched tip's tree. Identical → "Already in sync",
-   `refs/orphanage/pushed` advances, no commit. Different → commit (with
-   the fetched tip as parent, or no parent for a brand-new branch) and
-   push with no force. History on the branch is linear and
-   fast-forward-only; a non-fast-forward push rejection means another
-   machine synced in the window between fetch and push — the error
-   advises re-running.
-
-Tracked files: `config.yaml`, `interactions.jsonl`, `issues.jsonl`,
-`metadata.json`, `README.md`. Never synced: `beads.db` (SQLite is local
-state; JSONL is the source of truth), `.jsonl.lock` (transient), and
-`.beads/.gitignore` (regenerated by init).
-
-## Bootstrap & retargeting
-
-A fresh clone (or a machine that has never synced this project) has no
-`.beads/` yet. Set a target and sync:
-
-```sh
-br-orphanage target <remote-or-url>
-br-orphanage sync
+```
+git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
+git nook list
+git nook show <name>
+git nook remove <name>
+git nook <name> <git-args...>    # run any git command against the nook
+git nook --help | --version
 ```
 
-This requires the orphan branch to already exist at the target — it
-extracts the branch's tracked files into a freshly-initialized `.beads/`
-and imports them. For a **brand-new** project with no branch yet, run
-`br-orphanage init` (optionally with `--target`) instead, which creates the
-orphan root on the first sync.
+`add` creates and wires a nook; `list` shows every nook configured in the
+current repo; `show <name>` prints its resolved directory, remote URL, push
+refspec, and current branch/tracking state; `remove <name>` drops the
+nook's config entry and exclude line but — deliberately — never deletes the
+content directory or the inner repo's history, so nothing is destroyed
+silently; everything else is passthrough git.
 
-A bootstrap that fails partway cleans up after itself (removes the
-partially-created `.beads/`) rather than stranding the project — just fix
-the underlying problem and re-run `br-orphanage sync`.
+## Privacy model
 
-**Retargeting** is nothing special: set a new target and sync. A branch
-that doesn't exist yet at the new target receives the full current state as
-its orphan root.
-
-## Privacy notes
-
-- There is **no fallback target**. A project with none configured fails
-  sync hard, pointing at `br-orphanage target` — nothing can silently
-  publish issue data to an unintended place.
-- **Orphan ≠ hidden.** An orphan branch shares no history with any code
-  branch, but pushing it to a *public* repo still publishes the issues.
-  The explicit, per-project target is the privacy guard — not the branch
-  shape.
-
-## Multi-machine notes
-
-- **Version skew:** machines update their wrapper independently, so two
-  machines can run different `br-orphanage` versions against the same
-  branches. The branch layout is deterministic
-  and the payload is just `br`'s own JSONL, so skew is expected to be
-  harmless — but nothing enforces lockstep. Re-run the installer on a
-  machine to bring it current.
-- **Deletions propagate as tombstones**, not absences: `br delete`
-  rewrites the JSONL line with `status: tombstone` rather than removing
-  it, so the deletion merges like any other change and importing a stale
-  pre-deletion snapshot does **not** resurrect the issue (`br` reports
-  "Tombstone protected").
-- **Avoid `br delete --hard` in multi-machine use.** It prunes the
-  tombstone immediately, turning the deletion into a true absence — a
-  stale snapshot from another machine that hasn't synced recently *will*
-  resurrect it on import.
-- No tombstone GC/retention exists in br 0.2.16; tombstones persist until
-  hard-pruned. If a future `br` adds auto-expiry, machines that haven't
-  synced within the retention window could resurrect old deletions on
-  import — worth re-checking this note against future `br` versions.
-
-## The machine-local index
-
-`~/.local/share/br-orphanage/project-paths` (respecting `$XDG_DATA_HOME`) —
-one `name<TAB>absolute-path` line per project, written on every successful
-sync (including no-ops). It powers `br-orphanage sync --all`, which
-iterates it, skipping with a warning (not a failure) for a stale recorded
-path, a path that's no longer a git repo, a missing `.beads/`, or a project
-with no target configured. Only real per-project sync failures make the
-run's exit code nonzero.
-
-## Testing
-
-`tests/run.sh` is a self-contained, sandboxed end-to-end harness: fake
-`HOME`/`XDG_DATA_HOME`, bare git repos standing in for every remote (project
-origins and orphan-branch targets), and the real `br` binary from your
-`PATH` providing all issue-tracker behavior. It never touches your real
-home directory, beads data, shell rc files, or any real remote. Run it from
-anywhere:
-
-```sh
-tests/run.sh
-```
-
-It runs `shellcheck` on `bin/br-orphanage`, `install.sh`, and itself when `shellcheck`
-is available on `PATH`, skipping gracefully otherwise.
-
-## Further reading
-
-- [Empirical findings (br 0.2.16)](docs/empirical-findings.md) — observed
-  `br` behaviors the sync logic depends on.
+`git-nook` hides content from *view*, not from *access*. A hidden ref is
+absent from branch listings, host web UIs, and default clones, but it is
+still an ordinary ref on whatever remote you targeted — anyone who already
+has read access to that remote can enumerate it with `git ls-remote` and
+fetch it like any other ref, and nothing about the content is encrypted.
+Choose the target accordingly: same-repo `origin` for "keep this out of my
+way," a private repo you control for real access-control separation.
