@@ -297,6 +297,56 @@ make_project_repo "${EMPTY_PROJ}" no
 EMPTY_LIST=$(cd "${EMPTY_PROJ}" && "${NOOK}" list)
 assert_contains "empty list explains how to create one" "${EMPTY_LIST}" "git nook add"
 
+# --- passthrough: full git against the inner repo --------------------------------
+
+section "passthrough: status/add/commit/log round trip"
+
+PT_PROJ="${WORK}/proj-passthrough"
+make_project_repo "${PT_PROJ}" yes "pt-demo"
+(cd "${PT_PROJ}" && "${NOOK}" add notes origin)
+
+printf 'hello nook\n' > "${PT_PROJ}/.notes/first.md"
+mkdir -p "${PT_PROJ}/.notes/deep/nested"
+printf 'nested content\n' > "${PT_PROJ}/.notes/deep/nested/leaf.txt"
+
+PT_STATUS=$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain)
+assert_contains "status sees the new file" "${PT_STATUS}" "first.md"
+# Untracked dirs collapse in porcelain status (vanilla git behavior); use -u
+# to confirm the passthrough's git actually walks into nested content.
+PT_STATUS_U=$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain -uall)
+assert_contains "status -uall sees nested files" "${PT_STATUS_U}" "deep/nested/leaf.txt"
+
+(cd "${PT_PROJ}" && "${NOOK}" notes add --all)
+(cd "${PT_PROJ}" && "${NOOK}" notes commit -q -m "first nook commit")
+PT_LOG=$(cd "${PT_PROJ}" && "${NOOK}" notes log --oneline)
+assert_contains "log shows the commit" "${PT_LOG}" "first nook commit"
+assert_eq "clean after commit" "" "$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain)"
+
+assert_file_absent "still no .git entry in the content dir" "${PT_PROJ}/.notes/.git"
+assert_eq "parent status still clean" "" "$(git -C "${PT_PROJ}" status --porcelain)"
+
+section "passthrough: works from a subdirectory and from inside the nook"
+
+mkdir -p "${PT_PROJ}/src"
+PT_SUB_LOG=$(cd "${PT_PROJ}/src" && "${NOOK}" notes log --oneline)
+assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first nook commit"
+
+# From inside the nook dir, relative pathspecs resolve as expected.
+printf 'more\n' >> "${PT_PROJ}/.notes/first.md"
+(cd "${PT_PROJ}/.notes" && "${NOOK}" notes add first.md)
+PT_STAGED=$(cd "${PT_PROJ}" && "${NOOK}" notes diff --cached --name-only)
+assert_contains "relative pathspec staged from inside the nook" "${PT_STAGED}" "first.md"
+(cd "${PT_PROJ}" && "${NOOK}" notes commit -q -m "second")
+
+section "passthrough: local branches work (single-ref publication is the only limit)"
+
+(cd "${PT_PROJ}" && "${NOOK}" notes checkout -q -b experiment)
+printf 'branchy\n' > "${PT_PROJ}/.notes/branch-file.txt"
+(cd "${PT_PROJ}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "on a branch")
+(cd "${PT_PROJ}" && "${NOOK}" notes checkout -q main)
+assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/.notes/branch-file.txt"
+assert_eq "parent status STILL clean after branch dance" "" "$(git -C "${PT_PROJ}" status --porcelain)"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"

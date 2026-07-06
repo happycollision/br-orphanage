@@ -323,6 +323,30 @@ cmd_show() {
     echo "state:   ${state}"
 }
 
+run_passthrough() {
+    local name="$1"; shift
+    local toplevel dir gitdir worktree
+    toplevel=$(git rev-parse --show-toplevel)
+    dir=$(channel_dir "${name}")   # caller verified the nook exists
+    gitdir=$(cd "${toplevel}" && inner_git_dir "${name}")
+    worktree="${toplevel}/${dir}"
+    if [[ ! -d "${gitdir}" ]]; then
+        err "nook '${name}' has no inner repo at ${gitdir} (was it deleted?)"
+        exit 1
+    fi
+    # Resolve physically: pwd -P below resolves symlinks, so worktree must
+    # too (toplevel can come back through a symlinked path, e.g. macOS
+    # /tmp -> /private/tmp) or the containment check below never matches.
+    worktree=$(cd "${worktree}" && pwd -P)
+    # Predictable relative pathspecs: run from the nook's worktree unless the
+    # caller is already somewhere inside it.
+    case "$(pwd -P)/" in
+        "${worktree}/"*) ;;
+        *) cd "${worktree}" ;;
+    esac
+    exec git --git-dir="${gitdir}" --work-tree="${worktree}" "$@"
+}
+
 # --- Dispatch -------------------------------------------------------------------
 
 main() {
@@ -340,8 +364,7 @@ main() {
         *)
             require_work_tree
             if channel_dir "${1}" >/dev/null 2>&1; then
-                err "nook '${1}' exists but passthrough is not implemented yet"
-                exit 1
+                run_passthrough "$@"
             fi
             err "unknown command or nook '${1}'"
             echo "git-nook: see nooks with 'git nook list'; create one with 'git nook add <name> <target>'" >&2
