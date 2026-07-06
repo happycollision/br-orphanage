@@ -375,6 +375,53 @@ assert_contains "exported GIT_DIR is ignored" "${ENVLEAK_OUT}" "first nook commi
 ENVLEAK_WT_OUT=$(cd "${PT_PROJ}" && GIT_WORK_TREE="${WORK}/bogus-worktree" "${NOOK}" notes log --oneline)
 assert_contains "exported GIT_WORK_TREE is ignored" "${ENVLEAK_WT_OUT}" "first nook commit"
 
+# --- publish: push/pull through the baked refspecs --------------------------------
+
+section "publish: push lands on the custom ref, nothing else"
+
+PUB_PROJ="${WORK}/proj-publish"
+make_project_repo "${PUB_PROJ}" yes "pub-demo"
+PUB_BARE="${WORK}/origins/pub-demo.git"
+(cd "${PUB_PROJ}" && "${NOOK}" add beads origin --dir .beads)
+printf '{"id":"pub-1"}\n' > "${PUB_PROJ}/.beads/issues.jsonl"
+(cd "${PUB_PROJ}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m "issues")
+(cd "${PUB_PROJ}" && "${NOOK}" beads push -q)
+
+PUB_REF="refs/nook/origins/pub-demo/beads"
+PUB_TIP=$(git -C "${PUB_BARE}" rev-parse "${PUB_REF}")
+if [[ -n "${PUB_TIP}" ]]; then
+    pass "custom ref exists at the target"
+else
+    fail "custom ref missing at the target"
+fi
+assert_contains "published tree holds the file" \
+    "$(git -C "${PUB_BARE}" show "${PUB_TIP}:issues.jsonl")" "pub-1"
+
+PUB_BRANCHES=$(git -C "${PUB_BARE}" for-each-ref --format='%(refname)' refs/heads)
+assert_eq "no branch appeared at the target (hidden ref only)" "" "${PUB_BRANCHES}"
+
+section "publish: tracking state and pull"
+
+PUB_AHEAD=$(cd "${PUB_PROJ}" && "${NOOK}" beads status -sb | head -n 1)
+assert_contains "status shows up-to-date tracking after push" "${PUB_AHEAD}" "main"
+
+printf 'change behind their back\n' > "${PUB_PROJ}/.beads/note.txt"
+(cd "${PUB_PROJ}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m "second")
+PUB_AHEAD2=$(cd "${PUB_PROJ}" && "${NOOK}" beads status -sb | head -n 1)
+assert_contains "status reports ahead of tracking" "${PUB_AHEAD2}" "ahead 1"
+(cd "${PUB_PROJ}" && "${NOOK}" beads push -q)
+
+section "publish: --ref refs/heads/... publishes a visible branch instead"
+
+BR_PROJ="${WORK}/proj-branch-ref"
+make_project_repo "${BR_PROJ}" yes "branch-ref-demo"
+BR_BARE="${WORK}/origins/branch-ref-demo.git"
+(cd "${BR_PROJ}" && "${NOOK}" add docs origin --ref 'refs/heads/shadow/<name>')
+printf 'visible\n' > "${BR_PROJ}/.docs/readme.txt"
+(cd "${BR_PROJ}" && "${NOOK}" docs add --all && "${NOOK}" docs commit -q -m "docs" && "${NOOK}" docs push -q)
+assert_true "branch override published under refs/heads/" \
+    git -C "${BR_BARE}" rev-parse --verify -q refs/heads/shadow/docs
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
