@@ -627,6 +627,72 @@ assert_contains "resolution published" \
 assert_eq "parent repos stayed clean through all of it" \
     "" "$(git -C "${TC_A}" status --porcelain)$(git -C "${TC_B}" status --porcelain)"
 
+# --- add refusals ------------------------------------------------------------------
+
+section "add refusals: names"
+
+REF_PROJ="${WORK}/proj-refusals"
+make_project_repo "${REF_PROJ}" yes "refusals-demo"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add list origin
+assert_exit_nonzero "reserved name 'list' refused"
+assert_contains "reserved-name error says why" "${RUN_OUT}" "reserved"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add 'bad/name' origin
+assert_exit_nonzero "slash in name refused"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add 'bad..name' origin
+assert_exit_nonzero "invalid ref component refused"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add -leading origin
+assert_exit_nonzero "leading dash refused"
+
+section "add refusals: targets and dirs"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add notes bogusremote
+assert_exit_nonzero "nonexistent remote name refused"
+assert_contains "bad target error names the offender" "${RUN_OUT}" "bogusremote"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add notes origin --dir ../outside
+assert_exit_nonzero "dir escaping the repo refused"
+run_cmd_in "${REF_PROJ}" "${NOOK}" add notes origin --dir /abs/path
+assert_exit_nonzero "absolute dir refused"
+run_cmd_in "${REF_PROJ}" "${NOOK}" add notes origin --dir .git/sneaky
+assert_exit_nonzero "dir under .git refused"
+
+# Tracked files: docs/ is committed in the parent.
+mkdir -p "${REF_PROJ}/docs"
+printf 'tracked\n' > "${REF_PROJ}/docs/real.md"
+git -C "${REF_PROJ}" add docs/real.md
+git -C "${REF_PROJ}" commit -q -m "tracked docs"
+run_cmd_in "${REF_PROJ}" "${NOOK}" add docs origin --dir docs
+assert_exit_nonzero "dir with parent-tracked files refused"
+assert_contains "tracked-files error explains" "${RUN_OUT}" "tracked"
+
+section "add refusals: duplicates and overlap"
+
+(cd "${REF_PROJ}" && "${NOOK}" add notes origin >/dev/null)
+run_cmd_in "${REF_PROJ}" "${NOOK}" add notes origin
+assert_exit_nonzero "duplicate nook name refused"
+assert_contains "duplicate error points at show" "${RUN_OUT}" "already exists"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add nested origin --dir .notes/nested
+assert_exit_nonzero "dir nesting inside another nook refused"
+assert_contains "overlap error names the other nook" "${RUN_OUT}" "notes"
+run_cmd_in "${REF_PROJ}" "${NOOK}" add umbrella origin --dir .
+assert_exit_nonzero "dir '.' refused"
+
+run_cmd_in "${REF_PROJ}" "${NOOK}" add sub2 origin --dir 'sub/.git/evil'
+assert_exit_nonzero "nested .git dir refused"
+
+# A failed add leaves no debris behind.
+if git -C "${REF_PROJ}" config --get nook.nested.dir >/dev/null 2>&1; then
+    fail "failed add leaked config for 'nested'"
+else
+    pass "failed add leaked no config"
+fi
+assert_file_absent "failed add leaked no inner repo" "${REF_PROJ}/.git/nook/nested.git"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
