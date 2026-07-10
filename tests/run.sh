@@ -277,14 +277,19 @@ printf 'hello\n' > "${NOVER}"
 run_cmd "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${NOVER}" "v1.2.3"
 assert_exit_nonzero "stamp-version.sh rejects target with no VERSION= line"
 
-# Tag-version guard logic (mirrors what release.yml will check; pure shell).
-assert_eq "tag guard: v<VERSION> matches VERSION file" \
-    "v${VERSION_FILE_VALUE}" "v$(cat "${REPO_UNDER_TEST}/VERSION")"
-if [[ "v${VERSION_FILE_VALUE}" == "v0.0.0-WRONG" ]]; then
-    fail "guard should reject mismatched tag"
-else
-    pass "tag guard rejects a mismatched tag"
-fi
+# Tag-version guard: exercise the real scripts/check-tag-version.sh (not a
+# self-comparison). Use a fixture version-file so we control both sides.
+TAG_FIXTURE="${WORK}/tag-version-fixture"
+printf '1.2.3\n' > "${TAG_FIXTURE}"
+
+run_cmd "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "v1.2.3" "${TAG_FIXTURE}"
+assert_eq "check-tag-version accepts a matching tag" "0" "${RUN_EXIT}"
+
+run_cmd "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "v9.9.9" "${TAG_FIXTURE}"
+assert_eq "check-tag-version rejects a mismatched tag (exit 1)" "1" "${RUN_EXIT}"
+
+run_cmd "${REPO_UNDER_TEST}/scripts/check-tag-version.sh"
+assert_eq "check-tag-version reports a usage error (exit 2)" "2" "${RUN_EXIT}"
 
 # --- Regression: executable bits tracked in git ----------------------------------
 
