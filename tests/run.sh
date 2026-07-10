@@ -898,7 +898,7 @@ git config --global --unset core.autocrlf
 section "shellcheck (optional, skipped gracefully if unavailable)"
 
 if command -v shellcheck >/dev/null 2>&1; then
-    for f in "${REPO_UNDER_TEST}/bin/git-nook" "${REPO_UNDER_TEST}/install.sh" "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${TESTS_DIR}/run.sh"; do
+    for f in "${REPO_UNDER_TEST}/bin/git-nook" "${REPO_UNDER_TEST}/install.sh" "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "${TESTS_DIR}/run.sh"; do
         if shellcheck "${f}"; then
             pass "shellcheck clean: ${f#"${REPO_UNDER_TEST}"/}"
         else
