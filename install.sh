@@ -73,10 +73,10 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -n "${script_dir}" && -f "${script_dir}/bin/git-nook" ]]; then
-    ver=$(cat "${script_dir}/VERSION")
+    src_version=$(cat "${script_dir}/VERSION")
     cp "${script_dir}/bin/git-nook" "${INSTALL_PATH}"
-    "${script_dir}/scripts/stamp-version.sh" "${INSTALL_PATH}" "post-v${ver}-dev"
-    echo "installed from local checkout: ${script_dir}/bin/git-nook (post-v${ver}-dev)"
+    "${script_dir}/scripts/stamp-version.sh" "${INSTALL_PATH}" "post-v${src_version}-dev"
+    echo "installed from local checkout: ${script_dir}/bin/git-nook (post-v${src_version}-dev)"
 else
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-nook-install.XXXXXX")
     curl -fsSL "${RELEASE_BASE}/git-nook" -o "${tmp_dir}/git-nook"
