@@ -1,0 +1,14 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck bin/git-nook install.sh tests/run.sh scripts/stamp-version.sh scripts/check-tag-version.sh
+      - name: tests
+        run: tests/run.sh
