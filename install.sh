@@ -66,6 +66,9 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" ]]; then
 fi
 
 tmp_dir=""
+# SC2329/SC2317: reached only via the EXIT trap below, which newer shellcheck
+# (CI) can't see, so it reports the body as unreachable.
+# shellcheck disable=SC2329,SC2317 # invoked indirectly via the EXIT trap below
 cleanup() {
     [[ -n "${tmp_dir}" ]] && rm -rf "${tmp_dir}"
     return 0

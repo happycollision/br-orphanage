@@ -15,7 +15,9 @@ REPO_UNDER_TEST=$(cd "${TESTS_DIR}/.." && pwd)
 NOOK="${REPO_UNDER_TEST}/bin/git-nook"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/git-nook-test.XXXXXX")
-# shellcheck disable=SC2329 # invoked indirectly via the EXIT trap below
+# SC2329/SC2317: this function is reached only via the EXIT trap below, which
+# newer shellcheck (CI) can't see, so it reports the body as unreachable.
+# shellcheck disable=SC2329,SC2317 # invoked indirectly via the EXIT trap below
 cleanup() {
     local status=$?
     rm -rf "${WORK}"
