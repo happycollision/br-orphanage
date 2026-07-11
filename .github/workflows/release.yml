@@ -8,7 +8,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Guard — tag must equal v<VERSION>
         run: scripts/check-tag-version.sh "${GITHUB_REF_NAME}"
