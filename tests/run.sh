@@ -15,7 +15,9 @@ REPO_UNDER_TEST=$(cd "${TESTS_DIR}/.." && pwd)
 NOOK="${REPO_UNDER_TEST}/bin/git-nook"
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/git-nook-test.XXXXXX")
-# shellcheck disable=SC2329 # invoked indirectly via the EXIT trap below
+# SC2329/SC2317: this function is reached only via the EXIT trap below, which
+# newer shellcheck (CI) can't see, so it reports the body as unreachable.
+# shellcheck disable=SC2329,SC2317 # invoked indirectly via the EXIT trap below
 cleanup() {
     local status=$?
     rm -rf "${WORK}"
@@ -231,6 +233,65 @@ run_cmd_in "${UNK_PROJ}" "${NOOK}" frobnicate status
 assert_exit_nonzero "unknown nook name exits nonzero"
 assert_contains "unknown nook error names the offender" "${RUN_OUT}" "frobnicate"
 assert_contains "unknown nook error points at 'git nook add'" "${RUN_OUT}" "git nook add"
+
+# --- Version stamping (scripts/stamp-version.sh + install.sh -dev suffix) --------
+
+section "version stamping"
+
+VERSION_FILE_VALUE=$(cat "${REPO_UNDER_TEST}/VERSION")
+
+# Fresh local-checkout install into a brand-new HOME/path (independent of the
+# earlier install/upgrade tests above, so ordering there can't affect this).
+STAMP_HOME="${WORK}/stamp-home"
+mkdir -p "${STAMP_HOME}"
+STAMP_BIN="${STAMP_HOME}/git-nook"
+env HOME="${STAMP_HOME}" GIT_NOOK_INSTALL_PATH="${STAMP_BIN}" "${REPO_UNDER_TEST}/install.sh" >/dev/null
+assert_eq "local-checkout install stamps post-v<VERSION>-dev" \
+    "git-nook post-v${VERSION_FILE_VALUE}-dev" "$("${STAMP_BIN}" --version)"
+
+# Release stamp: a clean vX.Y.Z with no -dev/post- suffix.
+REL_BIN="${WORK}/release-git-nook"
+cp "${NOOK}" "${REL_BIN}"
+"${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${REL_BIN}" "v${VERSION_FILE_VALUE}"
+assert_eq "release stamp yields clean vX.Y.Z" \
+    "git-nook v${VERSION_FILE_VALUE}" "$("${REL_BIN}" --version)"
+assert_eq "release stamp leaves exactly one VERSION= line" \
+    "1" "$(grep -c '^VERSION=' "${REL_BIN}")"
+
+# Stamp overwrite: second stamp wins, no leftover placeholder.
+"${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${REL_BIN}" "v9.9.9"
+assert_eq "second stamp overwrites the version" \
+    "git-nook v9.9.9" "$("${REL_BIN}" --version)"
+assert_eq "stamp overwrite leaves exactly one VERSION= line" \
+    "1" "$(grep -c '^VERSION=' "${REL_BIN}")"
+if grep -q 'v0.0.0-dev' "${REL_BIN}"; then
+    fail "leftover placeholder v0.0.0-dev found in stamped file after overwrite"
+else
+    pass "no leftover placeholder after stamp"
+fi
+
+# Helper guards (from Task 2 hardening): bad arg count and missing VERSION= line.
+run_cmd "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "onlyonearg"
+assert_exit_nonzero "stamp-version.sh rejects wrong arg count"
+
+NOVER="${WORK}/no-version.txt"
+printf 'hello\n' > "${NOVER}"
+run_cmd "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${NOVER}" "v1.2.3"
+assert_exit_nonzero "stamp-version.sh rejects target with no VERSION= line"
+
+# Tag-version guard: exercise the real scripts/check-tag-version.sh (not a
+# self-comparison). Use a fixture version-file so we control both sides.
+TAG_FIXTURE="${WORK}/tag-version-fixture"
+printf '1.2.3\n' > "${TAG_FIXTURE}"
+
+run_cmd "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "v1.2.3" "${TAG_FIXTURE}"
+assert_eq "check-tag-version accepts a matching tag" "0" "${RUN_EXIT}"
+
+run_cmd "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "v9.9.9" "${TAG_FIXTURE}"
+assert_eq "check-tag-version rejects a mismatched tag (exit 1)" "1" "${RUN_EXIT}"
+
+run_cmd "${REPO_UNDER_TEST}/scripts/check-tag-version.sh"
+assert_eq "check-tag-version reports a usage error (exit 2)" "2" "${RUN_EXIT}"
 
 # --- Regression: executable bits tracked in git ----------------------------------
 
@@ -839,7 +900,7 @@ git config --global --unset core.autocrlf
 section "shellcheck (optional, skipped gracefully if unavailable)"
 
 if command -v shellcheck >/dev/null 2>&1; then
-    for f in "${REPO_UNDER_TEST}/bin/git-nook" "${REPO_UNDER_TEST}/install.sh" "${TESTS_DIR}/run.sh"; do
+    for f in "${REPO_UNDER_TEST}/bin/git-nook" "${REPO_UNDER_TEST}/install.sh" "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "${TESTS_DIR}/run.sh"; do
         if shellcheck "${f}"; then
             pass "shellcheck clean: ${f#"${REPO_UNDER_TEST}"/}"
         else

@@ -66,6 +66,9 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]:-}" ]]; then
 fi
 
 tmp_dir=""
+# SC2329/SC2317: reached only via the EXIT trap below, which newer shellcheck
+# (CI) can't see, so it reports the body as unreachable.
+# shellcheck disable=SC2329,SC2317 # invoked indirectly via the EXIT trap below
 cleanup() {
     [[ -n "${tmp_dir}" ]] && rm -rf "${tmp_dir}"
     return 0
@@ -73,8 +76,10 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -n "${script_dir}" && -f "${script_dir}/bin/git-nook" ]]; then
+    src_version=$(cat "${script_dir}/VERSION")
     cp "${script_dir}/bin/git-nook" "${INSTALL_PATH}"
-    echo "installed from local checkout: ${script_dir}/bin/git-nook"
+    "${script_dir}/scripts/stamp-version.sh" "${INSTALL_PATH}" "post-v${src_version}-dev"
+    echo "installed from local checkout: ${script_dir}/bin/git-nook (post-v${src_version}-dev)"
 else
     tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/git-nook-install.XXXXXX")
     curl -fsSL "${RELEASE_BASE}/git-nook" -o "${tmp_dir}/git-nook"
