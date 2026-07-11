@@ -116,6 +116,23 @@ beads nook, and `master` stays pristine. (Bonus: it dogfoods the tool.)
   ref received them (`git nook beads show origin/main:issues.jsonl | grep <id>`).
   Do **not** commit the design/plan markdown to `master`.
 
+## Discoveries (follow-ups, out-of-scope work, tangents)
+
+Any follow-up, out-of-scope work, or tangential discovery you make while working
+— a deprecation warning, a refactor you resisted, a bug you noticed but didn't
+fix, a "we should probably..." — must be filed as a **`Discovery:`** issue in
+beads rather than dropped in chat or a commit message. Prefix the title with
+`Discovery:` so they're greppable (`br search "Discovery:"`).
+
+- Create with `br create --title="Discovery: <what>" --type=<bug|task|chore|docs>
+  --priority=<0-4>`.
+- **Include all relevant context in the description** — beads is the only record.
+  Inline: where you found it (file:line, PR, commit SHA), why it's out of scope
+  of the current work, what you'd do to address it, and any verification already
+  done. Someone should be able to act on it without this conversation.
+- File it when you find it; don't wait for session end. Then publish via the
+  session protocol so it survives.
+
 ## Observation
 
 Since we develop `git-nook`, always use it and observe its behavior. After

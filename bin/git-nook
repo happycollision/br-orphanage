@@ -19,7 +19,8 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 #
 # Design: docs/plans/2026-07-05-git-nook-design.md
 
-VERSION="0.2.0"
+# VERSION is replaced at build/install time; the VERSION file is the source of truth.
+VERSION="v0.0.0-dev"
 
 DEFAULT_REF_TEMPLATE='refs/nook/<owner>/<project>/<name>'
 RESERVED_NAMES=(add list show remove help version)

@@ -1,0 +1,35 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard — tag must equal v<VERSION>
+        run: scripts/check-tag-version.sh "${GITHUB_REF_NAME}"
+
+      - name: shellcheck
+        run: shellcheck bin/git-nook install.sh tests/run.sh scripts/stamp-version.sh scripts/check-tag-version.sh
+
+      - name: tests
+        run: tests/run.sh
+
+      - name: Build stamped artifact
+        run: |
+          mkdir -p dist
+          cp bin/git-nook dist/git-nook
+          scripts/stamp-version.sh dist/git-nook "v$(cat VERSION)"
+          chmod +x dist/git-nook
+          ( cd dist && sha256sum git-nook > git-nook.sha256 )
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/git-nook
+            dist/git-nook.sha256

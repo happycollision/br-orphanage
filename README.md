@@ -29,6 +29,15 @@ release:
 ./install.sh
 ```
 
+### Versioning
+
+`git nook --version` reports what it was built from: `git-nook vX.Y.Z` for
+a tagged release, `git-nook post-vX.Y.Z-dev` for a checkout or install
+built on top of release `X.Y.Z` (i.e. master since that release), and
+`git-nook v0.0.0-dev` only for raw, un-stamped source. The version string
+is stamped into the installed copy at install/release time; the committed
+source itself is never mutated.
+
 ## Quick start
 
 ```sh
@@ -218,6 +227,33 @@ refspec, and current branch/tracking state; `remove <name>` drops the
 nook's config entry and exclude line but — deliberately — never deletes the
 content directory or the inner repo's history, so nothing is destroyed
 silently; everything else is passthrough git.
+
+## Releasing
+
+Maintainer procedure for cutting a release:
+
+1. Bump the `VERSION` file to the new number (e.g. `0.3.0`) and commit it
+   on master.
+2. Tag it and push the tag:
+
+   ```sh
+   git tag v0.3.0
+   git push origin v0.3.0
+   ```
+
+   The tag must be `v` + the exact contents of `VERSION`; a mismatch fails
+   the release.
+3. The tag push triggers the Release workflow, which verifies the tag
+   matches `VERSION`, runs shellcheck and the test suite, stamps a clean
+   `vX.Y.Z` into a built copy of `bin/git-nook`, generates
+   `git-nook.sha256`, and publishes both as a GitHub Release.
+4. `install.sh` always fetches the latest published release, so the
+   curl one-liner picks up the new version immediately.
+5. Until the next bump, master-checkout builds report
+   `post-vX.Y.Z-dev` — built on top of the release you just shipped.
+
+Every push to master and every PR also runs shellcheck and the test suite
+via CI, independent of releasing.
 
 ## Privacy model
 
