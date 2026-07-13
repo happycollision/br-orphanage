@@ -75,6 +75,11 @@ common_git_dir() {
 
 inner_git_dir() { printf '%s/nook/%s.git\n' "$(common_git_dir)" "$1"; }
 
+# Absolute path of the ONE canonical checkout for a nook. Lives in the common
+# git dir so every worktree shares it; the per-worktree content path is a
+# symlink to this (see cmd_materialize).
+canonical_checkout() { printf '%s/nook/%s.nook\n' "$(common_git_dir)" "$1"; }
+
 # Prints "<owner>\t<project>" derived from the origin remote URL, falling
 # back to owner=local, project=<toplevel dirname> when there is no origin.
 owner_and_project() {
