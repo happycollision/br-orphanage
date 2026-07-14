@@ -23,7 +23,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 VERSION="v0.0.0-dev"
 
 DEFAULT_REF_TEMPLATE='refs/nook/<owner>/<project>/<name>'
-RESERVED_NAMES=(add list show remove help version)
+RESERVED_NAMES=(add list show remove materialize help version)
 
 usage() {
     cat <<EOF
@@ -34,6 +34,7 @@ Usage:
   git nook list
   git nook show <name>
   git nook remove <name>
+  git nook materialize             # link configured nooks into this worktree
   git nook <name> <git-args...>    # run any git command against the nook
   git nook --help | --version
 
@@ -435,6 +436,25 @@ cmd_list() {
     fi
 }
 
+cmd_materialize() {
+    require_work_tree
+    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
+    cd "$(git rev-parse --show-toplevel)"
+    local key dir name found=0 rc=0
+    while read -r key dir; do
+        [[ -n "${key}" ]] || continue
+        found=1
+        name="${key#nook.}"; name="${name%.dir}"
+        if ! materialize_one "${name}"; then
+            rc=1
+        fi
+    done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
+    if [[ "${found}" -eq 0 ]]; then
+        echo "git-nook: no nooks configured here"
+    fi
+    return "${rc}"
+}
+
 cmd_show() {
     require_work_tree
     # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
@@ -517,6 +537,7 @@ main() {
         list)   shift; cmd_list "$@" ;;
         show)   shift; cmd_show "$@" ;;
         remove) shift; cmd_remove "$@" ;;
+        materialize) shift; cmd_materialize "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;
         -h | --help | help | "") usage ;;
         -*)

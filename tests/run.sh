@@ -965,6 +965,55 @@ assert_eq "CRLF file round-trips byte-identically despite global autocrlf=true" 
 
 git config --global --unset core.autocrlf
 
+# --- materialize: linking configured nooks into other worktrees -------------------
+
+section "materialize: linked worktree gets its own symlink"
+MZ=${WORK}/proj-materialize; make_project_repo "${MZ}" yes materialize-demo
+(cd "${MZ}" && "${NOOK}" add beads origin --dir .beads)
+printf 'x\n' > "${MZ}/.beads/f.txt"
+(cd "${MZ}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m c1)
+# linked worktree (sibling dir), new branch
+WT=${WORK}/proj-materialize-wt
+git -C "${MZ}" worktree add -q "${WT}" -b feat
+assert_file_absent "linked worktree has no nook symlink before materialize" "${WT}/.beads"
+MZ_OUT=$(cd "${WT}" && "${NOOK}" materialize)
+assert_contains "materialize reports the nook" "${MZ_OUT}" "materialized beads"
+assert_true "symlink created in linked worktree" test -L "${WT}/.beads"
+MZ_LOG=$(cd "${WT}" && "${NOOK}" beads log --oneline)
+assert_contains "passthrough works from linked worktree after materialize" "${MZ_LOG}" "c1"
+assert_file_exists "content visible through the symlink" "${WT}/.beads/f.txt"
+assert_eq "linked worktree parent status clean" "" "$(git -C "${WT}" status --porcelain)"
+# idempotent
+(cd "${WT}" && "${NOOK}" materialize >/dev/null)
+assert_true "second materialize is a no-op (still a symlink)" test -L "${WT}/.beads"
+
+section "materialize: refuses when both real dir and checkout have content"
+# Legacy-style real dir at the configured path in the MAIN tree, while the
+# canonical checkout already has committed content -> ambiguous -> refuse.
+rm "${MZ}/.beads"                       # remove the main-tree symlink from add
+mkdir -p "${MZ}/.beads"; printf 'legacy\n' > "${MZ}/.beads/old.txt"
+run_cmd_in "${MZ}" "${NOOK}" materialize
+assert_exit_nonzero "materialize refuses when both real dir and checkout have content"
+assert_contains "refusal explains the conflict" "${RUN_OUT}" "reconcile manually"
+
+section "materialize: migrates a legacy real dir when the checkout is empty"
+MZ2=${WORK}/proj-migrate-ok; make_project_repo "${MZ2}" yes migrate-ok
+(cd "${MZ2}" && "${NOOK}" add docs origin --dir docsdir)   # no leading period on purpose
+rm "${MZ2}/docsdir"                     # remove the symlink add created
+CDIR=$(cd "${MZ2}" && git rev-parse --git-common-dir); CDIR="$(cd "${MZ2}/${CDIR}" && pwd)/nook/docs.nook"
+rm -rf "${CDIR:?}/"* 2>/dev/null || true  # ensure canonical checkout is empty
+mkdir -p "${MZ2}/docsdir"; printf 'legacy\n' > "${MZ2}/docsdir/old.txt"
+(cd "${MZ2}" && "${NOOK}" materialize >/dev/null)
+assert_true "migrated real dir becomes a symlink" test -L "${MZ2}/docsdir"
+assert_file_exists "legacy content moved into canonical checkout" "${CDIR}/old.txt"
+assert_file_exists "legacy content reachable via symlink" "${MZ2}/docsdir/old.txt"
+
+section "materialize: reserved name cannot be a nook"
+MZR=${WORK}/proj-mz-reserved; make_project_repo "${MZR}" yes mzr
+run_cmd_in "${MZR}" "${NOOK}" add materialize origin
+assert_exit_nonzero "cannot create a nook named 'materialize'"
+assert_contains "reserved-name error names the offender" "${RUN_OUT}" "materialize"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
