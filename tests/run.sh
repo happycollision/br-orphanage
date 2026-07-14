@@ -1028,6 +1028,54 @@ run_cmd_in "${MZR}" "${NOOK}" add materialize origin
 assert_exit_nonzero "cannot create a nook named 'materialize'"
 assert_contains "reserved-name error names the offender" "${RUN_OUT}" "materialize"
 
+# --- list: unmaterialized marker ---------------------------------------------------
+
+section "list: flags a nook not materialized in this worktree"
+LM=${WORK}/proj-listmark; make_project_repo "${LM}" yes listmark
+(cd "${LM}" && "${NOOK}" add data origin --dir .data >/dev/null)
+LM_OK=$(cd "${LM}" && "${NOOK}" list)
+if [[ "${LM_OK}" == *"not linked here"* ]]; then fail "materialized nook wrongly flagged"; else pass "materialized nook not flagged"; fi
+# Remove the symlink to simulate an unmaterialized worktree; list must flag it.
+rm "${LM}/.data"
+LM_FLAG=$(cd "${LM}" && "${NOOK}" list)
+assert_contains "unmaterialized nook is flagged" "${LM_FLAG}" "not linked here"
+
+# --- bare/all-worktrees layout: no originating work tree ---------------------------
+
+section "bare layout: add + materialize across peer worktrees (no main work tree)"
+# Seed a repo, push it to its origin so the bare clone has a main branch.
+BL_SEED=${WORK}/bl-seed; make_project_repo "${BL_SEED}" yes bare-demo
+git -C "${BL_SEED}" push -q origin HEAD:refs/heads/main
+BL_ORIGIN=${WORK}/origins/bare-demo.git
+# Bare clone: its ONLY checkouts will be linked worktrees.
+BL_BARE=${WORK}/bl-repo.git
+git clone -q --bare "${BL_ORIGIN}" "${BL_BARE}"
+WA=${WORK}/bl-wt-a; WB=${WORK}/bl-wt-b
+git -C "${BL_BARE}" worktree add -q "${WA}" main
+git -C "${BL_BARE}" worktree add -q -b other "${WB}" main
+# Add a nook FROM a linked worktree (there is no main work tree).
+(cd "${WA}" && "${NOOK}" add beads origin --dir .beads)
+assert_true "nook symlink created in the adding worktree" test -L "${WA}/.beads"
+printf 'y\n' > "${WA}/.beads/f.txt"
+(cd "${WA}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m c1)
+# Peer worktree: list flags it unmaterialized; materialize links it.
+LIST_B=$(cd "${WB}" && "${NOOK}" list)
+assert_contains "list flags unmaterialized nook in peer worktree" "${LIST_B}" "not linked here"
+(cd "${WB}" && "${NOOK}" materialize >/dev/null)
+assert_true "peer worktree now has the symlink" test -L "${WB}/.beads"
+assert_file_exists "peer worktree sees the shared content" "${WB}/.beads/f.txt"
+# Both symlinks resolve to the SAME canonical checkout under the bare common dir.
+RA=$(cd "${WA}/.beads" && pwd -P); RB=$(cd "${WB}/.beads" && pwd -P)
+assert_eq "both worktrees share one canonical checkout" "${RA}" "${RB}"
+# After materialize, list no longer flags it.
+LIST_B2=$(cd "${WB}" && "${NOOK}" list)
+if [[ "${LIST_B2}" == *"not linked here"* ]]; then fail "list still flags a materialized nook"; else pass "list no longer flags materialized nook"; fi
+# A commit from one peer is visible to the other (shared refs+objects).
+printf 'z\n' > "${WA}/.beads/g.txt"
+(cd "${WA}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m c2)
+LOG_B=$(cd "${WB}" && "${NOOK}" beads log --oneline)
+assert_contains "commit from peer A visible from peer B" "${LOG_B}" "c2"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"

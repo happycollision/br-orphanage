@@ -426,13 +426,21 @@ cmd_list() {
     # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
     cd "$(git rev-parse --show-toplevel)"
     local key dir name gitdir url found=0
+    local content_path checkout_dir linked_note
     while read -r key dir; do
         [[ -n "${key}" ]] || continue
         found=1
         name="${key#nook.}"; name="${name%.dir}"
         gitdir=$(inner_git_dir "${name}")
         url=$(git --git-dir="${gitdir}" config --get remote.origin.url 2>/dev/null) || url="(no inner repo)"
-        printf '%s\t%s/\t%s\n' "${name}" "${dir}" "${url}"
+        content_path="$(pwd)/${dir}"
+        checkout_dir=$(canonical_checkout "${name}")
+        linked_note=""
+        if ! { [[ -L "${content_path}" ]] \
+               && [[ "$(cd "${content_path}" 2>/dev/null && pwd -P)" == "$(cd "${checkout_dir}" 2>/dev/null && pwd -P)" ]]; }; then
+            linked_note="  [not linked here: git nook materialize]"
+        fi
+        printf '%s\t%s/\t%s%s\n' "${name}" "${dir}" "${url}" "${linked_note}"
     done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
     if [[ "${found}" -eq 0 ]]; then
         echo "git-nook: no nooks configured here; create one with: git nook add <name> <target>"
