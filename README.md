@@ -1,6 +1,6 @@
 # git-nook
 
-**Git for a hidden directory.**
+**Git for a sub directory you don't want others to deal with.**
 
 `git-nook` gives a directory of files real git tracking — status, commits,
 diffs, log, branches, merges, conflicts, push, pull — even when the host
@@ -10,6 +10,18 @@ repo cannot or should not track them itself. Each tracked directory (a
 host web UI, and no default clone. Once a nook exists, every day-to-day
 operation is a plain git command you already know; the tool's only jobs are
 creating nooks and handing your git invocations to the right one.
+
+When you add a nook, you don't have to also PR a new line in `.gitignore`.
+Instead, `git-nook` updates your local `.git/info/exclude` and you can get to
+work instead of do the PR song and dance.
+
+This is ideal for your personal IDE settings, planning documents, or anything
+that is specific to you and not something you want to foist upon your
+collaborators.
+
+Nooks can be stored at the origin of the repo your are working on, or you can
+go fully external and point your Nook's upstream at any repo you have write
+access for.
 
 ## Install
 
