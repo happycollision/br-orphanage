@@ -45,10 +45,10 @@ git nook add notes origin
 ```
 
 This creates a hidden inner git repository for a nook named `notes`, wires
-its remote to a custom ref on `origin`, and gives you a worktree at
-`.notes/` (excluded from the host repo via `.git/info/exclude`, so `git
-status` in the host repo never mentions it). Edit files there like any
-other directory:
+its remote to a custom ref on `origin`, and gives you the nook's files at
+`.notes/` (a symlink into the shared checkout, excluded from the host repo
+via `.git/info/exclude`, so `git status` in the host repo never mentions
+it). Edit files there like any other directory:
 
 ```sh
 echo "today's notes" > .notes/today.md
