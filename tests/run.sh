@@ -1008,6 +1008,11 @@ assert_true "migrated real dir becomes a symlink" test -L "${MZ2}/docsdir"
 assert_file_exists "legacy content moved into canonical checkout" "${CDIR}/old.txt"
 assert_file_exists "legacy content reachable via symlink" "${MZ2}/docsdir/old.txt"
 
+section "materialize: no nooks configured prints guidance"
+MZE=${WORK}/proj-mz-empty; make_project_repo "${MZE}" no mzempty
+MZE_OUT=$(cd "${MZE}" && "${NOOK}" materialize)
+assert_contains "materialize with no nooks names the add command" "${MZE_OUT}" "git nook add"
+
 section "materialize: reserved name cannot be a nook"
 MZR=${WORK}/proj-mz-reserved; make_project_repo "${MZR}" yes mzr
 run_cmd_in "${MZR}" "${NOOK}" add materialize origin

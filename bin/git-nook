@@ -450,7 +450,7 @@ cmd_materialize() {
         fi
     done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
     if [[ "${found}" -eq 0 ]]; then
-        echo "git-nook: no nooks configured here"
+        echo "git-nook: no nooks configured here; create one with: git nook add <name> <target>"
     fi
     return "${rc}"
 }
