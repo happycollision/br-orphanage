@@ -364,6 +364,22 @@ assert_eq "non-refs/ template lands under refs/heads/" \
 assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
 assert_true "custom dir excluded" grep -qxF '/tmp/scratch' "${ADD_EXCLUDE}"
 
+section "exclude: entry has no trailing slash and remove cleans legacy forms"
+EX=${WORK}/proj-exclude
+make_project_repo "${EX}" yes excl-demo
+(cd "${EX}" && "${NOOK}" add data origin --dir .data >/dev/null)
+EX_FILE=$(abs_git_path "${EX}" info/exclude)
+assert_true "exclude has the no-slash entry" grep -qxF "/.data" "${EX_FILE}"
+if grep -qxF "/.data/" "${EX_FILE}" 2>/dev/null; then fail "exclude unexpectedly has trailing-slash form"; else pass "exclude has no trailing-slash form"; fi
+# simulate a legacy trailing-slash line also being present, then remove
+printf '/.data/\n' >> "${EX_FILE}"
+(cd "${EX}" && "${NOOK}" remove data >/dev/null)
+if grep -qxF "/.data" "${EX_FILE}" 2>/dev/null || grep -qxF "/.data/" "${EX_FILE}" 2>/dev/null; then
+    fail "remove left a stale exclude entry (either form)"
+else
+    pass "remove cleaned both exclude forms"
+fi
+
 # A --dir that exists but is not a directory (here: a dangling symlink, which
 # even fails -e) must be refused cleanly, not crash with a raw mkdir error.
 ln -s /nonexistent-target "${ADD_PROJ}/badlink"
@@ -870,17 +886,10 @@ else
     pass "config gone after remove"
 fi
 RM_EXCLUDE=$(abs_git_path "${RM_PROJ}" info/exclude)
-# NOTE: cmd_remove still strips only the trailing-slash form ("/.notes/"),
-# while materialize_one now writes the no-slash form ("/.notes") because the
-# configured path is a symlink, not a directory. Unifying exclude-entry
-# removal across both forms is Task 5's job (see materialize_one's comment
-# "Task 5 unifies removal"); until then, remove leaves the no-slash entry
-# behind. This assertion documents today's (Task 3) behavior honestly rather
-# than asserting a cleanup cmd_remove doesn't perform yet.
-if grep -qxF '/.notes' "${RM_EXCLUDE}" 2>/dev/null; then
-    pass "exclude entry (no-slash form) left behind after remove (Task 5 will unify removal)"
+if grep -qxF '/.notes' "${RM_EXCLUDE}" 2>/dev/null || grep -qxF '/.notes/' "${RM_EXCLUDE}" 2>/dev/null; then
+    fail "remove left a stale exclude entry"
 else
-    fail "exclude entry unexpectedly absent after remove; if cmd_remove was updated to strip the no-slash form, update this assertion to match"
+    pass "remove cleaned both exclude entry forms"
 fi
 assert_file_exists "content untouched" "${RM_PROJ}/.notes/keep.md"
 assert_dir_exists "inner repo (history) untouched" "${RM_PROJ}/.git/nook/notes.git"

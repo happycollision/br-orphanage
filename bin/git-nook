@@ -160,13 +160,15 @@ add_exclude_entry() {
     fi
 }
 
+# Remove a nook's info/exclude entry (both the historical trailing-slash form
+# and the current no-slash form that covers the symlink).
 # Consumed by bootstrap rollback (cmd_add) and by cmd_remove.
 remove_exclude_entry() {
-    local entry="$1" file tmp
+    local dir="$1" file tmp
     file=$(exclude_file)
     [[ -f "${file}" ]] || return 0
     tmp=$(mktemp)
-    grep -vxF "${entry}" "${file}" > "${tmp}" || true
+    grep -vxF "/${dir}" "${file}" | grep -vxF "/${dir}/" > "${tmp}" || true
     mv "${tmp}" "${file}"
 }
 
@@ -225,7 +227,8 @@ materialize_one() {
         ln -s "${checkout_dir}" "${content_path}"
     fi
 
-    # 3. Ensure exclude covers the symlink (no trailing slash; Task 5 unifies removal).
+    # 3. Ensure exclude covers the symlink (no trailing slash; remove_exclude_entry
+    # strips both this and the legacy trailing-slash form on removal).
     add_exclude_entry "/${dir}"
 
     echo "git-nook: materialized ${name} -> ${dir}"
@@ -233,14 +236,13 @@ materialize_one() {
 }
 
 # Roll back a partially-created nook (used by cmd_add on bootstrap/materialize
-# failure) so a retry starts clean. Removes BOTH exclude forms because the
-# entry's shape depends on which stage failed (Task 5 unifies removal).
+# failure) so a retry starts clean. remove_exclude_entry strips both exclude
+# forms in one call, regardless of which stage failed.
 rollback_add() {
     local name="$1" dir="$2" toplevel="$3" gitdir="$4" checkout_dir="$5" made_link="$6" made_ckout="$7"
     rm -rf "${gitdir}"
     git config --remove-section "nook.${name}" 2>/dev/null || true
-    remove_exclude_entry "/${dir}"
-    remove_exclude_entry "/${dir}/"
+    remove_exclude_entry "${dir}"
     [[ -n "${made_link}" ]] && rm -f "${toplevel}/${dir}"
     [[ -n "${made_ckout}" ]] && rm -rf "${checkout_dir}"
     : # ensure exit status 0 so the trailing [[ ]] && cmd never trips set -e
@@ -490,7 +492,7 @@ cmd_remove() {
     fi
     gitdir=$(inner_git_dir "${name}")
     git config --remove-section "nook.${name}"
-    remove_exclude_entry "/${dir}/"
+    remove_exclude_entry "${dir}"
     echo "git-nook: removed nook '${name}' from config."
     echo "git-nook: kept your files:   ${dir}/"
     echo "git-nook: kept its history:  ${gitdir}"
