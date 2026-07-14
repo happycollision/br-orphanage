@@ -162,6 +162,7 @@ add_exclude_entry() {
 
 # Remove a nook's info/exclude entry (both the historical trailing-slash form
 # and the current no-slash form that covers the symlink).
+# Takes a bare dir (no leading slash) — unlike add_exclude_entry, which takes the full entry string.
 # Consumed by bootstrap rollback (cmd_add) and by cmd_remove.
 remove_exclude_entry() {
     local dir="$1" file tmp

@@ -373,12 +373,15 @@ assert_true "exclude has the no-slash entry" grep -qxF "/.data" "${EX_FILE}"
 if grep -qxF "/.data/" "${EX_FILE}" 2>/dev/null; then fail "exclude unexpectedly has trailing-slash form"; else pass "exclude has no trailing-slash form"; fi
 # simulate a legacy trailing-slash line also being present, then remove
 printf '/.data/\n' >> "${EX_FILE}"
+# unrelated entries must survive a nook remove
+printf '/build\n' >> "${EX_FILE}"
 (cd "${EX}" && "${NOOK}" remove data >/dev/null)
 if grep -qxF "/.data" "${EX_FILE}" 2>/dev/null || grep -qxF "/.data/" "${EX_FILE}" 2>/dev/null; then
     fail "remove left a stale exclude entry (either form)"
 else
     pass "remove cleaned both exclude forms"
 fi
+assert_true "unrelated exclude entry preserved across remove" grep -qxF "/build" "${EX_FILE}"
 
 # A --dir that exists but is not a directory (here: a dangling symlink, which
 # even fails -e) must be refused cleanly, not crash with a raw mkdir error.
