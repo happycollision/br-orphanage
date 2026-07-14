@@ -97,6 +97,14 @@ JSONL conflicts; run the helper script committed on the beads nook itself
 (see `git nook beads ls-files` for its name) — it re-imports through the
 real `br` (per-issue, newest-wins, tombstone-protected).
 
+### Worktrees
+
+The beads nook (and any nook) lives once under `.git/nook/<name>.nook/` in the
+common git dir, shared by every worktree. After a fresh `git clone`, or after
+`git worktree add <path>`, run `git nook materialize` in that working tree to
+create the symlink(s) that expose the nook's files there. Thereafter `git nook`
+and `br` work normally from that worktree. All worktrees share one nook state.
+
 ## Planning (designs and implementation plans)
 
 Track designs and implementation plans **in beads**, not as committed markdown in
