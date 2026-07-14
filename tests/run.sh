@@ -1017,6 +1017,41 @@ assert_true "migrated real dir becomes a symlink" test -L "${MZ2}/docsdir"
 assert_file_exists "legacy content moved into canonical checkout" "${CDIR}/old.txt"
 assert_file_exists "legacy content reachable via symlink" "${MZ2}/docsdir/old.txt"
 
+section "materialize: upgrades a legacy real-dir nook that has commit history"
+# The realistic upgrade case every prior test missed: an OLD-layout nook is a
+# real content dir with COMMITTED history and NO symlink. materialize must
+# migrate it, not refuse -- the real dir IS the authoritative content, and the
+# inner repo's HEAD already points at that same committed history.
+UP=${WORK}/proj-upgrade; make_project_repo "${UP}" yes upgrade-demo
+# Build the OLD layout by hand: inner bare repo with history, real content dir,
+# config + exclude, NO symlink.
+UP_GITDIR="${UP}/.git/nook/legacy.git"
+mkdir -p "${UP}/.git/nook"
+git init -q --bare "${UP_GITDIR}"
+git --git-dir="${UP_GITDIR}" symbolic-ref HEAD refs/heads/main
+git --git-dir="${UP_GITDIR}" config core.bare false
+mkdir -p "${UP}/.legacy"; printf 'issue-1\n' > "${UP}/.legacy/data.txt"
+git --git-dir="${UP_GITDIR}" --work-tree="${UP}/.legacy" add data.txt
+git --git-dir="${UP_GITDIR}" --work-tree="${UP}/.legacy" -c user.email=t@t -c user.name=t commit -q -m "legacy history"
+git -C "${UP}" config nook.legacy.dir .legacy
+printf '/.legacy/\n' >> "$(abs_git_path "${UP}" info/exclude)"
+# sanity: it's a real dir, not a symlink, with content + history
+assert_true "precondition: legacy content dir is a real dir" test -d "${UP}/.legacy"
+assert_true "precondition: not a symlink yet" bash -c '[ ! -L "'"${UP}"'/.legacy" ]'
+# UPGRADE: materialize must migrate it, not refuse
+UP_OUT=$(cd "${UP}" && "${NOOK}" materialize 2>&1); UP_RC=$?
+assert_eq "materialize succeeds on a legacy nook with history (out: ${UP_OUT})" "0" "${UP_RC}"
+assert_true "legacy dir became a symlink" test -L "${UP}/.legacy"
+UP_CANON=$(cd "${UP}" && git rev-parse --git-common-dir); UP_CANON="$(cd "${UP}/${UP_CANON}" && pwd)/nook/legacy.nook"
+assert_file_exists "legacy content migrated into canonical checkout" "${UP_CANON}/data.txt"
+assert_file_exists "legacy content reachable via symlink" "${UP}/.legacy/data.txt"
+# passthrough works and history is intact
+UP_LOG=$(cd "${UP}" && "${NOOK}" legacy log --oneline)
+assert_contains "committed history preserved after upgrade" "${UP_LOG}" "legacy history"
+UP_STATUS=$(cd "${UP}" && "${NOOK}" legacy status --porcelain)
+assert_eq "clean working tree after upgrade migration" "" "${UP_STATUS}"
+assert_eq "host status clean (symlink excluded)" "" "$(git -C "${UP}" status --porcelain -- .legacy)"
+
 section "materialize: no nooks configured prints guidance"
 MZE=${WORK}/proj-mz-empty; make_project_repo "${MZE}" no mzempty
 MZE_OUT=$(cd "${MZE}" && "${NOOK}" materialize)

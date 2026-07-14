@@ -173,6 +173,21 @@ remove_exclude_entry() {
     mv "${tmp}" "${file}"
 }
 
+# Populate a nook's canonical checkout from the inner repo's committed HEAD.
+# Used only when the checkout is the source of truth (absent / correct-symlink
+# / empty-real-dir cases) -- NEVER before migrating a legacy real dir, whose
+# on-disk files are themselves the authoritative content. Unborn/empty HEAD is
+# a clean no-op (leave the checkout empty). Returns 1 on a real checkout error.
+populate_checkout_from_head() {
+    local gitdir="$1" checkout_dir="$2"
+    if git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+        if ! git --git-dir="${gitdir}" --work-tree="${checkout_dir}" checkout -- .; then
+            err "could not populate the nook checkout at ${checkout_dir}"
+            return 1
+        fi
+    fi
+}
+
 # Ensure a single nook is correctly materialized in the CURRENT worktree: the
 # canonical checkout exists, and the configured path is a symlink to it
 # (migrating an old real dir if present). Callers must already have cd'd to
@@ -185,36 +200,44 @@ materialize_one() {
     gitdir=$(inner_git_dir "${name}")
     content_path="${toplevel}/${dir}"
 
-    # 1. Ensure canonical checkout exists and is populated when the inner repo has commits.
+    # Ensure the canonical checkout directory exists (empty for now).
     mkdir -p "${checkout_dir}"
-    # If the inner repo has a checkout-able HEAD, populate checkout_dir (harmless if already populated).
-    # Unborn/empty HEAD => leave checkout_dir empty, NOT an error.
-    if git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        if ! git --git-dir="${gitdir}" --work-tree="${checkout_dir}" checkout -- .; then
-            err "could not populate the nook checkout at ${checkout_dir}"
-            return 1
-        fi
-    fi
 
-    # 2. Reconcile the per-worktree path content_path.
+    # Reconcile the per-worktree path content_path. Crucially, inspect it
+    # BEFORE deciding whether to populate the checkout from HEAD: for a legacy
+    # real dir with content, that dir IS the authoritative content and must be
+    # migrated as-is -- populating from HEAD first would make the checkout
+    # look non-empty and trip the "both have content" refusal (regression).
     if [[ -L "${content_path}" ]]; then
         # existing symlink: OK only if it already points at checkout_dir (compare physically)
         t=$(cd "${content_path}" 2>/dev/null && pwd -P) || t=""
         checkout_real=$(cd "${checkout_dir}" && pwd -P)
-        if [[ "${t}" == "${checkout_real}" ]]; then
-            : # already correct
-        else
+        if [[ "${t}" != "${checkout_real}" ]]; then
             err "'${dir}' is a symlink to '${t}', not the nook checkout '${checkout_dir}'; refusing to clobber"
             return 1
         fi
+        # Correct symlink: the checkout is the source of truth (fresh-clone /
+        # linked-worktree case). Populate it from HEAD if it has commits.
+        # shellcheck disable=SC2310 # failure handled by the || return
+        populate_checkout_from_head "${gitdir}" "${checkout_dir}" || return 1
     elif [[ -d "${content_path}" ]]; then
-        # real directory: migrate its contents into checkout_dir, then replace with a symlink.
-        # Refuse if BOTH have content (ambiguous which wins).
-        c_has=$(ls -A "${checkout_dir}" 2>/dev/null)
+        # real directory: it may be legacy live content to migrate.
         d_has=$(ls -A "${content_path}" 2>/dev/null)
-        if [[ -n "${c_has}" && -n "${d_has}" ]]; then
-            err "both '${dir}' and the nook checkout '${checkout_dir}' have content; reconcile manually"
-            return 1
+        c_has=$(ls -A "${checkout_dir}" 2>/dev/null)
+        if [[ -n "${d_has}" ]]; then
+            # The real dir has content and IS the authoritative source. Only a
+            # NON-empty checkout is a genuine conflict (pre-existing different
+            # content we can't safely overwrite); an empty checkout is the
+            # normal upgrade case -> migrate the dir's files into it.
+            if [[ -n "${c_has}" ]]; then
+                err "both '${dir}' and the nook checkout '${checkout_dir}' have content; reconcile manually"
+                return 1
+            fi
+        else
+            # Empty real dir: nothing to migrate. The checkout is the source of
+            # truth, so populate it from HEAD before we symlink into it.
+            # shellcheck disable=SC2310 # failure handled by the || return
+            populate_checkout_from_head "${gitdir}" "${checkout_dir}" || return 1
         fi
         # move content_path entries (incl dotfiles) into checkout_dir, in a subshell so shopt is local
         ( shopt -s dotglob nullglob; for e in "${content_path}"/*; do mv "${e}" "${checkout_dir}/" || { err "failed to move '${e}' into '${checkout_dir}'"; exit 1; }; done )
@@ -224,11 +247,14 @@ materialize_one() {
         err "'${dir}' exists but is not a directory or symlink"
         return 1
     else
+        # absent: the checkout is the source of truth. Populate from HEAD, symlink.
+        # shellcheck disable=SC2310 # failure handled by the || return
+        populate_checkout_from_head "${gitdir}" "${checkout_dir}" || return 1
         mkdir -p "$(dirname "${content_path}")"
         ln -s "${checkout_dir}" "${content_path}"
     fi
 
-    # 3. Ensure exclude covers the symlink (no trailing slash; remove_exclude_entry
+    # Ensure exclude covers the symlink (no trailing slash; remove_exclude_entry
     # strips both this and the legacy trailing-slash form on removal).
     add_exclude_entry "/${dir}"
 
