@@ -473,27 +473,15 @@ mkdir -p "${PT_PROJ}/src"
 PT_SUB_LOG=$(cd "${PT_PROJ}/src" && "${NOOK}" notes log --oneline)
 assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first nook commit"
 
-# From inside the nook dir, relative pathspecs resolve as expected.
-#
-# KNOWN GAP (Task 6 territory): the configured path is now a symlink into
-# the canonical checkout under .git/, so cwd here is PHYSICALLY inside the
-# parent's .git/ directory. run_passthrough's first move is an ambient
-# `git rev-parse --show-toplevel` (no explicit --git-dir/--work-tree yet),
-# and git refuses ambient discovery from inside a .git dir ("fatal: this
-# operation must be run in a work tree"). Rewiring run_passthrough to cope
-# with a physically-inside-.git cwd is Task 6's job; until then this exact
-# invocation fails. Run via run_cmd_in (not a bare subshell) so this known,
-# documented failure doesn't abort the whole suite under set -e.
+# From inside the nook dir, relative pathspecs resolve as expected. The
+# configured path is a symlink into the canonical checkout under .git/, so
+# cwd here is PHYSICALLY inside the parent's .git/ directory; run_passthrough
+# must capture the parent's toplevel/git-dir BEFORE cd-ing anywhere, then work
+# entirely off explicit --git-dir/--work-tree so ambient discovery from
+# inside .git never comes into play.
 printf 'more\n' >> "${PT_PROJ}/.notes/first.md"
 run_cmd_in "${PT_PROJ}/.notes" "${NOOK}" notes add first.md
-if [[ "${RUN_EXIT}" -ne 0 ]]; then
-    echo "  [SKIP] relative pathspec from inside the nook: known gap, pending Task 6 (run_passthrough rewire); RUN_OUT='${RUN_OUT}'"
-    # Stage the same change from the parent dir instead, so the rest of this
-    # section (diff --cached, commit) still exercises real behavior.
-    (cd "${PT_PROJ}" && "${NOOK}" notes add first.md)
-else
-    pass "relative pathspec add from inside the nook succeeded"
-fi
+assert_eq "relative pathspec add from inside the nook succeeded" "0" "${RUN_EXIT}"
 PT_STAGED=$(cd "${PT_PROJ}" && "${NOOK}" notes diff --cached --name-only)
 assert_contains "relative pathspec staged from inside the nook" "${PT_STAGED}" "first.md"
 (cd "${PT_PROJ}" && "${NOOK}" notes commit -q -m "second")
@@ -507,24 +495,31 @@ printf 'branchy\n' > "${PT_PROJ}/.notes/branch-file.txt"
 assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/.notes/branch-file.txt"
 assert_eq "parent status STILL clean after branch dance" "" "$(git -C "${PT_PROJ}" status --porcelain)"
 
-section "passthrough: missing content dir fails cleanly and is recoverable"
+section "passthrough: works without a materialized symlink; missing checkout points at materialize"
 
-# Throwaway repo: we rm -rf the content dir while the inner git-dir survives.
-GONE_PROJ="${WORK}/proj-gone-worktree"
-make_project_repo "${GONE_PROJ}" yes "gone-worktree"
-(cd "${GONE_PROJ}" && "${NOOK}" add stash origin >/dev/null)
-printf 'keep me\n' > "${GONE_PROJ}/.stash/keeper.txt"
-(cd "${GONE_PROJ}" && "${NOOK}" stash add --all && "${NOOK}" stash commit -q -m "keeper")
-rm -rf "${GONE_PROJ}/.stash"
+GONE=${WORK}/proj-gone; make_project_repo "${GONE}" yes gone
+(cd "${GONE}" && "${NOOK}" add stash origin >/dev/null)
+printf 'keep\n' > "${GONE}/.stash/keeper.txt"
+(cd "${GONE}" && "${NOOK}" stash add --all && "${NOOK}" stash commit -q -m keeper)
+# remove the worktree SYMLINK but not the canonical checkout
+rm "${GONE}/.stash"
+# passthrough still works (targets the canonical checkout directly)
+GONE_LOG=$(cd "${GONE}" && "${NOOK}" stash log --oneline)
+assert_contains "passthrough works without symlink (targets canonical checkout)" "${GONE_LOG}" "keeper"
+# now remove the canonical checkout -> clean error at materialize, NO mkdir footgun
+CGONE=$(cd "${GONE}" && git rev-parse --git-common-dir); CGONE="$(cd "${GONE}/${CGONE}" && pwd)/nook/stash.nook"
+rm -rf "${CGONE}"
+run_cmd_in "${GONE}" "${NOOK}" stash status
+assert_exit_nonzero "missing canonical checkout exits nonzero"
+assert_contains "error points at materialize" "${RUN_OUT}" "git nook materialize"
+if [[ "${RUN_OUT}" == *"mkdir"* ]]; then fail "error still suggests the mkdir footgun"; else pass "no mkdir footgun in error"; fi
+# recovery via materialize works
+(cd "${GONE}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "materialize restored the checkout content" "${GONE}/.stash/keeper.txt"
 
-run_cmd_in "${GONE_PROJ}" "${NOOK}" stash status
-assert_exit_nonzero "passthrough with missing content dir exits nonzero"
-assert_contains "missing content dir error is a clean err()" "${RUN_OUT}" "no content dir"
-
-# The recovery procedure the error message prints actually works.
-mkdir -p "${GONE_PROJ}/.stash"
-(cd "${GONE_PROJ}" && "${NOOK}" stash checkout -- .)
-assert_file_exists "recovery hint restores the nook's files" "${GONE_PROJ}/.stash/keeper.txt"
+SHOW=$(cd "${GONE}" && "${NOOK}" show stash)
+assert_contains "show reports the canonical checkout" "${SHOW}" "checkout:"
+assert_contains "show reports linked state" "${SHOW}" "linked:"
 
 section "passthrough: ambient git env vars are ignored"
 

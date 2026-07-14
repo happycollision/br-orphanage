@@ -461,21 +461,35 @@ cmd_materialize() {
 cmd_show() {
     require_work_tree
     # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    cd "$(git rev-parse --show-toplevel)"
-    local name="${1:-}" dir gitdir state
+    local toplevel
+    toplevel=$(git rev-parse --show-toplevel)
+    cd "${toplevel}"
+    local name="${1:-}" dir gitdir checkout_dir content_path state linked t
     [[ -n "${name}" ]] || { err "usage: git nook show <name>"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
         err "no nook named '${name}' (see: git nook list)"
         exit 1
     fi
     gitdir=$(inner_git_dir "${name}")
+    checkout_dir=$(canonical_checkout "${name}")
+    content_path="${toplevel}/${dir}"
     # A broken/missing inner repo degrades to empty fields rather than
     # aborting show; without the || guard, pipefail + set -e would kill the
     # script with git's raw 128.
     state=$(git --git-dir="${gitdir}" --work-tree="${dir}" status -sb 2>/dev/null | head -n 1) || state=""
+    if [[ -L "${content_path}" ]] \
+        && t=$(cd "${content_path}" 2>/dev/null && pwd -P) \
+        && [[ -d "${checkout_dir}" ]] \
+        && [[ "${t}" == "$(cd "${checkout_dir}" && pwd -P)" ]]; then
+        linked="yes"
+    else
+        linked="no (run: git nook materialize)"
+    fi
     echo "name:    ${name}"
     echo "dir:     ${dir}/"
     echo "git-dir: ${gitdir}"
+    echo "checkout: ${checkout_dir}/"
+    echo "linked:   ${linked}"
     echo "url:     $(git --git-dir="${gitdir}" config --get remote.origin.url 2>/dev/null || echo '(none)')"
     echo "pushes:  $(git --git-dir="${gitdir}" config --get remote.origin.push 2>/dev/null || echo '(none)')"
     echo "state:   ${state}"
@@ -503,30 +517,42 @@ cmd_remove() {
 
 run_passthrough() {
     local name="$1"; shift
-    local toplevel dir gitdir worktree
-    toplevel=$(git rev-parse --show-toplevel)
-    dir=$(channel_dir "${name}")   # caller verified the nook exists
-    gitdir=$(cd "${toplevel}" && inner_git_dir "${name}")
-    worktree="${toplevel}/${dir}"
+    local gitdir checkout_dir
+    # Deliberately do NOT call `git rev-parse --show-toplevel` here (nor
+    # anything else that requires a configured work tree). The caller's cwd
+    # may be physically inside the parent's .git dir: the per-worktree
+    # content path is a symlink to the canonical checkout under
+    # <common-git-dir>/nook/<name>.nook, so `cd`-ing into a nook (directly,
+    # or via a shell that resolves symlinks) puts $PWD there. From such a
+    # cwd, git's ambient discovery still resolves --git-dir/--git-common-dir
+    # and config correctly (it just walks up to the real .git that contains
+    # the cwd) but --show-toplevel refuses ("fatal: this operation must be
+    # run in a work tree") because there is no work tree configured for that
+    # location. inner_git_dir/canonical_checkout only need common_git_dir,
+    # which is exactly the primitive that keeps working here — so route
+    # everything through that instead of toplevel.
+    gitdir=$(inner_git_dir "${name}")
+    checkout_dir=$(canonical_checkout "${name}")
     if [[ ! -d "${gitdir}" ]]; then
         err "nook '${name}' has no inner repo at ${gitdir} (was it deleted?)"
         exit 1
     fi
-    if [[ ! -d "${worktree}" ]]; then
-        err "nook '${name}' has no content dir at ${worktree} (was it deleted?); recreate it with: mkdir -p '${worktree}' then restore via: git nook ${name} checkout -- ."
+    if [[ ! -d "${checkout_dir}" ]]; then
+        err "nook '${name}' has no checkout at ${checkout_dir}; run: git nook materialize (or: git nook add ${name} <target>)"
         exit 1
     fi
-    # Resolve physically: pwd -P below resolves symlinks, so worktree must
-    # too (toplevel can come back through a symlinked path, e.g. macOS
-    # /tmp -> /private/tmp) or the containment check below never matches.
-    worktree=$(cd "${worktree}" && pwd -P)
-    # Predictable relative pathspecs: run from the nook's worktree unless the
-    # caller is already somewhere inside it. ([[ ]] with the variable quoted
-    # compares literally even if the path contains glob metacharacters.)
-    if [[ "$(pwd -P)/" != "${worktree}/"* ]]; then
-        cd "${worktree}"
+    # Resolve physically so the containment check below matches even through
+    # symlinks (checkout_dir can come back through a symlinked path, e.g.
+    # macOS /tmp -> /private/tmp; and the caller's cwd may itself be the
+    # nook's per-worktree symlink, which resolves to this same checkout).
+    checkout_dir=$(cd "${checkout_dir}" && pwd -P)
+    # Predictable relative pathspecs: run from the checkout unless the caller
+    # is already inside it. ([[ ]] with the variable quoted compares
+    # literally even if the path contains glob metacharacters.)
+    if [[ "$(pwd -P)/" != "${checkout_dir}/"* ]]; then
+        cd "${checkout_dir}"
     fi
-    exec git --git-dir="${gitdir}" --work-tree="${worktree}" "$@"
+    exec git --git-dir="${gitdir}" --work-tree="${checkout_dir}" "$@"
     # exec never returns; guard against a future edit accidentally falling
     # through to the dispatch's unknown-nook error after doing real work.
     exit 1
