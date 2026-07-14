@@ -45,10 +45,10 @@ git nook add notes origin
 ```
 
 This creates a hidden inner git repository for a nook named `notes`, wires
-its remote to a custom ref on `origin`, and gives you a worktree at
-`.notes/` (excluded from the host repo via `.git/info/exclude`, so `git
-status` in the host repo never mentions it). Edit files there like any
-other directory:
+its remote to a custom ref on `origin`, and gives you the nook's files at
+`.notes/` (a symlink into the shared checkout, excluded from the host repo
+via `.git/info/exclude`, so `git status` in the host repo never mentions
+it). Edit files there like any other directory:
 
 ```sh
 echo "today's notes" > .notes/today.md
@@ -69,23 +69,43 @@ git nook add notes origin
 If the ref already has history, `add` fetches it and materializes `.notes/`
 automatically; there's nothing else to run.
 
+After a plain `git clone` of the host repo, the nook's config comes along
+but its worktree symlink doesn't — run `git nook materialize` once to link
+every configured nook (`.notes/` and friends) into the fresh clone.
+Likewise, after `git worktree add <path>`, run `git nook materialize`
+inside that new worktree to create its symlinks; every worktree then
+shares the same underlying nook checkout.
+
 ## How it works
 
-A nook is two paths:
+A nook is three paths:
 
 ```
-.git/nook/notes.git   # a real git repository (hidden inside your .git)
-.notes/               # its worktree; excluded via .git/info/exclude
+.git/nook/notes.git    # the inner bare repository (hidden inside your .git)
+.git/nook/notes.nook/  # the one real checkout, shared by every worktree
+.notes/                # a symlink to the checkout above; excluded via .git/info/exclude
 ```
 
-`.notes/` has no `.git` file — `git nook add` never runs a plain `git init`
-inside it, so the host repo sees only plain excluded files: no gitlink, no
-submodule confusion, no trace that another repository is involved at all.
-The inner repository is reachable only through the wrapper:
+The real files live once, under `.git/nook/<name>.nook/` in the host repo's
+*common* git dir. Each worktree of the host repo exposes those files
+through a plain symlink at the configured path (`.notes/` by default) —
+the symlink itself, not a directory, is what's excluded via
+`.git/info/exclude`, so `git status` in the host repo never mentions it.
+Because every worktree's symlink points at the same checkout, `git
+worktree add` and any other linked worktree all see the same nook state:
+one checkout, one set of refs, one `HEAD`. Run `git nook materialize` in a
+worktree that doesn't have the symlink yet (see "Quick start" and
+"Commands" below).
+
+`.notes/` has no `.git` file of its own — `git nook add` never runs a
+plain `git init` inside the content dir, so the host repo sees only a
+plain excluded symlink: no gitlink, no submodule confusion, no trace that
+another repository is involved at all. The inner repository is reachable
+only through the wrapper:
 
 ```
 git nook <name> <any-git-args...>
-# ≈ git --git-dir=.git/nook/<name>.git --work-tree=<content-dir> <any-git-args...>
+# ≈ git --git-dir=.git/nook/<name>.git --work-tree=.git/nook/<name>.nook <any-git-args...>
 ```
 
 So `git nook notes log -p`, `git nook notes branch`, `git nook notes stash`
@@ -168,7 +188,10 @@ git nook beads push
 On a fresh machine, `git nook add beads origin --dir .beads` bootstraps
 `.beads/` from the published ref; run `br init` first if the local `br`
 workspace files (config, DB) aren't present yet, then `br sync
---import-only` to load the fetched issues into the local database.
+--import-only` to load the fetched issues into the local database. If
+you're instead cloning a repo that already has the nook configured (or
+adding a worktree with `git worktree add`), skip straight to `git nook
+materialize` to link `.beads/` into place.
 
 ## Prior art
 
@@ -217,16 +240,20 @@ git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
 git nook list
 git nook show <name>
 git nook remove <name>
+git nook materialize             # link configured nooks into this worktree
 git nook <name> <git-args...>    # run any git command against the nook
 git nook --help | --version
 ```
 
 `add` creates and wires a nook; `list` shows every nook configured in the
-current repo; `show <name>` prints its resolved directory, remote URL, push
-refspec, and current branch/tracking state; `remove <name>` drops the
+current repo (flagging any that aren't linked into the current worktree);
+`show <name>` prints its resolved checkout path, link state, remote URL,
+push refspec, and current branch/tracking state; `remove <name>` drops the
 nook's config entry and exclude line but — deliberately — never deletes the
-content directory or the inner repo's history, so nothing is destroyed
-silently; everything else is passthrough git.
+checkout or the inner repo's history, so nothing is destroyed silently;
+`materialize` creates the missing symlink(s) for already-configured nooks
+in the worktree you run it from — use it after `git clone` or after `git
+worktree add`; everything else is passthrough git.
 
 ## Releasing
 
