@@ -485,14 +485,14 @@ cmd_show() {
     else
         linked="no (run: git nook materialize)"
     fi
-    echo "name:    ${name}"
-    echo "dir:     ${dir}/"
-    echo "git-dir: ${gitdir}"
+    echo "name:     ${name}"
+    echo "dir:      ${dir}/"
+    echo "git-dir:  ${gitdir}"
     echo "checkout: ${checkout_dir}/"
     echo "linked:   ${linked}"
-    echo "url:     $(git --git-dir="${gitdir}" config --get remote.origin.url 2>/dev/null || echo '(none)')"
-    echo "pushes:  $(git --git-dir="${gitdir}" config --get remote.origin.push 2>/dev/null || echo '(none)')"
-    echo "state:   ${state}"
+    echo "url:      $(git --git-dir="${gitdir}" config --get remote.origin.url 2>/dev/null || echo '(none)')"
+    echo "pushes:   $(git --git-dir="${gitdir}" config --get remote.origin.push 2>/dev/null || echo '(none)')"
+    echo "state:    ${state}"
 }
 
 cmd_remove() {

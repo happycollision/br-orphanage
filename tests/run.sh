@@ -406,8 +406,8 @@ assert_contains "list shows notes" "${LIST_OUT}" "notes"
 assert_contains "list shows scratch's dir" "${LIST_OUT}" "tmp/scratch/"
 
 SHOW_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" show notes)
-assert_contains "show prints the dir" "${SHOW_OUT}" "dir:     .notes/"
-assert_contains "show prints the url" "${SHOW_OUT}" "url:     ${ADD_ORIGIN_URL}"
+assert_contains "show prints the dir" "${SHOW_OUT}" "dir:      .notes/"
+assert_contains "show prints the url" "${SHOW_OUT}" "url:      ${ADD_ORIGIN_URL}"
 assert_contains "show prints the push refspec" "${SHOW_OUT}" "refs/heads/main:${ADD_REF}"
 assert_contains "show prints branch state" "${SHOW_OUT}" "state:"
 
@@ -423,7 +423,7 @@ make_project_repo "${BROKEN_PROJ}" yes "broken-show"
 rm -rf "${BROKEN_PROJ}/.git/nook/wrecked.git"
 run_cmd_in "${BROKEN_PROJ}" "${NOOK}" show wrecked
 assert_eq "show of nook with missing inner git-dir exits 0" "0" "${RUN_EXIT}"
-assert_contains "show of broken nook prints url (none)" "${RUN_OUT}" "url:     (none)"
+assert_contains "show of broken nook prints url (none)" "${RUN_OUT}" "url:      (none)"
 BROKEN_LIST=$(cd "${BROKEN_PROJ}" && "${NOOK}" list)
 assert_contains "list flags the missing inner repo" "${BROKEN_LIST}" "(no inner repo)"
 
@@ -475,10 +475,12 @@ assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first 
 
 # From inside the nook dir, relative pathspecs resolve as expected. The
 # configured path is a symlink into the canonical checkout under .git/, so
-# cwd here is PHYSICALLY inside the parent's .git/ directory; run_passthrough
-# must capture the parent's toplevel/git-dir BEFORE cd-ing anywhere, then work
-# entirely off explicit --git-dir/--work-tree so ambient discovery from
-# inside .git never comes into play.
+# cwd here is PHYSICALLY inside the parent's .git/ directory. This works
+# because run_passthrough never calls `git rev-parse --show-toplevel` (which
+# refuses from inside .git — no work tree there); it derives the inner
+# git-dir and canonical checkout from git-common-dir, which ambient discovery
+# still resolves correctly even from inside .git, then runs git against
+# explicit --git-dir/--work-tree.
 printf 'more\n' >> "${PT_PROJ}/.notes/first.md"
 run_cmd_in "${PT_PROJ}/.notes" "${NOOK}" notes add first.md
 assert_eq "relative pathspec add from inside the nook succeeded" "0" "${RUN_EXIT}"
