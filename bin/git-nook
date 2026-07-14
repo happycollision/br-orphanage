@@ -186,7 +186,10 @@ materialize_one() {
     # If the inner repo has a checkout-able HEAD, populate checkout_dir (harmless if already populated).
     # Unborn/empty HEAD => leave checkout_dir empty, NOT an error.
     if git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
-        git --git-dir="${gitdir}" --work-tree="${checkout_dir}" checkout -- . 2>/dev/null || true
+        if ! git --git-dir="${gitdir}" --work-tree="${checkout_dir}" checkout -- .; then
+            err "could not populate the nook checkout at ${checkout_dir}"
+            return 1
+        fi
     fi
 
     # 2. Reconcile the per-worktree path content_path.
@@ -228,12 +231,28 @@ materialize_one() {
     return 0
 }
 
+# Roll back a partially-created nook (used by cmd_add on bootstrap/materialize
+# failure) so a retry starts clean. Removes BOTH exclude forms because the
+# entry's shape depends on which stage failed (Task 5 unifies removal).
+rollback_add() {
+    local name="$1" dir="$2" toplevel="$3" gitdir="$4" checkout_dir="$5" made_link="$6" made_ckout="$7"
+    rm -rf "${gitdir}"
+    git config --remove-section "nook.${name}" 2>/dev/null || true
+    remove_exclude_entry "/${dir}"
+    remove_exclude_entry "/${dir}/"
+    [[ -n "${made_link}" ]] && rm -f "${toplevel}/${dir}"
+    [[ -n "${made_ckout}" ]] && rm -rf "${checkout_dir}"
+    : # ensure exit status 0 so the trailing [[ ]] && cmd never trips set -e
+}
+
 # --- Subcommands ------------------------------------------------------------------
 
 cmd_add() {
     require_work_tree
+    local toplevel
     # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    cd "$(git rev-parse --show-toplevel)"
+    toplevel=$(git rev-parse --show-toplevel)
+    cd "${toplevel}"
 
     local name="" target="" dir="" ref_tpl="${DEFAULT_REF_TEMPLATE}"
     while [[ $# -gt 0 ]]; do
@@ -312,10 +331,11 @@ cmd_add() {
         fi
     done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
 
-    local ref gitdir
+    local ref gitdir checkout_dir
     # shellcheck disable=SC2310 # failure handled by the || exit
     ref=$(resolve_ref "${ref_tpl}" "${name}") || exit 1
     gitdir=$(inner_git_dir "${name}")
+    checkout_dir=$(canonical_checkout "${name}")
     if [[ -e "${gitdir}" ]]; then
         err "an inner repo already exists at ${gitdir}"
         err "it may hold history from a removed nook; delete it first if it is stale: rm -rf '${gitdir}'"
@@ -329,23 +349,10 @@ cmd_add() {
         exit 1
     fi
 
-    # Track the TOPMOST ancestor this add creates, so bootstrap rollback can
-    # remove exactly what we made (a nested --dir may create several levels)
-    # and nothing the user already had. Empty when ${dir} already existed.
-    local created_root="" probe="" component
-    local -a _dir_components=()
-    if [[ ! -d "${dir}" ]]; then
-        IFS='/' read -ra _dir_components <<< "${dir}"
-        for component in "${_dir_components[@]}"; do
-            probe="${probe:+${probe}/}${component}"
-            if [[ ! -e "${probe}" ]]; then
-                created_root="${probe}"
-                break
-            fi
-        done
-        mkdir -p "${dir}"
-    fi
-    add_exclude_entry "/${dir}/"
+    # Bookkeeping for rollback: whether THIS run created the canonical
+    # checkout dir and/or the per-worktree symlink, so a failure can undo
+    # exactly what it made and nothing the user already had.
+    local made_ckout="" made_link=""
 
     mkdir -p "$(dirname "${gitdir}")"
     git init --quiet --bare "${gitdir}"
@@ -362,6 +369,21 @@ cmd_add() {
 
     echo "git-nook: added nook '${name}' (dir ${dir}/, target ${url}, ref ${ref})"
 
+    # Materialize as a fresh local nook first (mirrors the old code's eager
+    # mkdir -p "${dir}"): this migrates a pre-existing untracked ${dir} into
+    # the canonical checkout and symlinks it in, regardless of whether a
+    # remote ref turns out to exist below. If a remote ref IS found and is
+    # safe to adopt, the bootstrap step below overlays real content on top.
+    # made_ckout tracks whether the checkout had no real content of its own
+    # before this add ran (an empty or absent dir is not meaningful prior
+    # state), so a later failure's rollback can safely remove it.
+    [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]] || made_ckout=1
+    if ! materialize_one "${name}"; then
+        rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${checkout_dir}" "${made_link}" "${made_ckout}"
+        exit 1
+    fi
+    made_link=1
+
     # Bootstrap when the published ref already exists (never destructive).
     local lsout
     if ! lsout=$(git --git-dir="${gitdir}" ls-remote origin "${ref}" 2>/dev/null); then
@@ -369,7 +391,11 @@ cmd_add() {
         return 0
     fi
     [[ -n "${lsout}" ]] || return 0
-    if [[ -n "$(ls -A "${dir}" 2>/dev/null)" ]]; then
+
+    # Would bootstrapping clobber local content? materialize_one above
+    # already made ${dir} a symlink to ${checkout_dir}, so checking the
+    # canonical checkout's contents covers both.
+    if [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]]; then
         echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
         echo "git-nook: commit your local files, then reconcile:"
         echo "git-nook:   git nook ${name} add --all && git nook ${name} commit -m 'local files'"
@@ -377,16 +403,15 @@ cmd_add() {
         return 0
     fi
     if git --git-dir="${gitdir}" fetch --quiet origin \
-        && git --git-dir="${gitdir}" --work-tree="${dir}" reset --hard --quiet refs/remotes/origin/main; then
+        && git --git-dir="${gitdir}" --work-tree="${checkout_dir}" reset --hard --quiet refs/remotes/origin/main; then
+        if ! materialize_one "${name}"; then
+            rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${checkout_dir}" "${made_link}" "${made_ckout}"
+            err "bootstrap from ${url} failed; the nook was rolled back — fix the problem above and re-run add"
+            exit 1
+        fi
         echo "git-nook: bootstrapped ${dir}/ from ${ref}"
     else
-        # Roll back everything this add created so a retry starts clean.
-        rm -rf "${gitdir}"
-        git config --remove-section "nook.${name}" 2>/dev/null || true
-        remove_exclude_entry "/${dir}/"
-        if [[ -n "${created_root}" ]]; then
-            rm -rf "${created_root}"
-        fi
+        rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${checkout_dir}" "${made_link}" "${made_ckout}"
         err "bootstrap from ${url} failed; the nook was rolled back — fix the problem above and re-run add"
         exit 1
     fi
