@@ -53,10 +53,41 @@ EOF
 err() { echo "git-nook: error: $*" >&2; }
 
 require_work_tree() {
-    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # Inside a bare repo, `--is-inside-work-tree` prints "false" but still
+    # EXITS 0, so a plain `if ! git ...` guard would not fire. Compare the
+    # printed value, and treat any nonzero exit (not a repo at all) as failure.
+    local inside
+    if ! inside=$(git rev-parse --is-inside-work-tree 2>/dev/null) \
+       || [[ "${inside}" != "true" ]]; then
+        err "not inside a git repository work tree"
+        exit 1
+    fi
+}
+
+# Looser than require_work_tree: succeeds anywhere git can resolve a repo,
+# INCLUDING physically inside a .git dir. The passthrough dispatch needs this
+# because a materialized nook's content path is a symlink into the canonical
+# checkout under the parent's .git/, so `cd`-ing into a nook lands cwd inside
+# .git — where --is-inside-work-tree prints "false" but run_passthrough still
+# works (it only needs common_git_dir). Rejecting that would break passthrough.
+require_git_repo() {
+    if ! git rev-parse --git-dir >/dev/null 2>&1; then
         err "not inside a git repository"
         exit 1
     fi
+}
+
+# cd to the enclosing work tree's toplevel, surfacing failure explicitly.
+# `cd "$(git rev-parse --show-toplevel)"` would NOT abort under `set -e` when
+# rev-parse fails: the substitution collapses to "", so the command becomes a
+# `cd ""` no-op that exits 0. The two-step form below actually catches it.
+cd_to_toplevel() {
+    local toplevel
+    if ! toplevel=$(git rev-parse --show-toplevel 2>/dev/null); then
+        err "not inside a git repository work tree"
+        exit 1
+    fi
+    cd "${toplevel}"
 }
 
 channel_dir() { git config --get "nook.${1}.dir"; }
@@ -99,7 +130,9 @@ owner_and_project() {
             owner="local"
         fi
     else
-        # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
+        # Reached only after a caller has cd'd into the work tree's toplevel
+        # (require_work_tree + cd_to_toplevel), so rev-parse cannot fail here.
+        # shellcheck disable=SC2312 # nested substitution; toplevel is known-valid
         project=$(basename "$(git rev-parse --show-toplevel)")
         owner="local"
     fi
@@ -279,10 +312,8 @@ rollback_add() {
 
 cmd_add() {
     require_work_tree
-    local toplevel
-    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    toplevel=$(git rev-parse --show-toplevel)
-    cd "${toplevel}"
+    cd_to_toplevel
+    local toplevel; toplevel=$(pwd)   # cd_to_toplevel put us at the work-tree root
 
     local name="" target="" dir="" ref_tpl="${DEFAULT_REF_TEMPLATE}"
     while [[ $# -gt 0 ]]; do
@@ -449,8 +480,7 @@ cmd_add() {
 
 cmd_list() {
     require_work_tree
-    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    cd "$(git rev-parse --show-toplevel)"
+    cd_to_toplevel
     local key dir name gitdir url found=0
     local content_path checkout_dir linked_note
     while read -r key dir; do
@@ -475,8 +505,7 @@ cmd_list() {
 
 cmd_materialize() {
     require_work_tree
-    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    cd "$(git rev-parse --show-toplevel)"
+    cd_to_toplevel
     local key dir name found=0 rc=0
     while read -r key dir; do
         [[ -n "${key}" ]] || continue
@@ -494,10 +523,7 @@ cmd_materialize() {
 
 cmd_show() {
     require_work_tree
-    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    local toplevel
-    toplevel=$(git rev-parse --show-toplevel)
-    cd "${toplevel}"
+    cd_to_toplevel
     local name="${1:-}" dir gitdir checkout_dir content_path state linked t
     [[ -n "${name}" ]] || { err "usage: git nook show <name>"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
@@ -506,7 +532,7 @@ cmd_show() {
     fi
     gitdir=$(inner_git_dir "${name}")
     checkout_dir=$(canonical_checkout "${name}")
-    content_path="${toplevel}/${dir}"
+    content_path="$(pwd)/${dir}"   # cd_to_toplevel put us at the work-tree root
     # A broken/missing inner repo degrades to empty fields rather than
     # aborting show; without the || guard, pipefail + set -e would kill the
     # script with git's raw 128.
@@ -531,8 +557,7 @@ cmd_show() {
 
 cmd_remove() {
     require_work_tree
-    # shellcheck disable=SC2312 # rev-parse failure exits the script under set -e
-    cd "$(git rev-parse --show-toplevel)"
+    cd_to_toplevel
     local name="${1:-}" dir gitdir
     [[ -n "${name}" ]] || { err "usage: git nook remove <name>"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
@@ -609,7 +634,7 @@ main() {
             exit 1
             ;;
         *)
-            require_work_tree
+            require_git_repo
             if channel_dir "${1}" >/dev/null 2>&1; then
                 run_passthrough "$@"
             fi

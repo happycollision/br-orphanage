@@ -234,6 +234,30 @@ assert_exit_nonzero "unknown nook name exits nonzero"
 assert_contains "unknown nook error names the offender" "${RUN_OUT}" "frobnicate"
 assert_contains "unknown nook error points at 'git nook add'" "${RUN_OUT}" "git nook add"
 
+# --- Regression (br-orphanage-jhz): commands run inside a bare repo git-dir ------
+#
+# Inside a bare repo, `git rev-parse --is-inside-work-tree` prints "false" but
+# still EXITS 0, and `git rev-parse --show-toplevel` fails to stderr while its
+# command substitution collapses to "" (so `cd "$(...)"` is a no-op that also
+# exits 0). Both slip past `set -e`, so subcommands used to continue against a
+# stale cwd and print misleading success ("no nooks configured", exit 0).
+# Every subcommand that requires a work tree must instead error cleanly + nonzero.
+section "regression: subcommands refuse a bare repo work-tree cleanly (br-orphanage-jhz)"
+
+BARE_REPO="${WORK}/bare-jhz.git"
+git init -q --bare "${BARE_REPO}"
+
+for sub in list materialize show add remove; do
+    run_cmd_in "${BARE_REPO}" "${NOOK}" "${sub}"
+    assert_exit_nonzero "'git nook ${sub}' inside a bare repo exits nonzero"
+    # The misleading success message must never appear on any of these paths.
+    if [[ "${RUN_OUT}" == *"no nooks configured"* ]]; then
+        fail "'git nook ${sub}' inside a bare repo must not print 'no nooks configured' (got: '${RUN_OUT}')"
+    else
+        pass "'git nook ${sub}' inside a bare repo suppresses the misleading 'no nooks configured' message"
+    fi
+done
+
 # --- Version stamping (scripts/stamp-version.sh + install.sh -dev suffix) --------
 
 section "version stamping"
