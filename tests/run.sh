@@ -336,23 +336,23 @@ make_project_repo "${ADD_PROJ}" yes "add-demo"
 ADD_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" add notes origin)
 assert_contains "add reports the new nook" "${ADD_OUT}" "added nook 'notes'"
 
-assert_dir_exists "content dir created with default name" "${ADD_PROJ}/.notes"
-assert_file_absent "content dir contains NO .git entry" "${ADD_PROJ}/.notes/.git"
+assert_dir_exists "content dir created with default name" "${ADD_PROJ}/notes"
+assert_file_absent "content dir contains NO .git entry" "${ADD_PROJ}/notes/.git"
 ADD_GITDIR="${ADD_PROJ}/.git/nook/notes.git"
 assert_dir_exists "inner git dir hidden under parent .git" "${ADD_GITDIR}"
 
 assert_eq "parent config maps name -> dir" \
-    ".notes" "$(git -C "${ADD_PROJ}" config --get nook.notes.dir)"
+    "notes" "$(git -C "${ADD_PROJ}" config --get nook.notes.dir)"
 ADD_EXCLUDE=$(abs_git_path "${ADD_PROJ}" info/exclude)
 assert_true "content dir excluded (anchored, no trailing slash: it is a symlink) in parent info/exclude" \
-    grep -qxF '/.notes' "${ADD_EXCLUDE}"
+    grep -qxF '/notes' "${ADD_EXCLUDE}"
 
-assert_true "content path is a symlink" test -L "${ADD_PROJ}/.notes"
+assert_true "content path is a symlink" test -L "${ADD_PROJ}/notes"
 ADD_CANON=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
 ADD_CANON="$(cd "${ADD_PROJ}/${ADD_CANON}" && pwd)/nook/notes.nook"
 assert_dir_exists "canonical checkout dir exists" "${ADD_CANON}"
 assert_eq "symlink points at canonical checkout" \
-    "$(cd "${ADD_PROJ}/.notes" && pwd -P)" "$(cd "${ADD_CANON}" && pwd -P)"
+    "$(cd "${ADD_PROJ}/notes" && pwd -P)" "$(cd "${ADD_CANON}" && pwd -P)"
 
 inner_cfg() { git --git-dir="${ADD_GITDIR}" config --get "$1"; }
 ADD_ORIGIN_URL=$(git -C "${ADD_PROJ}" remote get-url origin)
@@ -387,6 +387,18 @@ assert_eq "non-refs/ template lands under refs/heads/" \
     "$(git --git-dir="${SCRATCH_GITDIR}" config --get remote.origin.push)"
 assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
 assert_true "custom dir excluded" grep -qxF '/tmp/scratch' "${ADD_EXCLUDE}"
+
+section "add: explicit dotted --dir is still honored"
+
+(cd "${ADD_PROJ}" && "${NOOK}" add secret "${ADD_TGT_BARE}" --dir .secret)
+assert_dir_exists "explicit dotted --dir honored" "${ADD_PROJ}/.secret"
+assert_true "explicit dotted dir excluded" grep -qxF '/.secret' "${ADD_EXCLUDE}"
+assert_true "explicit dotted dir is a symlink" test -L "${ADD_PROJ}/.secret"
+SECRET_CANON=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
+SECRET_CANON="$(cd "${ADD_PROJ}/${SECRET_CANON}" && pwd)/nook/secret.nook"
+assert_dir_exists "canonical checkout dir exists" "${SECRET_CANON}"
+assert_eq "symlink points at canonical checkout" \
+    "$(cd "${ADD_PROJ}/.secret" && pwd -P)" "$(cd "${SECRET_CANON}" && pwd -P)"
 
 section "exclude: entry has no trailing slash and remove cleans legacy forms"
 EX=${WORK}/proj-exclude
@@ -430,7 +442,7 @@ assert_contains "list shows notes" "${LIST_OUT}" "notes"
 assert_contains "list shows scratch's dir" "${LIST_OUT}" "tmp/scratch/"
 
 SHOW_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" show notes)
-assert_contains "show prints the dir" "${SHOW_OUT}" "dir:      .notes/"
+assert_contains "show prints the dir" "${SHOW_OUT}" "dir:      notes/"
 assert_contains "show prints the url" "${SHOW_OUT}" "url:      ${ADD_ORIGIN_URL}"
 assert_contains "show prints the push refspec" "${SHOW_OUT}" "refs/heads/main:${ADD_REF}"
 assert_contains "show prints branch state" "${SHOW_OUT}" "state:"
@@ -464,16 +476,16 @@ PT_PROJ="${WORK}/proj-passthrough"
 make_project_repo "${PT_PROJ}" yes "pt-demo"
 (cd "${PT_PROJ}" && "${NOOK}" add notes origin)
 
-assert_true "content path is a symlink" test -L "${PT_PROJ}/.notes"
+assert_true "content path is a symlink" test -L "${PT_PROJ}/notes"
 PT_CANON=$(cd "${PT_PROJ}" && git rev-parse --git-common-dir)
 PT_CANON="$(cd "${PT_PROJ}/${PT_CANON}" && pwd)/nook/notes.nook"
 assert_dir_exists "canonical checkout dir exists" "${PT_CANON}"
 assert_eq "symlink points at canonical checkout" \
-    "$(cd "${PT_PROJ}/.notes" && pwd -P)" "$(cd "${PT_CANON}" && pwd -P)"
+    "$(cd "${PT_PROJ}/notes" && pwd -P)" "$(cd "${PT_CANON}" && pwd -P)"
 
-printf 'hello nook\n' > "${PT_PROJ}/.notes/first.md"
-mkdir -p "${PT_PROJ}/.notes/deep/nested"
-printf 'nested content\n' > "${PT_PROJ}/.notes/deep/nested/leaf.txt"
+printf 'hello nook\n' > "${PT_PROJ}/notes/first.md"
+mkdir -p "${PT_PROJ}/notes/deep/nested"
+printf 'nested content\n' > "${PT_PROJ}/notes/deep/nested/leaf.txt"
 
 PT_STATUS=$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain)
 assert_contains "status sees the new file" "${PT_STATUS}" "first.md"
@@ -488,7 +500,7 @@ PT_LOG=$(cd "${PT_PROJ}" && "${NOOK}" notes log --oneline)
 assert_contains "log shows the commit" "${PT_LOG}" "first nook commit"
 assert_eq "clean after commit" "" "$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain)"
 
-assert_file_absent "still no .git entry in the content dir" "${PT_PROJ}/.notes/.git"
+assert_file_absent "still no .git entry in the content dir" "${PT_PROJ}/notes/.git"
 assert_eq "parent status still clean" "" "$(git -C "${PT_PROJ}" status --porcelain)"
 
 section "passthrough: works from a subdirectory and from inside the nook"
@@ -505,8 +517,8 @@ assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first 
 # git-dir and canonical checkout from git-common-dir, which ambient discovery
 # still resolves correctly even from inside .git, then runs git against
 # explicit --git-dir/--work-tree.
-printf 'more\n' >> "${PT_PROJ}/.notes/first.md"
-run_cmd_in "${PT_PROJ}/.notes" "${NOOK}" notes add first.md
+printf 'more\n' >> "${PT_PROJ}/notes/first.md"
+run_cmd_in "${PT_PROJ}/notes" "${NOOK}" notes add first.md
 assert_eq "relative pathspec add from inside the nook succeeded" "0" "${RUN_EXIT}"
 PT_STAGED=$(cd "${PT_PROJ}" && "${NOOK}" notes diff --cached --name-only)
 assert_contains "relative pathspec staged from inside the nook" "${PT_STAGED}" "first.md"
@@ -515,20 +527,20 @@ assert_contains "relative pathspec staged from inside the nook" "${PT_STAGED}" "
 section "passthrough: local branches work (single-ref publication is the only limit)"
 
 (cd "${PT_PROJ}" && "${NOOK}" notes checkout -q -b experiment)
-printf 'branchy\n' > "${PT_PROJ}/.notes/branch-file.txt"
+printf 'branchy\n' > "${PT_PROJ}/notes/branch-file.txt"
 (cd "${PT_PROJ}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "on a branch")
 (cd "${PT_PROJ}" && "${NOOK}" notes checkout -q main)
-assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/.notes/branch-file.txt"
+assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/notes/branch-file.txt"
 assert_eq "parent status STILL clean after branch dance" "" "$(git -C "${PT_PROJ}" status --porcelain)"
 
 section "passthrough: works without a materialized symlink; missing checkout points at materialize"
 
 GONE=${WORK}/proj-gone; make_project_repo "${GONE}" yes gone
 (cd "${GONE}" && "${NOOK}" add stash origin >/dev/null)
-printf 'keep\n' > "${GONE}/.stash/keeper.txt"
+printf 'keep\n' > "${GONE}/stash/keeper.txt"
 (cd "${GONE}" && "${NOOK}" stash add --all && "${NOOK}" stash commit -q -m keeper)
 # remove the worktree SYMLINK but not the canonical checkout
-rm "${GONE}/.stash"
+rm "${GONE}/stash"
 # passthrough still works (targets the canonical checkout directly)
 GONE_LOG=$(cd "${GONE}" && "${NOOK}" stash log --oneline)
 assert_contains "passthrough works without symlink (targets canonical checkout)" "${GONE_LOG}" "keeper"
@@ -541,7 +553,7 @@ assert_contains "error points at materialize" "${RUN_OUT}" "git nook materialize
 if [[ "${RUN_OUT}" == *"mkdir"* ]]; then fail "error still suggests the mkdir footgun"; else pass "no mkdir footgun in error"; fi
 # recovery via materialize works
 (cd "${GONE}" && "${NOOK}" materialize >/dev/null)
-assert_file_exists "materialize restored the checkout content" "${GONE}/.stash/keeper.txt"
+assert_file_exists "materialize restored the checkout content" "${GONE}/stash/keeper.txt"
 
 SHOW=$(cd "${GONE}" && "${NOOK}" show stash)
 assert_contains "show reports the canonical checkout" "${SHOW}" "checkout:"
@@ -598,7 +610,7 @@ BR_PROJ="${WORK}/proj-branch-ref"
 make_project_repo "${BR_PROJ}" yes "branch-ref-demo"
 BR_BARE="${WORK}/origins/branch-ref-demo.git"
 (cd "${BR_PROJ}" && "${NOOK}" add docs origin --ref 'refs/heads/shadow/<name>')
-printf 'visible\n' > "${BR_PROJ}/.docs/readme.txt"
+printf 'visible\n' > "${BR_PROJ}/docs/readme.txt"
 (cd "${BR_PROJ}" && "${NOOK}" docs add --all && "${NOOK}" docs commit -q -m "docs" && "${NOOK}" docs push -q)
 assert_true "branch override published under refs/heads/" \
     git -C "${BR_BARE}" rev-parse --verify -q refs/heads/shadow/docs
@@ -613,9 +625,9 @@ make_project_repo "${BS_A}" yes "bs-demo"
 BS_BARE="${WORK}/origins/bs-demo.git"
 git -C "${BS_A}" push -q origin HEAD:refs/heads/main
 (cd "${BS_A}" && "${NOOK}" add notes origin)
-printf 'from machine A\n' > "${BS_A}/.notes/shared.md"
-mkdir -p "${BS_A}/.notes/sub"
-printf 'nested\n' > "${BS_A}/.notes/sub/inner.md"
+printf 'from machine A\n' > "${BS_A}/notes/shared.md"
+mkdir -p "${BS_A}/notes/sub"
+printf 'nested\n' > "${BS_A}/notes/sub/inner.md"
 (cd "${BS_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "A1" && "${NOOK}" notes push -q)
 
 # Fresh clone = second machine.
@@ -623,9 +635,9 @@ BS_B="${WORK}/proj-bs-b"
 git clone -q "${BS_BARE}" "${BS_B}"
 BS_B_OUT=$(cd "${BS_B}" && "${NOOK}" add notes origin)
 assert_contains "add reports the bootstrap" "${BS_B_OUT}" "bootstrapped"
-assert_file_exists "content materialized" "${BS_B}/.notes/shared.md"
-assert_file_exists "nested content materialized" "${BS_B}/.notes/sub/inner.md"
-assert_true "bootstrap left a symlink" test -L "${BS_B}/.notes"
+assert_file_exists "content materialized" "${BS_B}/notes/shared.md"
+assert_file_exists "nested content materialized" "${BS_B}/notes/sub/inner.md"
+assert_true "bootstrap left a symlink" test -L "${BS_B}/notes"
 assert_eq "nook clean right after bootstrap" \
     "" "$(cd "${BS_B}" && "${NOOK}" notes status --porcelain)"
 BS_B_LOG=$(cd "${BS_B}" && "${NOOK}" notes log --oneline)
@@ -636,8 +648,8 @@ section "bootstrap: both-sides-exist refuses to touch local files"
 
 BS_C="${WORK}/proj-bs-c"
 git clone -q "${BS_BARE}" "${BS_C}"
-mkdir -p "${BS_C}/.notes"
-printf 'precious local-only work\n' > "${BS_C}/.notes/local.md"
+mkdir -p "${BS_C}/notes"
+printf 'precious local-only work\n' > "${BS_C}/notes/local.md"
 BS_C_OUT=$(cd "${BS_C}" && "${NOOK}" add notes origin)
 assert_contains "add warns about the existing remote ref" "${BS_C_OUT}" "not empty"
 assert_contains "add names the reconcile command" "${BS_C_OUT}" "--allow-unrelated-histories"
@@ -648,15 +660,15 @@ assert_contains "reconcile hint pins the merge strategy" "${BS_C_OUT}" "--no-reb
 # ...and --no-edit, so interactive users aren't dropped into an editor.
 assert_contains "reconcile hint skips the merge-message editor" "${BS_C_OUT}" "--no-edit"
 assert_eq "local file untouched" \
-    "precious local-only work" "$(cat "${BS_C}/.notes/local.md")"
+    "precious local-only work" "$(cat "${BS_C}/notes/local.md")"
 
 # The printed procedure actually works (same flags as the printed hint, plus
 # -q for harness quietness; the explicit flags validate the hint as printed
 # rather than leaning on the harness's global pull.rebase pin):
 (cd "${BS_C}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "local files")
 (cd "${BS_C}" && "${NOOK}" notes pull -q --no-rebase --no-edit --allow-unrelated-histories)
-assert_file_exists "remote content merged in" "${BS_C}/.notes/shared.md"
-assert_file_exists "local content survived" "${BS_C}/.notes/local.md"
+assert_file_exists "remote content merged in" "${BS_C}/notes/shared.md"
+assert_file_exists "local content survived" "${BS_C}/notes/local.md"
 (cd "${BS_C}" && "${NOOK}" notes push -q)
 
 section "bootstrap: failure rolls the add back cleanly"
@@ -674,11 +686,11 @@ else
     BS_D_SEED="${WORK}/proj-bs-d-seed"
     git clone -q "${WORK}/origins/bs-fail.git" "${BS_D_SEED}"
     (cd "${BS_D_SEED}" && "${NOOK}" add notes origin >/dev/null)
-    printf 'seeded\n' > "${BS_D_SEED}/.notes/seed.md"
+    printf 'seeded\n' > "${BS_D_SEED}/notes/seed.md"
     (cd "${BS_D_SEED}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m seed && "${NOOK}" notes push -q)
 
     BS_D_CANON=$(cd "${BS_D}" && git rev-parse --git-common-dir); BS_D_CANON="$(cd "${BS_D}/${BS_D_CANON}" && pwd)/nook/notes.nook"
-    mkdir -p "${BS_D}/.notes"
+    mkdir -p "${BS_D}/notes"
     mkdir -p "${BS_D_CANON}"
     chmod 555 "${BS_D_CANON}"
     run_cmd_in "${BS_D}" "${NOOK}" add notes origin
@@ -692,24 +704,24 @@ else
     fi
     assert_file_absent "inner repo rolled back" "${BS_D}/.git/nook/notes.git"
     BS_D_EXCLUDE=$(abs_git_path "${BS_D}" info/exclude)
-    if grep -qxF '/.notes' "${BS_D_EXCLUDE}" 2>/dev/null; then
+    if grep -qxF '/notes' "${BS_D_EXCLUDE}" 2>/dev/null; then
         fail "exclude entry not rolled back after bootstrap failure"
     else
         pass "exclude entry rolled back after bootstrap failure"
     fi
-    # The pre-created ${BS_D}/.notes was empty test scaffolding, not real
+    # The pre-created ${BS_D}/notes was empty test scaffolding, not real
     # user data: materialize_one folded it into the (also-empty) canonical
     # checkout and replaced it with a symlink, so rollback's job is just to
     # remove that symlink and the (content-less) checkout -- there is no
     # real content to have kept. Assert nothing of value was lost, not that
     # the specific empty directory inode survived.
-    assert_file_absent "empty pre-add dir consumed; rollback leaves no stray content dir" "${BS_D}/.notes"
+    assert_file_absent "empty pre-add dir consumed; rollback leaves no stray content dir" "${BS_D}/notes"
     assert_file_absent "canonical checkout removed by rollback" "${BS_D_CANON}"
 
     # Once writable again, the same add succeeds (nothing stale left behind).
     BS_D_OUT2=$(cd "${BS_D}" && "${NOOK}" add notes origin)
     assert_contains "re-add after repair bootstraps" "${BS_D_OUT2}" "bootstrapped"
-    assert_file_exists "content materialized on retry" "${BS_D}/.notes/seed.md"
+    assert_file_exists "content materialized on retry" "${BS_D}/notes/seed.md"
 fi
 
 section "bootstrap: nested --dir rollback removes the symlink and canonical checkout"
@@ -782,7 +794,7 @@ make_project_repo "${TC_A}" yes "tc-demo"
 TC_BARE="${WORK}/origins/tc-demo.git"
 git -C "${TC_A}" push -q origin HEAD:refs/heads/main
 (cd "${TC_A}" && "${NOOK}" add notes origin)
-printf 'base\n' > "${TC_A}/.notes/doc.md"
+printf 'base\n' > "${TC_A}/notes/doc.md"
 (cd "${TC_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m base && "${NOOK}" notes push -q)
 
 TC_B="${WORK}/proj-tc-b"
@@ -790,9 +802,9 @@ git clone -q "${TC_BARE}" "${TC_B}"
 (cd "${TC_B}" && "${NOOK}" add notes origin >/dev/null)
 
 # A pushes a new commit; B commits independently -> B's push must be rejected.
-printf 'from A\n' > "${TC_A}/.notes/a-only.md"
+printf 'from A\n' > "${TC_A}/notes/a-only.md"
 (cd "${TC_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m from-a && "${NOOK}" notes push -q)
-printf 'from B\n' > "${TC_B}/.notes/b-only.md"
+printf 'from B\n' > "${TC_B}/notes/b-only.md"
 (cd "${TC_B}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m from-b)
 run_cmd_in "${TC_B}" "${NOOK}" notes push
 assert_exit_nonzero "non-fast-forward push rejected"
@@ -806,17 +818,17 @@ assert_contains "merged tree holds B's file" "$(git -C "${TC_BARE}" ls-tree -r -
 section "two clones: conflicting edits produce real conflict markers"
 
 (cd "${TC_A}" && "${NOOK}" notes pull -q --no-edit --no-rebase)
-printf 'line edited by A\n' > "${TC_A}/.notes/doc.md"
+printf 'line edited by A\n' > "${TC_A}/notes/doc.md"
 (cd "${TC_A}" && "${NOOK}" notes commit -q -am edit-a && "${NOOK}" notes push -q)
-printf 'line edited by B\n' > "${TC_B}/.notes/doc.md"
+printf 'line edited by B\n' > "${TC_B}/notes/doc.md"
 (cd "${TC_B}" && "${NOOK}" notes commit -q -am edit-b)
 run_cmd_in "${TC_B}" "${NOOK}" notes pull --no-edit --no-rebase
 assert_exit_nonzero "conflicting pull exits nonzero"
 assert_true "conflict markers present in the working file" \
-    grep -q '^<<<<<<<' "${TC_B}/.notes/doc.md"
+    grep -q '^<<<<<<<' "${TC_B}/notes/doc.md"
 
 # Resolve like any git repo: pick a merged line, commit, push.
-printf 'line edited by A and B\n' > "${TC_B}/.notes/doc.md"
+printf 'line edited by A and B\n' > "${TC_B}/notes/doc.md"
 (cd "${TC_B}" && "${NOOK}" notes add doc.md && "${NOOK}" notes commit -q --no-edit)
 (cd "${TC_B}" && "${NOOK}" notes push -q)
 assert_contains "resolution published" \
@@ -873,7 +885,7 @@ run_cmd_in "${REF_PROJ}" "${NOOK}" add notes origin
 assert_exit_nonzero "duplicate nook name refused"
 assert_contains "duplicate error points at show" "${RUN_OUT}" "already exists"
 
-run_cmd_in "${REF_PROJ}" "${NOOK}" add nested origin --dir .notes/nested
+run_cmd_in "${REF_PROJ}" "${NOOK}" add nested origin --dir notes/nested
 assert_exit_nonzero "dir nesting inside another nook refused"
 assert_contains "overlap error names the other nook" "${RUN_OUT}" "notes"
 run_cmd_in "${REF_PROJ}" "${NOOK}" add umbrella origin --dir .
@@ -897,7 +909,7 @@ section "remove: config-only, never destroys files or history"
 RM_PROJ="${WORK}/proj-remove"
 make_project_repo "${RM_PROJ}" yes "remove-demo"
 (cd "${RM_PROJ}" && "${NOOK}" add notes origin >/dev/null)
-printf 'unpushed work\n' > "${RM_PROJ}/.notes/keep.md"
+printf 'unpushed work\n' > "${RM_PROJ}/notes/keep.md"
 (cd "${RM_PROJ}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m keep)
 
 RM_OUT=$(cd "${RM_PROJ}" && "${NOOK}" remove notes)
@@ -910,12 +922,12 @@ else
     pass "config gone after remove"
 fi
 RM_EXCLUDE=$(abs_git_path "${RM_PROJ}" info/exclude)
-if grep -qxF '/.notes' "${RM_EXCLUDE}" 2>/dev/null || grep -qxF '/.notes/' "${RM_EXCLUDE}" 2>/dev/null; then
+if grep -qxF '/notes' "${RM_EXCLUDE}" 2>/dev/null || grep -qxF '/notes/' "${RM_EXCLUDE}" 2>/dev/null; then
     fail "remove left a stale exclude entry"
 else
     pass "remove cleaned both exclude entry forms"
 fi
-assert_file_exists "content untouched" "${RM_PROJ}/.notes/keep.md"
+assert_file_exists "content untouched" "${RM_PROJ}/notes/keep.md"
 assert_dir_exists "inner repo (history) untouched" "${RM_PROJ}/.git/nook/notes.git"
 
 run_cmd_in "${RM_PROJ}" "${NOOK}" notes status
@@ -930,7 +942,7 @@ run_cmd_in "${RM_PROJ}" "${NOOK}" add notes origin
 assert_exit_nonzero "re-add with stale inner repo refused (history is never silently adopted or destroyed)"
 assert_contains "refusal names the stale path" "${RUN_OUT}" ".git/nook/notes.git"
 
-rm -rf "${RM_PROJ}/.git/nook/notes.git" "${RM_PROJ}/.notes"
+rm -rf "${RM_PROJ}/.git/nook/notes.git" "${RM_PROJ}/notes"
 RM_READD=$(cd "${RM_PROJ}" && "${NOOK}" add notes origin)
 assert_contains "re-add succeeds after manual cleanup" "${RM_READD}" "added nook 'notes'"
 
@@ -961,9 +973,9 @@ printf '*.kept\n' >> "$(abs_git_path "${ISO_PROJ}" info/exclude)"
 printf '*.kept\n' > "${ISO_PROJ}/.gitignore"
 
 # The nook's own .gitignore is authoritative:
-printf '*.local\n' > "${ISO_PROJ}/.data/.gitignore"
-printf 'keep me\n' > "${ISO_PROJ}/.data/file.kept"
-printf 'never publish\n' > "${ISO_PROJ}/.data/state.local"
+printf '*.local\n' > "${ISO_PROJ}/data/.gitignore"
+printf 'keep me\n' > "${ISO_PROJ}/data/file.kept"
+printf 'never publish\n' > "${ISO_PROJ}/data/state.local"
 
 (cd "${ISO_PROJ}" && "${NOOK}" data add --all && "${NOOK}" data commit -q -m files)
 ISO_TRACKED=$(cd "${ISO_PROJ}" && "${NOOK}" data ls-files)
@@ -983,8 +995,8 @@ section "isolation: byte identity under hostile autocrlf"
 git config --global core.autocrlf true
 git -C "${ISO_PROJ}" config core.autocrlf true
 
-printf 'crlf line one\r\ncrlf line two\r\n' > "${ISO_PROJ}/.data/windows.txt"
-CRLF_HASH_BEFORE=$(shasum "${ISO_PROJ}/.data/windows.txt" | awk '{print $1}')
+printf 'crlf line one\r\ncrlf line two\r\n' > "${ISO_PROJ}/data/windows.txt"
+CRLF_HASH_BEFORE=$(shasum "${ISO_PROJ}/data/windows.txt" | awk '{print $1}')
 (cd "${ISO_PROJ}" && "${NOOK}" data add --all && "${NOOK}" data commit -q -m crlf && "${NOOK}" data push -q)
 
 # Round trip on a second machine (also with hostile global config).
@@ -992,7 +1004,7 @@ git -C "${ISO_PROJ}" push -q origin HEAD:refs/heads/main
 ISO_B="${WORK}/proj-isolation-b"
 git clone -q "${WORK}/origins/iso-demo.git" "${ISO_B}"
 (cd "${ISO_B}" && "${NOOK}" add data origin >/dev/null)
-CRLF_HASH_AFTER=$(shasum "${ISO_B}/.data/windows.txt" | awk '{print $1}')
+CRLF_HASH_AFTER=$(shasum "${ISO_B}/data/windows.txt" | awk '{print $1}')
 assert_eq "CRLF file round-trips byte-identically despite global autocrlf=true" \
     "${CRLF_HASH_BEFORE}" "${CRLF_HASH_AFTER}"
 
