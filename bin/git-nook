@@ -6,7 +6,7 @@ set -euo pipefail
 # every git call below.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 
-# git-nook — git for a hidden directory.
+# git-nook — real git for a directory your host repo won't track.
 #
 # A nook is an ordinary git repository whose git-dir hides under the parent
 # repo's .git/ and whose worktree is a content dir the parent excludes.
@@ -27,7 +27,7 @@ RESERVED_NAMES=(add list show remove materialize help version)
 
 usage() {
     cat <<EOF
-git-nook ${VERSION} — git for a hidden directory
+git-nook ${VERSION} — real git for a directory your host repo won't track
 
 Usage:
   git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
@@ -38,10 +38,10 @@ Usage:
   git nook <name> <git-args...>    # run any git command against the nook
   git nook --help | --version
 
-A nook is a real git repository hidden inside this repo's .git directory,
-with its worktree in an excluded content dir. 'add' wires its remote to a
-custom ref (default: ${DEFAULT_REF_TEMPLATE}),
-so push/pull/status work out of the box:
+A nook is a real git repository, invisible to this repo's own git commands:
+its git-dir lives inside this repo's .git directory, and its worktree is a
+content dir this repo excludes. 'add' wires its remote to a custom ref
+(default: ${DEFAULT_REF_TEMPLATE}), so push/pull/status work out of the box:
 
   git nook notes status
   git nook notes add --all
@@ -369,7 +369,7 @@ cmd_add() {
         exit 1
     fi
 
-    [[ -n "${dir}" ]] || dir=".${name}"
+    [[ -n "${dir}" ]] || dir="${name}"
     dir="${dir%/}"
     case "${dir}" in
         /* | . | .. | ./* | ../* | */.. | */../* | .git | .git/* | */.git | */.git/*)
