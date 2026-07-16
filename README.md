@@ -58,12 +58,12 @@ git nook add notes origin
 
 This creates a hidden inner git repository for a nook named `notes`, wires
 its remote to a custom ref on `origin`, and gives you the nook's files at
-`.notes/` (a symlink into the shared checkout, excluded from the host repo
+`notes/` (a symlink into the shared checkout, excluded from the host repo
 via `.git/info/exclude`, so `git status` in the host repo never mentions
 it). Edit files there like any other directory:
 
 ```sh
-echo "today's notes" > .notes/today.md
+echo "today's notes" > notes/today.md
 git nook notes status
 git nook notes add --all
 git nook notes commit -m "today's notes"
@@ -78,12 +78,12 @@ straight from the published ref:
 git nook add notes origin
 ```
 
-If the ref already has history, `add` fetches it and materializes `.notes/`
+If the ref already has history, `add` fetches it and materializes `notes/`
 automatically; there's nothing else to run.
 
 After a plain `git clone` of the host repo, the nook's config comes along
 but its worktree symlink doesn't — run `git nook materialize` once to link
-every configured nook (`.notes/` and friends) into the fresh clone.
+every configured nook (`notes/` and friends) into the fresh clone.
 Likewise, after `git worktree add <path>`, run `git nook materialize`
 inside that new worktree to create its symlinks; every worktree then
 shares the same underlying nook checkout.
@@ -95,12 +95,12 @@ A nook is three paths:
 ```
 .git/nook/notes.git    # the inner bare repository (hidden inside your .git)
 .git/nook/notes.nook/  # the one real checkout, shared by every worktree
-.notes/                # a symlink to the checkout above; excluded via .git/info/exclude
+notes/                 # a symlink to the checkout above; excluded via .git/info/exclude
 ```
 
 The real files live once, under `.git/nook/<name>.nook/` in the host repo's
 *common* git dir. Each worktree of the host repo exposes those files
-through a plain symlink at the configured path (`.notes/` by default) —
+through a plain symlink at the configured path (`notes/` by default) —
 the symlink itself, not a directory, is what's excluded via
 `.git/info/exclude`, so `git status` in the host repo never mentions it.
 Because every worktree's symlink points at the same checkout, `git
@@ -109,7 +109,7 @@ one checkout, one set of refs, one `HEAD`. Run `git nook materialize` in a
 worktree that doesn't have the symlink yet (see "Quick start" and
 "Commands" below).
 
-`.notes/` has no `.git` file of its own — `git nook add` never runs a
+`notes/` has no `.git` file of its own — `git nook add` never runs a
 plain `git init` inside the content dir, so the host repo sees only a
 plain excluded symlink: no gitlink, no submodule confusion, no trace that
 another repository is involved at all. The inner repository is reachable
@@ -161,8 +161,9 @@ By default the published ref is `refs/nook/<owner>/<project>/<name>`, with
   `refs/heads/` automatically (useful for hosts that restrict which ref
   namespaces can be pushed).
 
-`--dir` sets the content directory (default `.<name>/`); use it to put a
-nook's files somewhere other than the default, e.g. `--dir .beads`.
+`--dir` sets the content directory (default `<name>/`); use it to put a
+nook's files somewhere other than the default — including a dotted path
+like `--dir .beads` if you'd rather keep it out of a casual `ls`.
 
 ## Worked example: hidden issue tracking with beads
 
