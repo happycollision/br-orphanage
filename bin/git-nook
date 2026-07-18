@@ -636,6 +636,10 @@ main() {
                 run)
                     shift
                     require_git_repo
+                    if ! channel_dir "${name}" >/dev/null 2>&1; then
+                        err "no nook named '${name}' (see: git nook list)"
+                        exit 1
+                    fi
                     run_passthrough "${name}" "$@"
                     ;;
                 "")

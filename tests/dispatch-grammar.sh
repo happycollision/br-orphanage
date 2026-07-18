@@ -204,6 +204,35 @@ run_cmd_in "${PROJECT}" "${NOOK}" --name pull show
 assert_exit_zero "'--name pull show' works"
 assert_contains "'--name pull show' prints the nook name" "${RUN_OUT}" "name:     pull"
 
+# --- 5. 'run' requires a CONFIGURED nook (respect the 'remove' contract) -----
+#
+# `-n <name> remove` is config-only: it deletes the config entry but
+# deliberately KEEPS the inner git-dir and checkout on disk. `run` must not
+# be fooled by that leftover state into treating the name as still valid.
+
+section "5. 'run' requires a configured nook"
+
+run_cmd_in "${PROJECT}" "${NOOK}" add gone origin
+assert_exit_zero "add nook 'gone'"
+
+run_cmd_in "${PROJECT}" "${NOOK}" -n gone remove
+assert_exit_zero "'-n gone remove' succeeds"
+
+run_cmd_in "${PROJECT}" "${NOOK}" -n gone run status
+assert_exit_nonzero "'-n gone run status' fails after remove (config gone, disk state left behind)"
+assert_contains "'-n gone run status' error message" "${RUN_OUT}" "no nook named"
+
+# A name that was never configured at all in this repo.
+GHOST_PROJ="${WORK}/proj-ghost"
+make_project_repo "${GHOST_PROJ}" no
+run_cmd_in "${GHOST_PROJ}" "${NOOK}" -n ghost run status
+assert_exit_nonzero "'-n ghost run status' fails for a never-configured name"
+assert_contains "'-n ghost run status' error message" "${RUN_OUT}" "no nook named"
+
+# Regression: a normally-added, still-configured nook remains runnable.
+run_cmd_in "${PROJECT}" "${NOOK}" -n notes run status
+assert_exit_zero "'-n notes run status' still works for a configured nook"
+
 # --- Summary ------------------------------------------------------------------
 
 section "Summary"
