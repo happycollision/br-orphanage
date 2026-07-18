@@ -23,7 +23,6 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 VERSION="v0.0.0-dev"
 
 DEFAULT_REF_TEMPLATE='refs/nook/<owner>/<project>/<name>'
-RESERVED_NAMES=(add list show remove materialize help version)
 
 usage() {
     cat <<EOF
@@ -156,13 +155,7 @@ resolve_ref() {
 }
 
 validate_name() {
-    local name="$1" r
-    for r in "${RESERVED_NAMES[@]}"; do
-        if [[ "${name}" == "${r}" ]]; then
-            err "'${name}' is a reserved subcommand name"
-            return 1
-        fi
-    done
+    local name="$1"
     if [[ "${name}" == -* || "${name}" == */* ]] \
         || ! git check-ref-format "refs/nook/${name}" >/dev/null 2>&1; then
         err "'${name}' is not a valid nook name (one path component, no leading '-')"
@@ -525,7 +518,7 @@ cmd_show() {
     require_work_tree
     cd_to_toplevel
     local name="${1:-}" dir gitdir checkout_dir content_path state linked t
-    [[ -n "${name}" ]] || { err "usage: git nook show <name>"; exit 1; }
+    [[ -n "${name}" ]] || { err "usage: git nook -n <name> show"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
         err "no nook named '${name}' (see: git nook list)"
         exit 1
@@ -559,7 +552,7 @@ cmd_remove() {
     require_work_tree
     cd_to_toplevel
     local name="${1:-}" dir gitdir
-    [[ -n "${name}" ]] || { err "usage: git nook remove <name>"; exit 1; }
+    [[ -n "${name}" ]] || { err "usage: git nook -n <name> remove"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
         err "no nook named '${name}' (see: git nook list)"
         exit 1
@@ -623,23 +616,46 @@ main() {
     case "${1:-}" in
         add)    shift; cmd_add "$@" ;;
         list)   shift; cmd_list "$@" ;;
-        show)   shift; cmd_show "$@" ;;
-        remove) shift; cmd_remove "$@" ;;
         materialize) shift; cmd_materialize "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;
         -h | --help | help | "") usage ;;
+        -n | --name)
+            local name
+            if [[ $# -lt 2 ]]; then
+                err "missing value for -n/--name"
+                exit 1
+            fi
+            name="$2"
+            shift 2
+            validate_name "${name}" || exit 1
+            case "${1:-}" in
+                show)
+                    shift; cmd_show "${name}" "$@" ;;
+                remove)
+                    shift; cmd_remove "${name}" "$@" ;;
+                run)
+                    shift
+                    require_git_repo
+                    run_passthrough "${name}" "$@"
+                    ;;
+                "")
+                    err "no command given for nook '${name}'"
+                    exit 1
+                    ;;
+                *)
+                    err "unknown command '${1}' for nook '${name}'"
+                    exit 1
+                    ;;
+            esac
+            ;;
         -*)
             err "unknown option '${1}'"
             usage >&2
             exit 1
             ;;
         *)
-            require_git_repo
-            if channel_dir "${1}" >/dev/null 2>&1; then
-                run_passthrough "$@"
-            fi
-            err "unknown command or nook '${1}'"
-            echo "git-nook: see nooks with 'git nook list'; create one with 'git nook add <name> <target>'" >&2
+            err "unknown command '${1}'"
+            echo "git-nook: see 'git nook list'; select a nook with 'git nook -n <name> <show|remove|run>'; create one with 'git nook add <name> <target>'" >&2
             exit 1
             ;;
     esac
