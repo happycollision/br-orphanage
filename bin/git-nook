@@ -14,8 +14,8 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 # against it through the passthrough:
 #
 #   git nook add <name> <target> [--dir <d>] [--ref <tpl>]
-#   git nook list | show <name> | remove <name>
-#   git nook <name> <any-git-args...>
+#   git nook list | materialize
+#   git nook -n <name> show | remove | run <any-git-args...>
 #
 # Design: docs/plans/2026-07-05-git-nook-design.md
 
@@ -31,10 +31,10 @@ git-nook ${VERSION} — real git for a directory your host repo won't track
 Usage:
   git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
   git nook list
-  git nook show <name>
-  git nook remove <name>
   git nook materialize             # link configured nooks into this worktree
-  git nook <name> <git-args...>    # run any git command against the nook
+  git nook -n <name> show
+  git nook -n <name> remove
+  git nook -n <name> run <git-args...>   # run any git command against the nook
   git nook --help | --version
 
 A nook is a real git repository, invisible to this repo's own git commands:
@@ -42,10 +42,10 @@ its git-dir lives inside this repo's .git directory, and its worktree is a
 content dir this repo excludes. 'add' wires its remote to a custom ref
 (default: ${DEFAULT_REF_TEMPLATE}), so push/pull/status work out of the box:
 
-  git nook notes status
-  git nook notes add --all
-  git nook notes commit -m "something"
-  git nook notes push
+  git nook -n notes run status
+  git nook -n notes run add --all
+  git nook -n notes run commit -m "something"
+  git nook -n notes run push
 EOF
 }
 
