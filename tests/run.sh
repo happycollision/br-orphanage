@@ -695,6 +695,15 @@ assert_contains "add names the reconcile command" "${BS_C_OUT}" "--allow-unrelat
 assert_contains "reconcile hint pins the merge strategy" "${BS_C_OUT}" "--no-rebase"
 # ...and --no-edit, so interactive users aren't dropped into an editor.
 assert_contains "reconcile hint skips the merge-message editor" "${BS_C_OUT}" "--no-edit"
+# Pin the NEW -n/run grammar: the hint must be copy-pasteable, and the old bare
+# `git nook <name> <subcommand>` form fails with "unknown command '<name>'".
+assert_contains "reconcile hint uses -n/run grammar" "${BS_C_OUT}" "git nook -n"
+assert_contains "reconcile hint uses run pull" "${BS_C_OUT}" "run pull"
+if [[ "${BS_C_OUT}" == *"git nook notes "* ]]; then
+    fail "reconcile hint regressed to the old bare 'git nook notes ...' grammar"
+else
+    pass "reconcile hint does not use the old bare 'git nook notes ...' grammar"
+fi
 assert_eq "local file untouched" \
     "precious local-only work" "$(cat "${BS_C}/notes/local.md")"
 

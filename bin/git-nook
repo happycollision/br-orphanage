@@ -332,7 +332,7 @@ cmd_add() {
 
     validate_name "${name}" || exit 1
     if channel_dir "${name}" >/dev/null 2>&1; then
-        err "nook '${name}' already exists (see: git nook show ${name})"
+        err "nook '${name}' already exists (see: git nook -n ${name} show)"
         exit 1
     fi
     # Case-insensitive duplicate check: git config subsections are
@@ -441,7 +441,7 @@ cmd_add() {
     # Bootstrap when the published ref already exists (never destructive).
     local lsout
     if ! lsout=$(git --git-dir="${gitdir}" ls-remote origin "${ref}" 2>/dev/null); then
-        echo "git-nook: warning: could not contact ${url} to check for existing data; if some exists, run: git nook ${name} pull" >&2
+        echo "git-nook: warning: could not contact ${url} to check for existing data; if some exists, run: git nook -n ${name} run pull" >&2
         return 0
     fi
     [[ -n "${lsout}" ]] || return 0
@@ -452,8 +452,8 @@ cmd_add() {
     if [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]]; then
         echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
         echo "git-nook: commit your local files, then reconcile:"
-        echo "git-nook:   git nook ${name} add --all && git nook ${name} commit -m 'local files'"
-        echo "git-nook:   git nook ${name} pull --no-rebase --no-edit --allow-unrelated-histories"
+        echo "git-nook:   git nook -n ${name} run add --all && git nook -n ${name} run commit -m 'local files'"
+        echo "git-nook:   git nook -n ${name} run pull --no-rebase --no-edit --allow-unrelated-histories"
         return 0
     fi
     if git --git-dir="${gitdir}" fetch --quiet origin \
