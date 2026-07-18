@@ -64,10 +64,10 @@ it). Edit files there like any other directory:
 
 ```sh
 echo "today's notes" > notes/today.md
-git nook notes status
-git nook notes add --all
-git nook notes commit -m "today's notes"
-git nook notes push
+git nook -n notes run status
+git nook -n notes run add --all
+git nook -n notes run commit -m "today's notes"
+git nook -n notes run push
 ```
 
 On another machine (or a fresh clone of the host repo), one command
@@ -116,11 +116,11 @@ another repository is involved at all. The inner repository is reachable
 only through the wrapper:
 
 ```
-git nook <name> <any-git-args...>
+git nook -n <name> run <any-git-args...>
 # ≈ git --git-dir=.git/nook/<name>.git --work-tree=.git/nook/<name>.nook <any-git-args...>
 ```
 
-So `git nook notes log -p`, `git nook notes branch`, `git nook notes stash`
+So `git nook -n notes run log -p`, `git nook -n notes run branch`, `git nook -n notes run stash`
 — anything git can do — works exactly as it would in a normal checkout.
 Local branches, stash, reflog, your merge tool: all available. The one
 branch-shaped constraint is that publication is single-ref — `add` bakes a
@@ -192,10 +192,10 @@ A typical session:
 
 ```sh
 br sync --flush-only          # flush the local beads DB to issues.jsonl
-git nook beads add --all
-git nook beads commit -m "issues"
-git nook beads pull            # reconcile if another machine pushed since
-git nook beads push
+git nook -n beads run add --all
+git nook -n beads run commit -m "issues"
+git nook -n beads run pull            # reconcile if another machine pushed since
+git nook -n beads run push
 ```
 
 On a fresh machine, `git nook add beads origin --dir .beads` bootstraps
@@ -251,22 +251,22 @@ The remaining trade-offs are per-nook choices, not tool limitations:
 ```
 git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
 git nook list
-git nook show <name>
-git nook remove <name>
 git nook materialize             # link configured nooks into this worktree
-git nook <name> <git-args...>    # run any git command against the nook
+git nook -n <name> show
+git nook -n <name> remove
+git nook -n <name> run <git-args...>    # run any git command against the nook
 git nook --help | --version
 ```
 
 `add` creates and wires a nook; `list` shows every nook configured in the
 current repo (flagging any that aren't linked into the current worktree);
-`show <name>` prints its resolved checkout path, link state, remote URL,
-push refspec, and current branch/tracking state; `remove <name>` drops the
+`-n <name> show` prints its resolved checkout path, link state, remote URL,
+push refspec, and current branch/tracking state; `-n <name> remove` drops the
 nook's config entry and exclude line but — deliberately — never deletes the
 checkout or the inner repo's history, so nothing is destroyed silently;
 `materialize` creates the missing symlink(s) for already-configured nooks
 in the worktree you run it from — use it after `git clone` or after `git
-worktree add`; everything else is passthrough git.
+worktree add`; everything else (`-n <name> run <git-args...>`) is passthrough git.
 
 ## Releasing
 
