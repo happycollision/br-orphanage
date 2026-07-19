@@ -14,8 +14,8 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 # against it through the passthrough:
 #
 #   git nook add <name> <target> [--dir <d>] [--ref <tpl>]
-#   git nook list | show <name> | remove <name>
-#   git nook <name> <any-git-args...>
+#   git nook list | materialize
+#   git nook -n <name> show | remove | run <any-git-args...>
 #
 # Design: docs/plans/2026-07-05-git-nook-design.md
 
@@ -23,7 +23,6 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 VERSION="v0.0.0-dev"
 
 DEFAULT_REF_TEMPLATE='refs/nook/<owner>/<project>/<name>'
-RESERVED_NAMES=(add list show remove materialize help version)
 
 usage() {
     cat <<EOF
@@ -32,10 +31,10 @@ git-nook ${VERSION} — real git for a directory your host repo won't track
 Usage:
   git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
   git nook list
-  git nook show <name>
-  git nook remove <name>
   git nook materialize             # link configured nooks into this worktree
-  git nook <name> <git-args...>    # run any git command against the nook
+  git nook -n <name> show
+  git nook -n <name> remove
+  git nook -n <name> run <git-args...>   # run any git command against the nook
   git nook --help | --version
 
 A nook is a real git repository, invisible to this repo's own git commands:
@@ -43,10 +42,10 @@ its git-dir lives inside this repo's .git directory, and its worktree is a
 content dir this repo excludes. 'add' wires its remote to a custom ref
 (default: ${DEFAULT_REF_TEMPLATE}), so push/pull/status work out of the box:
 
-  git nook notes status
-  git nook notes add --all
-  git nook notes commit -m "something"
-  git nook notes push
+  git nook -n notes run status
+  git nook -n notes run add --all
+  git nook -n notes run commit -m "something"
+  git nook -n notes run push
 EOF
 }
 
@@ -156,13 +155,7 @@ resolve_ref() {
 }
 
 validate_name() {
-    local name="$1" r
-    for r in "${RESERVED_NAMES[@]}"; do
-        if [[ "${name}" == "${r}" ]]; then
-            err "'${name}' is a reserved subcommand name"
-            return 1
-        fi
-    done
+    local name="$1"
     if [[ "${name}" == -* || "${name}" == */* ]] \
         || ! git check-ref-format "refs/nook/${name}" >/dev/null 2>&1; then
         err "'${name}' is not a valid nook name (one path component, no leading '-')"
@@ -339,7 +332,7 @@ cmd_add() {
 
     validate_name "${name}" || exit 1
     if channel_dir "${name}" >/dev/null 2>&1; then
-        err "nook '${name}' already exists (see: git nook show ${name})"
+        err "nook '${name}' already exists (see: git nook -n ${name} show)"
         exit 1
     fi
     # Case-insensitive duplicate check: git config subsections are
@@ -448,7 +441,7 @@ cmd_add() {
     # Bootstrap when the published ref already exists (never destructive).
     local lsout
     if ! lsout=$(git --git-dir="${gitdir}" ls-remote origin "${ref}" 2>/dev/null); then
-        echo "git-nook: warning: could not contact ${url} to check for existing data; if some exists, run: git nook ${name} pull" >&2
+        echo "git-nook: warning: could not contact ${url} to check for existing data; if some exists, run: git nook -n ${name} run pull" >&2
         return 0
     fi
     [[ -n "${lsout}" ]] || return 0
@@ -459,8 +452,8 @@ cmd_add() {
     if [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]]; then
         echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
         echo "git-nook: commit your local files, then reconcile:"
-        echo "git-nook:   git nook ${name} add --all && git nook ${name} commit -m 'local files'"
-        echo "git-nook:   git nook ${name} pull --no-rebase --no-edit --allow-unrelated-histories"
+        echo "git-nook:   git nook -n ${name} run add --all && git nook -n ${name} run commit -m 'local files'"
+        echo "git-nook:   git nook -n ${name} run pull --no-rebase --no-edit --allow-unrelated-histories"
         return 0
     fi
     if git --git-dir="${gitdir}" fetch --quiet origin \
@@ -525,7 +518,7 @@ cmd_show() {
     require_work_tree
     cd_to_toplevel
     local name="${1:-}" dir gitdir checkout_dir content_path state linked t
-    [[ -n "${name}" ]] || { err "usage: git nook show <name>"; exit 1; }
+    [[ -n "${name}" ]] || { err "usage: git nook -n <name> show"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
         err "no nook named '${name}' (see: git nook list)"
         exit 1
@@ -559,7 +552,7 @@ cmd_remove() {
     require_work_tree
     cd_to_toplevel
     local name="${1:-}" dir gitdir
-    [[ -n "${name}" ]] || { err "usage: git nook remove <name>"; exit 1; }
+    [[ -n "${name}" ]] || { err "usage: git nook -n <name> remove"; exit 1; }
     if ! dir=$(channel_dir "${name}"); then
         err "no nook named '${name}' (see: git nook list)"
         exit 1
@@ -623,23 +616,50 @@ main() {
     case "${1:-}" in
         add)    shift; cmd_add "$@" ;;
         list)   shift; cmd_list "$@" ;;
-        show)   shift; cmd_show "$@" ;;
-        remove) shift; cmd_remove "$@" ;;
         materialize) shift; cmd_materialize "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;
         -h | --help | help | "") usage ;;
+        -n | --name)
+            local name
+            if [[ $# -lt 2 ]]; then
+                err "missing value for -n/--name"
+                exit 1
+            fi
+            name="$2"
+            shift 2
+            validate_name "${name}" || exit 1
+            case "${1:-}" in
+                show)
+                    shift; cmd_show "${name}" "$@" ;;
+                remove)
+                    shift; cmd_remove "${name}" "$@" ;;
+                run)
+                    shift
+                    require_git_repo
+                    if ! channel_dir "${name}" >/dev/null 2>&1; then
+                        err "no nook named '${name}' (see: git nook list)"
+                        exit 1
+                    fi
+                    run_passthrough "${name}" "$@"
+                    ;;
+                "")
+                    err "no command given for nook '${name}'"
+                    exit 1
+                    ;;
+                *)
+                    err "unknown command '${1}' for nook '${name}'"
+                    exit 1
+                    ;;
+            esac
+            ;;
         -*)
             err "unknown option '${1}'"
             usage >&2
             exit 1
             ;;
         *)
-            require_git_repo
-            if channel_dir "${1}" >/dev/null 2>&1; then
-                run_passthrough "$@"
-            fi
-            err "unknown command or nook '${1}'"
-            echo "git-nook: see nooks with 'git nook list'; create one with 'git nook add <name> <target>'" >&2
+            err "unknown command '${1}'"
+            echo "git-nook: see 'git nook list'; select a nook with 'git nook -n <name> <show|remove|run>'; create one with 'git nook add <name> <target>'" >&2
             exit 1
             ;;
     esac

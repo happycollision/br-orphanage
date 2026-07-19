@@ -51,9 +51,9 @@ br sync --status      # Check sync status
 git status                        # Check what changed
 git add <files>                   # Stage code changes
 br sync --flush-only              # Export beads changes to JSONL
-git nook beads add --all          # Stage issue data in the nook
-git nook beads commit -m "issues" # Commit it (skip if nothing changed)
-git nook beads push               # Publish the hidden ref
+git nook -n beads run add --all          # Stage issue data in the nook
+git nook -n beads run commit -m "issues" # Commit it (skip if nothing changed)
+git nook -n beads run push               # Publish the hidden ref
 git commit -m "..."               # Commit code
 git push                          # Push code
 ```
@@ -79,22 +79,22 @@ This project's own issues (beads) are tracked in exactly such a nook:
 
 ```bash
 git nook list                 # see this repo's nooks (expect: beads)
-git nook beads status         # any git command works against the nook
+git nook -n beads run status  # any git command works against the nook
 ```
 
 The daily beads flow on this repo:
 
 ```bash
 br sync --flush-only          # beads DB -> .beads/issues.jsonl
-git nook beads add --all
-git nook beads commit -m "issues"
-git nook beads pull --no-rebase   # only needed when another machine pushed
-git nook beads push
+git nook -n beads run add --all
+git nook -n beads run commit -m "issues"
+git nook -n beads run pull --no-rebase   # only needed when another machine pushed
+git nook -n beads run push
 ```
 
 If a pull merges `issues.jsonl` from another machine, do NOT hand-resolve
 JSONL conflicts; run the helper script committed on the beads nook itself
-(see `git nook beads ls-files` for its name) — it re-imports through the
+(see `git nook -n beads run ls-files` for its name) — it re-imports through the
 real `br` (per-issue, newest-wins, tombstone-protected).
 
 ### Worktrees
@@ -121,7 +121,7 @@ beads nook, and `master` stays pristine. (Bonus: it dogfoods the tool.)
   is the *only* record — so inline the full detail: files touched, key code, exact
   test assertions.
 - After creating them, publish via the session protocol and verify the nook's
-  ref received them (`git nook beads show origin/main:issues.jsonl | grep <id>`).
+  ref received them (`git nook -n beads run show origin/main:issues.jsonl | grep <id>`).
   Do **not** commit the design/plan markdown to `master`.
 
 ## Discoveries (follow-ups, out-of-scope work, tangents)
@@ -144,11 +144,11 @@ beads rather than dropped in chat or a commit message. Prefix the title with
 ## Observation
 
 Since we develop `git-nook`, always use it and observe its behavior. After
-any `git nook beads push`, verify the ref actually updated:
+any `git nook -n beads run push`, verify the ref actually updated:
 
 ```bash
 git ls-remote origin 'refs/nook/*'
-git nook beads status -sb     # expect: up to date with origin/main
+git nook -n beads run status -sb  # expect: up to date with origin/main
 ```
 
 If anything seems off, open an issue with `br create` and push the nook.

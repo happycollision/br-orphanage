@@ -133,6 +133,15 @@ assert_exit_nonzero() {
     fi
 }
 
+assert_exit_zero() {
+    local desc="$1"
+    if [[ "${RUN_EXIT}" -eq 0 ]]; then
+        pass "${desc}"
+    else
+        fail "${desc} (exited ${RUN_EXIT}; output: '${RUN_OUT}')"
+    fi
+}
+
 # --- Shared helpers -------------------------------------------------------------
 
 # `git rev-parse --git-path <p>` is relative from a normal repo but absolute
@@ -227,12 +236,15 @@ run_cmd_in "${WORK}" "${NOOK}" frobnicate
 assert_exit_nonzero "unknown command outside a repo exits nonzero"
 
 # Unknown bare word inside a repo with no nooks: names the problem + the fix.
+# Under the new grammar, an unrecognized LEADING token (not add/list/materialize/
+# -n/--name/-h/--help/--version) always falls into the dispatcher's final
+# catch-all, regardless of whether a nook by that name exists.
 UNK_PROJ="${WORK}/proj-unknown"
 make_project_repo "${UNK_PROJ}" no
 run_cmd_in "${UNK_PROJ}" "${NOOK}" frobnicate status
-assert_exit_nonzero "unknown nook name exits nonzero"
-assert_contains "unknown nook error names the offender" "${RUN_OUT}" "frobnicate"
-assert_contains "unknown nook error points at 'git nook add'" "${RUN_OUT}" "git nook add"
+assert_exit_nonzero "unknown command exits nonzero"
+assert_contains "unknown command error names the offender" "${RUN_OUT}" "frobnicate"
+assert_contains "unknown command error points at 'git nook add'" "${RUN_OUT}" "git nook add"
 
 # --- Regression (br-orphanage-jhz): commands run inside a bare repo git-dir ------
 #
@@ -247,7 +259,7 @@ section "regression: subcommands refuse a bare repo work-tree cleanly (br-orphan
 BARE_REPO="${WORK}/bare-jhz.git"
 git init -q --bare "${BARE_REPO}"
 
-for sub in list materialize show add remove; do
+for sub in list materialize add; do
     run_cmd_in "${BARE_REPO}" "${NOOK}" "${sub}"
     assert_exit_nonzero "'git nook ${sub}' inside a bare repo exits nonzero"
     # The misleading success message must never appear on any of these paths.
@@ -255,6 +267,20 @@ for sub in list materialize show add remove; do
         fail "'git nook ${sub}' inside a bare repo must not print 'no nooks configured' (got: '${RUN_OUT}')"
     else
         pass "'git nook ${sub}' inside a bare repo suppresses the misleading 'no nooks configured' message"
+    fi
+done
+
+# show/remove now require a selector (`-n <name> show|remove`); exercise them
+# with the new grammar so they actually reach cmd_show/cmd_remove (which call
+# require_work_tree) instead of tripping the dispatcher's unrelated
+# unknown-command catch-all for a bare 'show'/'remove' token.
+for sub in show remove; do
+    run_cmd_in "${BARE_REPO}" "${NOOK}" -n anyname "${sub}"
+    assert_exit_nonzero "'git nook -n anyname ${sub}' inside a bare repo exits nonzero"
+    if [[ "${RUN_OUT}" == *"no nooks configured"* ]]; then
+        fail "'git nook -n anyname ${sub}' inside a bare repo must not print 'no nooks configured' (got: '${RUN_OUT}')"
+    else
+        pass "'git nook -n anyname ${sub}' inside a bare repo suppresses the misleading 'no nooks configured' message"
     fi
 done
 
@@ -411,7 +437,7 @@ if grep -qxF "/.data/" "${EX_FILE}" 2>/dev/null; then fail "exclude unexpectedly
 printf '/.data/\n' >> "${EX_FILE}"
 # unrelated entries must survive a nook remove
 printf '/build\n' >> "${EX_FILE}"
-(cd "${EX}" && "${NOOK}" remove data >/dev/null)
+(cd "${EX}" && "${NOOK}" -n data remove >/dev/null)
 if grep -qxF "/.data" "${EX_FILE}" 2>/dev/null || grep -qxF "/.data/" "${EX_FILE}" 2>/dev/null; then
     fail "remove left a stale exclude entry (either form)"
 else
@@ -441,13 +467,13 @@ LIST_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" list)
 assert_contains "list shows notes" "${LIST_OUT}" "notes"
 assert_contains "list shows scratch's dir" "${LIST_OUT}" "tmp/scratch/"
 
-SHOW_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" show notes)
+SHOW_OUT=$(cd "${ADD_PROJ}" && "${NOOK}" -n notes show)
 assert_contains "show prints the dir" "${SHOW_OUT}" "dir:      notes/"
 assert_contains "show prints the url" "${SHOW_OUT}" "url:      ${ADD_ORIGIN_URL}"
 assert_contains "show prints the push refspec" "${SHOW_OUT}" "refs/heads/main:${ADD_REF}"
 assert_contains "show prints branch state" "${SHOW_OUT}" "state:"
 
-run_cmd_in "${ADD_PROJ}" "${NOOK}" show nope
+run_cmd_in "${ADD_PROJ}" "${NOOK}" -n nope show
 assert_exit_nonzero "show of unknown nook exits nonzero"
 
 # Regression: show/list must degrade gracefully (not crash with git's raw
@@ -457,7 +483,7 @@ BROKEN_PROJ="${WORK}/proj-broken-show"
 make_project_repo "${BROKEN_PROJ}" yes "broken-show"
 (cd "${BROKEN_PROJ}" && "${NOOK}" add wrecked origin >/dev/null)
 rm -rf "${BROKEN_PROJ}/.git/nook/wrecked.git"
-run_cmd_in "${BROKEN_PROJ}" "${NOOK}" show wrecked
+run_cmd_in "${BROKEN_PROJ}" "${NOOK}" -n wrecked show
 assert_eq "show of nook with missing inner git-dir exits 0" "0" "${RUN_EXIT}"
 assert_contains "show of broken nook prints url (none)" "${RUN_OUT}" "url:      (none)"
 BROKEN_LIST=$(cd "${BROKEN_PROJ}" && "${NOOK}" list)
@@ -487,18 +513,18 @@ printf 'hello nook\n' > "${PT_PROJ}/notes/first.md"
 mkdir -p "${PT_PROJ}/notes/deep/nested"
 printf 'nested content\n' > "${PT_PROJ}/notes/deep/nested/leaf.txt"
 
-PT_STATUS=$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain)
+PT_STATUS=$(cd "${PT_PROJ}" && "${NOOK}" -n notes run status --porcelain)
 assert_contains "status sees the new file" "${PT_STATUS}" "first.md"
 # Untracked dirs collapse in porcelain status (vanilla git behavior); use -u
 # to confirm the passthrough's git actually walks into nested content.
-PT_STATUS_U=$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain -uall)
+PT_STATUS_U=$(cd "${PT_PROJ}" && "${NOOK}" -n notes run status --porcelain -uall)
 assert_contains "status -uall sees nested files" "${PT_STATUS_U}" "deep/nested/leaf.txt"
 
-(cd "${PT_PROJ}" && "${NOOK}" notes add --all)
-(cd "${PT_PROJ}" && "${NOOK}" notes commit -q -m "first nook commit")
-PT_LOG=$(cd "${PT_PROJ}" && "${NOOK}" notes log --oneline)
+(cd "${PT_PROJ}" && "${NOOK}" -n notes run add --all)
+(cd "${PT_PROJ}" && "${NOOK}" -n notes run commit -q -m "first nook commit")
+PT_LOG=$(cd "${PT_PROJ}" && "${NOOK}" -n notes run log --oneline)
 assert_contains "log shows the commit" "${PT_LOG}" "first nook commit"
-assert_eq "clean after commit" "" "$(cd "${PT_PROJ}" && "${NOOK}" notes status --porcelain)"
+assert_eq "clean after commit" "" "$(cd "${PT_PROJ}" && "${NOOK}" -n notes run status --porcelain)"
 
 assert_file_absent "still no .git entry in the content dir" "${PT_PROJ}/notes/.git"
 assert_eq "parent status still clean" "" "$(git -C "${PT_PROJ}" status --porcelain)"
@@ -506,7 +532,7 @@ assert_eq "parent status still clean" "" "$(git -C "${PT_PROJ}" status --porcela
 section "passthrough: works from a subdirectory and from inside the nook"
 
 mkdir -p "${PT_PROJ}/src"
-PT_SUB_LOG=$(cd "${PT_PROJ}/src" && "${NOOK}" notes log --oneline)
+PT_SUB_LOG=$(cd "${PT_PROJ}/src" && "${NOOK}" -n notes run log --oneline)
 assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first nook commit"
 
 # From inside the nook dir, relative pathspecs resolve as expected. The
@@ -518,18 +544,18 @@ assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first 
 # still resolves correctly even from inside .git, then runs git against
 # explicit --git-dir/--work-tree.
 printf 'more\n' >> "${PT_PROJ}/notes/first.md"
-run_cmd_in "${PT_PROJ}/notes" "${NOOK}" notes add first.md
+run_cmd_in "${PT_PROJ}/notes" "${NOOK}" -n notes run add first.md
 assert_eq "relative pathspec add from inside the nook succeeded" "0" "${RUN_EXIT}"
-PT_STAGED=$(cd "${PT_PROJ}" && "${NOOK}" notes diff --cached --name-only)
+PT_STAGED=$(cd "${PT_PROJ}" && "${NOOK}" -n notes run diff --cached --name-only)
 assert_contains "relative pathspec staged from inside the nook" "${PT_STAGED}" "first.md"
-(cd "${PT_PROJ}" && "${NOOK}" notes commit -q -m "second")
+(cd "${PT_PROJ}" && "${NOOK}" -n notes run commit -q -m "second")
 
 section "passthrough: local branches work (single-ref publication is the only limit)"
 
-(cd "${PT_PROJ}" && "${NOOK}" notes checkout -q -b experiment)
+(cd "${PT_PROJ}" && "${NOOK}" -n notes run checkout -q -b experiment)
 printf 'branchy\n' > "${PT_PROJ}/notes/branch-file.txt"
-(cd "${PT_PROJ}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "on a branch")
-(cd "${PT_PROJ}" && "${NOOK}" notes checkout -q main)
+(cd "${PT_PROJ}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m "on a branch")
+(cd "${PT_PROJ}" && "${NOOK}" -n notes run checkout -q main)
 assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/notes/branch-file.txt"
 assert_eq "parent status STILL clean after branch dance" "" "$(git -C "${PT_PROJ}" status --porcelain)"
 
@@ -538,16 +564,16 @@ section "passthrough: works without a materialized symlink; missing checkout poi
 GONE=${WORK}/proj-gone; make_project_repo "${GONE}" yes gone
 (cd "${GONE}" && "${NOOK}" add stash origin >/dev/null)
 printf 'keep\n' > "${GONE}/stash/keeper.txt"
-(cd "${GONE}" && "${NOOK}" stash add --all && "${NOOK}" stash commit -q -m keeper)
+(cd "${GONE}" && "${NOOK}" -n stash run add --all && "${NOOK}" -n stash run commit -q -m keeper)
 # remove the worktree SYMLINK but not the canonical checkout
 rm "${GONE}/stash"
 # passthrough still works (targets the canonical checkout directly)
-GONE_LOG=$(cd "${GONE}" && "${NOOK}" stash log --oneline)
+GONE_LOG=$(cd "${GONE}" && "${NOOK}" -n stash run log --oneline)
 assert_contains "passthrough works without symlink (targets canonical checkout)" "${GONE_LOG}" "keeper"
 # now remove the canonical checkout -> clean error at materialize, NO mkdir footgun
 CGONE=$(cd "${GONE}" && git rev-parse --git-common-dir); CGONE="$(cd "${GONE}/${CGONE}" && pwd)/nook/stash.nook"
 rm -rf "${CGONE}"
-run_cmd_in "${GONE}" "${NOOK}" stash status
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
 assert_exit_nonzero "missing canonical checkout exits nonzero"
 assert_contains "error points at materialize" "${RUN_OUT}" "git nook materialize"
 if [[ "${RUN_OUT}" == *"mkdir"* ]]; then fail "error still suggests the mkdir footgun"; else pass "no mkdir footgun in error"; fi
@@ -555,7 +581,7 @@ if [[ "${RUN_OUT}" == *"mkdir"* ]]; then fail "error still suggests the mkdir fo
 (cd "${GONE}" && "${NOOK}" materialize >/dev/null)
 assert_file_exists "materialize restored the checkout content" "${GONE}/stash/keeper.txt"
 
-SHOW=$(cd "${GONE}" && "${NOOK}" show stash)
+SHOW=$(cd "${GONE}" && "${NOOK}" -n stash show)
 assert_contains "show reports the canonical checkout" "${SHOW}" "checkout:"
 assert_contains "show reports linked state" "${SHOW}" "linked:"
 
@@ -563,10 +589,20 @@ section "passthrough: ambient git env vars are ignored"
 
 # Wrapper scripts, hooks, and shell prompts export GIT_DIR/GIT_WORK_TREE;
 # git-nook must resolve the parent repo from $PWD regardless.
-ENVLEAK_OUT=$(cd "${PT_PROJ}" && GIT_DIR=/nonexistent "${NOOK}" notes log --oneline)
+ENVLEAK_OUT=$(cd "${PT_PROJ}" && GIT_DIR=/nonexistent "${NOOK}" -n notes run log --oneline)
 assert_contains "exported GIT_DIR is ignored" "${ENVLEAK_OUT}" "first nook commit"
-ENVLEAK_WT_OUT=$(cd "${PT_PROJ}" && GIT_WORK_TREE="${WORK}/bogus-worktree" "${NOOK}" notes log --oneline)
+ENVLEAK_WT_OUT=$(cd "${PT_PROJ}" && GIT_WORK_TREE="${WORK}/bogus-worktree" "${NOOK}" -n notes run log --oneline)
 assert_contains "exported GIT_WORK_TREE is ignored" "${ENVLEAK_WT_OUT}" "first nook commit"
+
+section "regression: the old bare passthrough form ('git nook <name> <verb>') is gone"
+
+# Guards this suite's own environment (not just tests/dispatch-grammar.sh):
+# a bare leading nook name with no -n/run is now just an unrecognized leading
+# token, dispatched to the same 'unknown command' catch-all as any other
+# unknown word -- there is no more implicit name-then-verb passthrough.
+run_cmd_in "${PT_PROJ}" "${NOOK}" notes status
+assert_exit_nonzero "old bare form 'notes status' (no -n/run) exits nonzero"
+assert_contains "old bare form error names the unrecognized token" "${RUN_OUT}" "unknown command 'notes'"
 
 # --- publish: push/pull through the baked refspecs --------------------------------
 
@@ -577,8 +613,8 @@ make_project_repo "${PUB_PROJ}" yes "pub-demo"
 PUB_BARE="${WORK}/origins/pub-demo.git"
 (cd "${PUB_PROJ}" && "${NOOK}" add beads origin --dir .beads)
 printf '{"id":"pub-1"}\n' > "${PUB_PROJ}/.beads/issues.jsonl"
-(cd "${PUB_PROJ}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m "issues")
-(cd "${PUB_PROJ}" && "${NOOK}" beads push -q)
+(cd "${PUB_PROJ}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m "issues")
+(cd "${PUB_PROJ}" && "${NOOK}" -n beads run push -q)
 
 PUB_REF="refs/nook/origins/pub-demo/beads"
 PUB_TIP=$(git -C "${PUB_BARE}" rev-parse "${PUB_REF}")
@@ -595,14 +631,14 @@ assert_eq "no branch appeared at the target (hidden ref only)" "" "${PUB_BRANCHE
 
 section "publish: tracking state and pull"
 
-PUB_AHEAD=$(cd "${PUB_PROJ}" && "${NOOK}" beads status -sb | head -n 1)
+PUB_AHEAD=$(cd "${PUB_PROJ}" && "${NOOK}" -n beads run status -sb | head -n 1)
 assert_contains "status shows up-to-date tracking after push" "${PUB_AHEAD}" "main"
 
 printf 'change behind their back\n' > "${PUB_PROJ}/.beads/note.txt"
-(cd "${PUB_PROJ}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m "second")
-PUB_AHEAD2=$(cd "${PUB_PROJ}" && "${NOOK}" beads status -sb | head -n 1)
+(cd "${PUB_PROJ}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m "second")
+PUB_AHEAD2=$(cd "${PUB_PROJ}" && "${NOOK}" -n beads run status -sb | head -n 1)
 assert_contains "status reports ahead of tracking" "${PUB_AHEAD2}" "ahead 1"
-(cd "${PUB_PROJ}" && "${NOOK}" beads push -q)
+(cd "${PUB_PROJ}" && "${NOOK}" -n beads run push -q)
 
 section "publish: --ref refs/heads/... publishes a visible branch instead"
 
@@ -611,7 +647,7 @@ make_project_repo "${BR_PROJ}" yes "branch-ref-demo"
 BR_BARE="${WORK}/origins/branch-ref-demo.git"
 (cd "${BR_PROJ}" && "${NOOK}" add docs origin --ref 'refs/heads/shadow/<name>')
 printf 'visible\n' > "${BR_PROJ}/docs/readme.txt"
-(cd "${BR_PROJ}" && "${NOOK}" docs add --all && "${NOOK}" docs commit -q -m "docs" && "${NOOK}" docs push -q)
+(cd "${BR_PROJ}" && "${NOOK}" -n docs run add --all && "${NOOK}" -n docs run commit -q -m "docs" && "${NOOK}" -n docs run push -q)
 assert_true "branch override published under refs/heads/" \
     git -C "${BR_BARE}" rev-parse --verify -q refs/heads/shadow/docs
 
@@ -628,7 +664,7 @@ git -C "${BS_A}" push -q origin HEAD:refs/heads/main
 printf 'from machine A\n' > "${BS_A}/notes/shared.md"
 mkdir -p "${BS_A}/notes/sub"
 printf 'nested\n' > "${BS_A}/notes/sub/inner.md"
-(cd "${BS_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "A1" && "${NOOK}" notes push -q)
+(cd "${BS_A}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m "A1" && "${NOOK}" -n notes run push -q)
 
 # Fresh clone = second machine.
 BS_B="${WORK}/proj-bs-b"
@@ -639,8 +675,8 @@ assert_file_exists "content materialized" "${BS_B}/notes/shared.md"
 assert_file_exists "nested content materialized" "${BS_B}/notes/sub/inner.md"
 assert_true "bootstrap left a symlink" test -L "${BS_B}/notes"
 assert_eq "nook clean right after bootstrap" \
-    "" "$(cd "${BS_B}" && "${NOOK}" notes status --porcelain)"
-BS_B_LOG=$(cd "${BS_B}" && "${NOOK}" notes log --oneline)
+    "" "$(cd "${BS_B}" && "${NOOK}" -n notes run status --porcelain)"
+BS_B_LOG=$(cd "${BS_B}" && "${NOOK}" -n notes run log --oneline)
 assert_contains "history came along" "${BS_B_LOG}" "A1"
 assert_eq "parent clone status stays clean" "" "$(git -C "${BS_B}" status --porcelain)"
 
@@ -659,17 +695,26 @@ assert_contains "add names the reconcile command" "${BS_C_OUT}" "--allow-unrelat
 assert_contains "reconcile hint pins the merge strategy" "${BS_C_OUT}" "--no-rebase"
 # ...and --no-edit, so interactive users aren't dropped into an editor.
 assert_contains "reconcile hint skips the merge-message editor" "${BS_C_OUT}" "--no-edit"
+# Pin the NEW -n/run grammar: the hint must be copy-pasteable, and the old bare
+# `git nook <name> <subcommand>` form fails with "unknown command '<name>'".
+assert_contains "reconcile hint uses -n/run grammar" "${BS_C_OUT}" "git nook -n"
+assert_contains "reconcile hint uses run pull" "${BS_C_OUT}" "run pull"
+if [[ "${BS_C_OUT}" == *"git nook notes "* ]]; then
+    fail "reconcile hint regressed to the old bare 'git nook notes ...' grammar"
+else
+    pass "reconcile hint does not use the old bare 'git nook notes ...' grammar"
+fi
 assert_eq "local file untouched" \
     "precious local-only work" "$(cat "${BS_C}/notes/local.md")"
 
 # The printed procedure actually works (same flags as the printed hint, plus
 # -q for harness quietness; the explicit flags validate the hint as printed
 # rather than leaning on the harness's global pull.rebase pin):
-(cd "${BS_C}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m "local files")
-(cd "${BS_C}" && "${NOOK}" notes pull -q --no-rebase --no-edit --allow-unrelated-histories)
+(cd "${BS_C}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m "local files")
+(cd "${BS_C}" && "${NOOK}" -n notes run pull -q --no-rebase --no-edit --allow-unrelated-histories)
 assert_file_exists "remote content merged in" "${BS_C}/notes/shared.md"
 assert_file_exists "local content survived" "${BS_C}/notes/local.md"
-(cd "${BS_C}" && "${NOOK}" notes push -q)
+(cd "${BS_C}" && "${NOOK}" -n notes run push -q)
 
 section "bootstrap: failure rolls the add back cleanly"
 
@@ -687,7 +732,7 @@ else
     git clone -q "${WORK}/origins/bs-fail.git" "${BS_D_SEED}"
     (cd "${BS_D_SEED}" && "${NOOK}" add notes origin >/dev/null)
     printf 'seeded\n' > "${BS_D_SEED}/notes/seed.md"
-    (cd "${BS_D_SEED}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m seed && "${NOOK}" notes push -q)
+    (cd "${BS_D_SEED}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m seed && "${NOOK}" -n notes run push -q)
 
     BS_D_CANON=$(cd "${BS_D}" && git rev-parse --git-common-dir); BS_D_CANON="$(cd "${BS_D}/${BS_D_CANON}" && pwd)/nook/notes.nook"
     mkdir -p "${BS_D}/notes"
@@ -734,7 +779,7 @@ make_project_repo "${BS_E_PUB}" yes "bs-nested"
 git -C "${BS_E_PUB}" push -q origin HEAD:refs/heads/main
 (cd "${BS_E_PUB}" && "${NOOK}" add deep origin --dir deep/nested/path >/dev/null)
 printf 'nested seed\n' > "${BS_E_PUB}/deep/nested/path/seed.md"
-(cd "${BS_E_PUB}" && "${NOOK}" deep add --all && "${NOOK}" deep commit -q -m seed && "${NOOK}" deep push -q)
+(cd "${BS_E_PUB}" && "${NOOK}" -n deep run add --all && "${NOOK}" -n deep run commit -q -m seed && "${NOOK}" -n deep run push -q)
 
 # Second machine: none of deep/, deep/nested/, deep/nested/path/ exist yet.
 # Force materialize (fetch) to fail deterministically by making the target's
@@ -795,7 +840,7 @@ TC_BARE="${WORK}/origins/tc-demo.git"
 git -C "${TC_A}" push -q origin HEAD:refs/heads/main
 (cd "${TC_A}" && "${NOOK}" add notes origin)
 printf 'base\n' > "${TC_A}/notes/doc.md"
-(cd "${TC_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m base && "${NOOK}" notes push -q)
+(cd "${TC_A}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m base && "${NOOK}" -n notes run push -q)
 
 TC_B="${WORK}/proj-tc-b"
 git clone -q "${TC_BARE}" "${TC_B}"
@@ -803,34 +848,34 @@ git clone -q "${TC_BARE}" "${TC_B}"
 
 # A pushes a new commit; B commits independently -> B's push must be rejected.
 printf 'from A\n' > "${TC_A}/notes/a-only.md"
-(cd "${TC_A}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m from-a && "${NOOK}" notes push -q)
+(cd "${TC_A}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m from-a && "${NOOK}" -n notes run push -q)
 printf 'from B\n' > "${TC_B}/notes/b-only.md"
-(cd "${TC_B}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m from-b)
-run_cmd_in "${TC_B}" "${NOOK}" notes push
+(cd "${TC_B}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m from-b)
+run_cmd_in "${TC_B}" "${NOOK}" -n notes run push
 assert_exit_nonzero "non-fast-forward push rejected"
 
-(cd "${TC_B}" && "${NOOK}" notes pull -q --no-edit --no-rebase)
-(cd "${TC_B}" && "${NOOK}" notes push -q)
+(cd "${TC_B}" && "${NOOK}" -n notes run pull -q --no-edit --no-rebase)
+(cd "${TC_B}" && "${NOOK}" -n notes run push -q)
 TC_TIP=$(git -C "${TC_BARE}" rev-parse refs/nook/origins/tc-demo/notes)
 assert_contains "merged tree holds A's file" "$(git -C "${TC_BARE}" ls-tree -r --name-only "${TC_TIP}")" "a-only.md"
 assert_contains "merged tree holds B's file" "$(git -C "${TC_BARE}" ls-tree -r --name-only "${TC_TIP}")" "b-only.md"
 
 section "two clones: conflicting edits produce real conflict markers"
 
-(cd "${TC_A}" && "${NOOK}" notes pull -q --no-edit --no-rebase)
+(cd "${TC_A}" && "${NOOK}" -n notes run pull -q --no-edit --no-rebase)
 printf 'line edited by A\n' > "${TC_A}/notes/doc.md"
-(cd "${TC_A}" && "${NOOK}" notes commit -q -am edit-a && "${NOOK}" notes push -q)
+(cd "${TC_A}" && "${NOOK}" -n notes run commit -q -am edit-a && "${NOOK}" -n notes run push -q)
 printf 'line edited by B\n' > "${TC_B}/notes/doc.md"
-(cd "${TC_B}" && "${NOOK}" notes commit -q -am edit-b)
-run_cmd_in "${TC_B}" "${NOOK}" notes pull --no-edit --no-rebase
+(cd "${TC_B}" && "${NOOK}" -n notes run commit -q -am edit-b)
+run_cmd_in "${TC_B}" "${NOOK}" -n notes run pull --no-edit --no-rebase
 assert_exit_nonzero "conflicting pull exits nonzero"
 assert_true "conflict markers present in the working file" \
     grep -q '^<<<<<<<' "${TC_B}/notes/doc.md"
 
 # Resolve like any git repo: pick a merged line, commit, push.
 printf 'line edited by A and B\n' > "${TC_B}/notes/doc.md"
-(cd "${TC_B}" && "${NOOK}" notes add doc.md && "${NOOK}" notes commit -q --no-edit)
-(cd "${TC_B}" && "${NOOK}" notes push -q)
+(cd "${TC_B}" && "${NOOK}" -n notes run add doc.md && "${NOOK}" -n notes run commit -q --no-edit)
+(cd "${TC_B}" && "${NOOK}" -n notes run push -q)
 assert_contains "resolution published" \
     "$(git -C "${TC_BARE}" show 'refs/nook/origins/tc-demo/notes:doc.md')" "A and B"
 assert_eq "parent repos stayed clean through all of it" \
@@ -838,14 +883,21 @@ assert_eq "parent repos stayed clean through all of it" \
 
 # --- add refusals ------------------------------------------------------------------
 
-section "add refusals: names"
+section "add: a nook may be named after a subcommand (no reserved names)"
 
 REF_PROJ="${WORK}/proj-refusals"
 make_project_repo "${REF_PROJ}" yes "refusals-demo"
 
+# RESERVED_NAMES is gone: a nook can be named after any subcommand, including
+# 'list', 'add', 'show', 'remove', 'materialize'. It must be creatable AND
+# reachable end-to-end through the new -n/run grammar.
 run_cmd_in "${REF_PROJ}" "${NOOK}" add list origin
-assert_exit_nonzero "reserved name 'list' refused"
-assert_contains "reserved-name error says why" "${RUN_OUT}" "reserved"
+assert_exit_zero "creating a nook named 'list' succeeds"
+assert_contains "add reports the new nook named 'list'" "${RUN_OUT}" "added nook 'list'"
+run_cmd_in "${REF_PROJ}" "${NOOK}" -n list run status
+assert_exit_zero "'-n list run status' reaches the nook named 'list'"
+
+section "add refusals: names"
 
 run_cmd_in "${REF_PROJ}" "${NOOK}" add 'bad/name' origin
 assert_exit_nonzero "slash in name refused"
@@ -910,9 +962,9 @@ RM_PROJ="${WORK}/proj-remove"
 make_project_repo "${RM_PROJ}" yes "remove-demo"
 (cd "${RM_PROJ}" && "${NOOK}" add notes origin >/dev/null)
 printf 'unpushed work\n' > "${RM_PROJ}/notes/keep.md"
-(cd "${RM_PROJ}" && "${NOOK}" notes add --all && "${NOOK}" notes commit -q -m keep)
+(cd "${RM_PROJ}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m keep)
 
-RM_OUT=$(cd "${RM_PROJ}" && "${NOOK}" remove notes)
+RM_OUT=$(cd "${RM_PROJ}" && "${NOOK}" -n notes remove)
 assert_contains "remove says what it kept" "${RM_OUT}" "kept"
 assert_contains "remove prints the manual deletion command" "${RM_OUT}" "rm -rf"
 
@@ -930,10 +982,10 @@ fi
 assert_file_exists "content untouched" "${RM_PROJ}/notes/keep.md"
 assert_dir_exists "inner repo (history) untouched" "${RM_PROJ}/.git/nook/notes.git"
 
-run_cmd_in "${RM_PROJ}" "${NOOK}" notes status
+run_cmd_in "${RM_PROJ}" "${NOOK}" -n notes run status
 assert_exit_nonzero "passthrough for a removed nook fails cleanly"
 
-run_cmd_in "${RM_PROJ}" "${NOOK}" remove notes
+run_cmd_in "${RM_PROJ}" "${NOOK}" -n notes remove
 assert_exit_nonzero "removing a nonexistent nook fails cleanly"
 
 section "remove then re-add: stale inner repo is refused with a hint, then works"
@@ -977,8 +1029,8 @@ printf '*.local\n' > "${ISO_PROJ}/data/.gitignore"
 printf 'keep me\n' > "${ISO_PROJ}/data/file.kept"
 printf 'never publish\n' > "${ISO_PROJ}/data/state.local"
 
-(cd "${ISO_PROJ}" && "${NOOK}" data add --all && "${NOOK}" data commit -q -m files)
-ISO_TRACKED=$(cd "${ISO_PROJ}" && "${NOOK}" data ls-files)
+(cd "${ISO_PROJ}" && "${NOOK}" -n data run add --all && "${NOOK}" -n data run commit -q -m files)
+ISO_TRACKED=$(cd "${ISO_PROJ}" && "${NOOK}" -n data run ls-files)
 assert_contains "host-excluded pattern still committed in the nook" "${ISO_TRACKED}" "file.kept"
 assert_contains "the nook's .gitignore itself is tracked" "${ISO_TRACKED}" ".gitignore"
 if [[ "${ISO_TRACKED}" == *"state.local"* ]]; then
@@ -997,7 +1049,7 @@ git -C "${ISO_PROJ}" config core.autocrlf true
 
 printf 'crlf line one\r\ncrlf line two\r\n' > "${ISO_PROJ}/data/windows.txt"
 CRLF_HASH_BEFORE=$(shasum "${ISO_PROJ}/data/windows.txt" | awk '{print $1}')
-(cd "${ISO_PROJ}" && "${NOOK}" data add --all && "${NOOK}" data commit -q -m crlf && "${NOOK}" data push -q)
+(cd "${ISO_PROJ}" && "${NOOK}" -n data run add --all && "${NOOK}" -n data run commit -q -m crlf && "${NOOK}" -n data run push -q)
 
 # Round trip on a second machine (also with hostile global config).
 git -C "${ISO_PROJ}" push -q origin HEAD:refs/heads/main
@@ -1016,7 +1068,7 @@ section "materialize: linked worktree gets its own symlink"
 MZ=${WORK}/proj-materialize; make_project_repo "${MZ}" yes materialize-demo
 (cd "${MZ}" && "${NOOK}" add beads origin --dir .beads)
 printf 'x\n' > "${MZ}/.beads/f.txt"
-(cd "${MZ}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m c1)
+(cd "${MZ}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
 # linked worktree (sibling dir), new branch
 WT=${WORK}/proj-materialize-wt
 git -C "${MZ}" worktree add -q "${WT}" -b feat
@@ -1024,7 +1076,7 @@ assert_file_absent "linked worktree has no nook symlink before materialize" "${W
 MZ_OUT=$(cd "${WT}" && "${NOOK}" materialize)
 assert_contains "materialize reports the nook" "${MZ_OUT}" "materialized beads"
 assert_true "symlink created in linked worktree" test -L "${WT}/.beads"
-MZ_LOG=$(cd "${WT}" && "${NOOK}" beads log --oneline)
+MZ_LOG=$(cd "${WT}" && "${NOOK}" -n beads run log --oneline)
 assert_contains "passthrough works from linked worktree after materialize" "${MZ_LOG}" "c1"
 assert_file_exists "content visible through the symlink" "${WT}/.beads/f.txt"
 assert_eq "linked worktree parent status clean" "" "$(git -C "${WT}" status --porcelain)"
@@ -1082,9 +1134,9 @@ UP_CANON=$(cd "${UP}" && git rev-parse --git-common-dir); UP_CANON="$(cd "${UP}/
 assert_file_exists "legacy content migrated into canonical checkout" "${UP_CANON}/data.txt"
 assert_file_exists "legacy content reachable via symlink" "${UP}/.legacy/data.txt"
 # passthrough works and history is intact
-UP_LOG=$(cd "${UP}" && "${NOOK}" legacy log --oneline)
+UP_LOG=$(cd "${UP}" && "${NOOK}" -n legacy run log --oneline)
 assert_contains "committed history preserved after upgrade" "${UP_LOG}" "legacy history"
-UP_STATUS=$(cd "${UP}" && "${NOOK}" legacy status --porcelain)
+UP_STATUS=$(cd "${UP}" && "${NOOK}" -n legacy run status --porcelain)
 assert_eq "clean working tree after upgrade migration" "" "${UP_STATUS}"
 assert_eq "host status clean (symlink excluded)" "" "$(git -C "${UP}" status --porcelain -- .legacy)"
 
@@ -1093,11 +1145,13 @@ MZE=${WORK}/proj-mz-empty; make_project_repo "${MZE}" no mzempty
 MZE_OUT=$(cd "${MZE}" && "${NOOK}" materialize)
 assert_contains "materialize with no nooks names the add command" "${MZE_OUT}" "git nook add"
 
-section "materialize: reserved name cannot be a nook"
+section "add: a nook may be named 'materialize' (no reserved names)"
 MZR=${WORK}/proj-mz-reserved; make_project_repo "${MZR}" yes mzr
 run_cmd_in "${MZR}" "${NOOK}" add materialize origin
-assert_exit_nonzero "cannot create a nook named 'materialize'"
-assert_contains "reserved-name error names the offender" "${RUN_OUT}" "materialize"
+assert_exit_zero "creating a nook named 'materialize' succeeds"
+assert_contains "add reports the new nook named 'materialize'" "${RUN_OUT}" "added nook 'materialize'"
+run_cmd_in "${MZR}" "${NOOK}" -n materialize run status
+assert_exit_zero "'-n materialize run status' reaches the nook named 'materialize'"
 
 # --- list: unmaterialized marker ---------------------------------------------------
 
@@ -1128,7 +1182,7 @@ git -C "${BL_BARE}" worktree add -q -b other "${WB}" main
 (cd "${WA}" && "${NOOK}" add beads origin --dir .beads)
 assert_true "nook symlink created in the adding worktree" test -L "${WA}/.beads"
 printf 'y\n' > "${WA}/.beads/f.txt"
-(cd "${WA}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m c1)
+(cd "${WA}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
 # Peer worktree: list flags it unmaterialized; materialize links it.
 LIST_B=$(cd "${WB}" && "${NOOK}" list)
 assert_contains "list flags unmaterialized nook in peer worktree" "${LIST_B}" "not linked here"
@@ -1143,8 +1197,8 @@ LIST_B2=$(cd "${WB}" && "${NOOK}" list)
 if [[ "${LIST_B2}" == *"not linked here"* ]]; then fail "list still flags a materialized nook"; else pass "list no longer flags materialized nook"; fi
 # A commit from one peer is visible to the other (shared refs+objects).
 printf 'z\n' > "${WA}/.beads/g.txt"
-(cd "${WA}" && "${NOOK}" beads add --all && "${NOOK}" beads commit -q -m c2)
-LOG_B=$(cd "${WB}" && "${NOOK}" beads log --oneline)
+(cd "${WA}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c2)
+LOG_B=$(cd "${WB}" && "${NOOK}" -n beads run log --oneline)
 assert_contains "commit from peer A visible from peer B" "${LOG_B}" "c2"
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
@@ -1152,7 +1206,7 @@ assert_contains "commit from peer A visible from peer B" "${LOG_B}" "c2"
 section "shellcheck (optional, skipped gracefully if unavailable)"
 
 if command -v shellcheck >/dev/null 2>&1; then
-    for f in "${REPO_UNDER_TEST}/bin/git-nook" "${REPO_UNDER_TEST}/install.sh" "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "${TESTS_DIR}/run.sh"; do
+    for f in "${REPO_UNDER_TEST}/bin/git-nook" "${REPO_UNDER_TEST}/install.sh" "${REPO_UNDER_TEST}/scripts/stamp-version.sh" "${REPO_UNDER_TEST}/scripts/check-tag-version.sh" "${TESTS_DIR}/run.sh" "${TESTS_DIR}/dispatch-grammar.sh"; do
         if shellcheck "${f}"; then
             pass "shellcheck clean: ${f#"${REPO_UNDER_TEST}"/}"
         else
