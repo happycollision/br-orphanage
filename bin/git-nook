@@ -225,6 +225,19 @@ json_escape() {
     printf '%s' "${s}"
 }
 
+# Reverse json_escape: decode \" \n \t \r and finally \\ (backslash LAST, so
+# a decoded literal backslash doesn't get mistaken for the start of another
+# escape sequence during this same pass).
+json_unescape() {
+    local s="$1"
+    s="${s//\\\"/\"}"
+    s="${s//\\n/$'\n'}"
+    s="${s//\\t/$'\t'}"
+    s="${s//\\r/$'\r'}"
+    s="${s//\\\\/\\}"
+    printf '%s' "${s}"
+}
+
 # Build manifest.json content from fields. Its own function so tests and
 # reindex can reuse it.
 manifest_json() {
@@ -263,10 +276,11 @@ write_manifest_ref() {
 # in the inner repo. The manifest shape is fixed and machine-written, so a
 # line grep is safe.
 read_manifest_field() {
-    local gd="$1" ref="$2" field="$3" line
+    local gd="$1" ref="$2" field="$3" line raw
     line=$(git --git-dir="${gd}" show "${ref}:manifest.json" 2>/dev/null \
         | grep -E "\"${field}\"[[:space:]]*:" | head -n1) || return 1
-    printf '%s' "${line}" | sed -E 's/.*: *"(.*)".*/\1/'
+    raw=$(printf '%s' "${line}" | sed -E 's/.*: *"(.*)".*/\1/')
+    json_unescape "${raw}"
 }
 
 # Prints "<owner>\t<project>" derived from the origin remote URL, falling
@@ -359,7 +373,14 @@ _index_entry_json() {
 _index_merge() {
     local arr="$1" slug="$2" entry="$3" body piece kept="" first=1 out
     arr="${arr#[}"; arr="${arr%]}"
-    body=$(printf '%s' "${arr}" | sed 's/},{/}\n{/g')
+    # Every entry begins with {"slug":..., so anchor the split on that marker
+    # rather than on any '},{' -- a free-form value (e.g. a user identity)
+    # can itself contain a literal '},{' with nothing else adjacent to that
+    # exact marker, so splitting there would cut a value in half and leave
+    # an orphan fragment in the output. Splitting only where '},{' is
+    # immediately followed by '"slug":' guarantees the cut lands on a real
+    # object boundary.
+    body=$(printf '%s' "${arr}" | sed 's/},{"slug":/}\n{"slug":/g')
     while IFS= read -r piece; do
         [[ -n "${piece}" ]] || continue
         case "${piece}" in

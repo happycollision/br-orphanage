@@ -1698,6 +1698,41 @@ IXTMP4="${WORK}/ixtmp4.git"; git init -q --bare "${IXTMP4}"
 git --git-dir="${IXTMP4}" fetch -q --depth 1 "${IX_ORIGIN}" refs/nook/index:refs/nook/index
 INFO4=$(git --git-dir="${IXTMP4}" show refs/nook/index:info.json)
 assert_true "index no longer lists the destroyed notes slug" test -z "$(printf '%s' "${INFO4}" | grep -o 'notes\.[a-z0-9]*\.carol' || true)"
+assert_contains "index still lists the surviving beads slug after deindex" "${INFO4}" "beads."
+
+section "unit: manifest read decodes escaped values (no double-escape)"
+MFE="${WORK}/mfe-repo"; make_project_repo "${MFE}" yes mfe
+( cd "${MFE}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  cd "${MFE}"
+  gd="$(pwd)/.git/nook/x.git"; mkdir -p "$(dirname "${gd}")"; git init -q --bare "${gd}"
+  write_manifest_ref "${gd}" "uuid1" "beads" "alice" "proj" "" 'Don "D" Denton <d@x>' "2026-01-01T00:00:00Z"
+  echo "USER:$(read_manifest_field "${gd}" refs/nook-meta/manifest user)"
+) > "${WORK}/mfe.out" 2>&1
+assert_contains "user identity decodes with literal quotes" "$(cat "${WORK}/mfe.out")" 'USER:Don "D" Denton <d@x>'
+
+section "unit: _index_merge split anchors on object boundary, not any '},{' in a value"
+IMM="${WORK}/imm-repo"; make_project_repo "${IMM}" yes imm
+( cd "${IMM}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  cd "${IMM}"
+  # The entry being DROPPED has a free-form value containing a literal '},{'.
+  # A naive split on '},{' anywhere cuts this entry's own value in half,
+  # producing an orphan fragment ('{x","at":"t2"}') that is not a real object
+  # and does not match the drop pattern -- so it survives as JSON garbage in
+  # the output alongside the entry that should have been kept intact.
+  ARR='[{"slug":"drop.2","uuid":"u2","name":"n2","owner":"o2","repo_dir":"r2","upstream":"up2","user":"ORPHANFRAGMENT},{x","at":"t2"},{"slug":"keep.1","uuid":"u1","name":"n1","owner":"o1","repo_dir":"r1","upstream":"up1","user":"a","at":"t1"}]'
+  RESULT=$(_index_merge "${ARR}" "drop.2" "")
+  echo "RESULT:${RESULT}"
+) > "${WORK}/imm.out" 2>&1
+IMM_OUT=$(cat "${WORK}/imm.out")
+assert_true "dropped entry is fully gone (no orphan fragment)" \
+    test -z "$(printf '%s' "${IMM_OUT}" | grep -o 'ORPHANFRAGMENT\|drop\.2' || true)"
+assert_contains "surviving keep.1 entry is present and intact" "${IMM_OUT}" '"slug":"keep.1"'
+assert_contains "result is a well-formed single-entry array" "${IMM_OUT}" \
+    'RESULT:[{"slug":"keep.1","uuid":"u1","name":"n1","owner":"o1","repo_dir":"r1","upstream":"up1","user":"a","at":"t1"}]'
 
 # --- Summary ---------------------------------------------------------------------
 
