@@ -129,7 +129,8 @@ cd_to_toplevel() {
     cd "${toplevel}"
 }
 
-channel_dir() { git config --get "nook.${1}.dir"; }
+# Config is keyed by SLUG: nook.<slug>.dir
+channel_dir() { local slug="$1"; git config --get "nook.${slug}.dir"; }
 
 # Absolute path of the parent's common git dir (worktree-safe; portable
 # normalization because --git-common-dir may print a relative path).
@@ -144,28 +145,30 @@ common_git_dir() {
     esac
 }
 
+# Absolute path of the inner git dir for a nook, keyed by SLUG.
 inner_git_dir() { printf '%s/nook/%s.git\n' "$(common_git_dir)" "$1"; }
 
 # Absolute path of the CONTAINER dir for a nook: git-nook owns this (creates
 # it on add, removes it on rollback). Lives in the common git dir so every
-# worktree shares it. Independent of the configured content dir.
+# worktree shares it. Independent of the configured content dir. Keyed by SLUG.
 canonical_container() { printf '%s/nook/%s.nook\n' "$(common_git_dir)" "$1"; }
 
 # Absolute path of a nook's WORK-TREE: the content dir nested inside the
 # container, named for the basename of the configured content dir. This is
 # what the per-worktree symlink targets and what `git --work-tree` uses, so
 # tracked paths stay bare (the worktree root IS the content dir) and a
-# name-sensitive tool resolving the symlink lands on a dir named basename(dir).
+# slug-sensitive tool resolving the symlink lands on a dir named basename(dir).
 # Falls back to the container itself only if the dir config is somehow unset.
+# Keyed by SLUG.
 canonical_worktree() {
-    local name="$1" dir base
-    dir=$(channel_dir "${name}" 2>/dev/null) || dir=""
+    local slug="$1" dir base
+    dir=$(channel_dir "${slug}" 2>/dev/null) || dir=""
     dir="${dir%/}"
     base="${dir##*/}"
     if [[ -n "${base}" ]]; then
-        printf '%s/%s\n' "$(canonical_container "${name}")" "${base}"
+        printf '%s/%s\n' "$(canonical_container "${slug}")" "${base}"
     else
-        canonical_container "${name}"
+        canonical_container "${slug}"
     fi
 }
 

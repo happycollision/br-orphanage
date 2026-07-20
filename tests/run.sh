@@ -1434,6 +1434,28 @@ assert_eq "owner with dots sanitized" \
     "n.abc.a_b.c_d" \
     "$(build_slug 'n' 'abcdef' 'a.b' 'c.d')"
 
+section "unit: path helpers key off slug"
+
+# Build a throwaway repo so common_git_dir resolves.
+PH_REPO="${WORK}/ph-repo"
+make_project_repo "${PH_REPO}" yes ph
+( cd "${PH_REPO}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  cd "${PH_REPO}"
+  SLUG="beads.a3f.alice.proj"
+  git config "nook.${SLUG}.dir" ".beads"
+  gd=$(inner_git_dir "${SLUG}")
+  cdir=$(canonical_container "${SLUG}")
+  wt=$(canonical_worktree "${SLUG}")
+  case "${gd}" in *"/nook/${SLUG}.git") echo GDOK;; *) echo "GDBAD:${gd}";; esac
+  case "${cdir}" in *"/nook/${SLUG}.nook") echo CDOK;; *) echo "CDBAD:${cdir}";; esac
+  case "${wt}" in *"/nook/${SLUG}.nook/.beads") echo WTOK;; *) echo "WTBAD:${wt}";; esac
+) > "${WORK}/ph.out" 2>&1
+assert_contains "inner_git_dir uses slug" "$(cat "${WORK}/ph.out")" "GDOK"
+assert_contains "canonical_container uses slug" "$(cat "${WORK}/ph.out")" "CDOK"
+assert_contains "canonical_worktree nests basename" "$(cat "${WORK}/ph.out")" "WTOK"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
