@@ -1062,23 +1062,47 @@ cmd_show() {
     echo "state:    ${state}"
 }
 
+# Does the inner repo have commits on refs/heads/main not present on the
+# upstream files ref? Returns 0 (true) if there is unpushed work.
+has_unpushed() {
+    local gd="$1"
+    git --git-dir="${gd}" rev-parse --verify -q refs/heads/main >/dev/null 2>&1 || return 1
+    if ! git --git-dir="${gd}" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+        git --git-dir="${gd}" fetch -q origin 2>/dev/null || true
+    fi
+    if ! git --git-dir="${gd}" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+        return 0
+    fi
+    local ahead
+    ahead=$(git --git-dir="${gd}" rev-list --count refs/remotes/origin/main..refs/heads/main 2>/dev/null || echo 1)
+    [[ "${ahead}" -gt 0 ]]
+}
+
 cmd_remove() {
     require_work_tree
     cd_to_toplevel
-    local name="${1:-}" dir gitdir
-    [[ -n "${name}" ]] || { err "usage: git nook -n <name> remove"; exit 1; }
-    if ! dir=$(channel_dir "${name}"); then
-        err "no nook named '${name}' (see: git nook list)"
+    local partial="${1:-}"; shift || true
+    local force=""
+    [[ "${1:-}" == "--force" ]] && force=1
+    [[ -n "${partial}" ]] || { err "usage: git nook -n <name> remove [--force]"; exit 1; }
+    local slug; slug=$(resolve_slug_prefix "${partial}") || exit 1
+    local dir gitdir container_dir toplevel
+    dir=$(channel_dir "${slug}")
+    gitdir=$(inner_git_dir "${slug}")
+    container_dir=$(canonical_container "${slug}")
+    toplevel=$(pwd)
+
+    if [[ -z "${force}" ]] && [[ -d "${gitdir}" ]] && has_unpushed "${gitdir}"; then
+        err "nook '${slug}' has commits not on the upstream; push them, or re-run with --force to delete anyway"
         exit 1
     fi
-    gitdir=$(inner_git_dir "${name}")
-    git config --remove-section "nook.${name}"
+
+    git config --remove-section "nook.${slug}" 2>/dev/null || true
     remove_exclude_entry "${dir}"
-    echo "git-nook: removed nook '${name}' from config."
-    echo "git-nook: kept your files:   ${dir}/"
-    echo "git-nook: kept its history:  ${gitdir}"
-    echo "git-nook: (the history may hold unpushed commits) delete both yourself when sure:"
-    echo "git-nook:   rm -rf '${dir}' '${gitdir}'"
+    rm -f "${toplevel}/${dir}"
+    rm -rf "${gitdir}"
+    rm -rf "${container_dir}"
+    echo "git-nook: removed nook '${slug}' locally (upstream untouched)."
 }
 
 run_passthrough() {

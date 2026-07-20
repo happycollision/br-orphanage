@@ -968,31 +968,46 @@ assert_file_absent "failed add leaked no inner repo" "${REF_PROJ}/.git/nook/nest
 
 # --- remove -------------------------------------------------------------------------
 
-section "remove: config-only, never destroys files or history"
+section "remove: full local delete, upstream untouched"
+
+RM_REPO="${WORK}/rm-repo"; make_project_repo "${RM_REPO}" yes rmproj
+( cd "${RM_REPO}"
+  "${NOOK}" init beads origin --dir .beads
+  echo x > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m seed; "${NOOK}" -n beads run push )
+RM_SLUG=$(cd "${RM_REPO}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+RM_ORIGIN="${WORK}/origins/rmproj.git"
+# Sanity: fully pushed.
+assert_contains "files ref on upstream before remove" \
+    "$(git ls-remote "${RM_ORIGIN}" "refs/nook/${RM_SLUG}/files")" "refs/nook/${RM_SLUG}/files"
+( cd "${RM_REPO}"; "${NOOK}" -n beads remove )
+assert_true "config section gone" test -z "$(cd "${RM_REPO}" && git config --get "nook.${RM_SLUG}.dir" 2>/dev/null)"
+assert_true "inner git dir removed" test ! -e "${RM_REPO}/.git/nook/${RM_SLUG}.git"
+assert_true "container removed" test ! -e "${RM_REPO}/.git/nook/${RM_SLUG}.nook"
+assert_true "symlink removed" test ! -e "${RM_REPO}/.beads"
+assert_contains "upstream files ref survives remove" \
+    "$(git ls-remote "${RM_ORIGIN}" "refs/nook/${RM_SLUG}/files")" "refs/nook/${RM_SLUG}/files"
+
+section "remove: refuses unpushed commits without --force"
+
+RM2="${WORK}/rm2"; make_project_repo "${RM2}" yes rm2
+( cd "${RM2}"; "${NOOK}" init notes origin --dir notes
+  echo y > notes/n; "${NOOK}" -n notes run add --all; "${NOOK}" -n notes run commit -m local )
+# committed locally but NEVER pushed.
+RC=$(cd "${RM2}"; "${NOOK}" -n notes remove >/dev/null 2>&1; echo $?)
+assert_eq "remove refuses unpushed" "1" "${RC}"
+assert_true "still configured after refusal" test -n "$(cd "${RM2}" && git config --get-regexp '^nook\..*\.dir$')"
+( cd "${RM2}"; "${NOOK}" -n notes remove --force )
+assert_true "force removes despite unpushed" test -z "$(cd "${RM2}" && git config --get-regexp '^nook\..*\.dir$')"
+
+section "remove: passthrough for a removed nook fails cleanly"
 
 RM_PROJ="${WORK}/proj-remove"
 make_project_repo "${RM_PROJ}" yes "remove-demo"
 (cd "${RM_PROJ}" && "${NOOK}" add notes origin >/dev/null)
 printf 'unpushed work\n' > "${RM_PROJ}/notes/keep.md"
 (cd "${RM_PROJ}" && "${NOOK}" -n notes run add --all && "${NOOK}" -n notes run commit -q -m keep)
-
-RM_OUT=$(cd "${RM_PROJ}" && "${NOOK}" -n notes remove)
-assert_contains "remove says what it kept" "${RM_OUT}" "kept"
-assert_contains "remove prints the manual deletion command" "${RM_OUT}" "rm -rf"
-
-if git -C "${RM_PROJ}" config --get nook.notes.dir >/dev/null 2>&1; then
-    fail "config still present after remove"
-else
-    pass "config gone after remove"
-fi
-RM_EXCLUDE=$(abs_git_path "${RM_PROJ}" info/exclude)
-if grep -qxF '/notes' "${RM_EXCLUDE}" 2>/dev/null || grep -qxF '/notes/' "${RM_EXCLUDE}" 2>/dev/null; then
-    fail "remove left a stale exclude entry"
-else
-    pass "remove cleaned both exclude entry forms"
-fi
-assert_file_exists "content untouched" "${RM_PROJ}/notes/keep.md"
-assert_dir_exists "inner repo (history) untouched" "${RM_PROJ}/.git/nook/notes.git"
+(cd "${RM_PROJ}" && "${NOOK}" -n notes remove --force >/dev/null)
 
 run_cmd_in "${RM_PROJ}" "${NOOK}" -n notes run status
 assert_exit_nonzero "passthrough for a removed nook fails cleanly"
@@ -1002,6 +1017,10 @@ assert_exit_nonzero "removing a nonexistent nook fails cleanly"
 
 section "remove then re-add: stale inner repo is refused with a hint, then works"
 
+# Manufacture a stale inner git dir directly (remove no longer leaves one
+# behind; this guard is about cmd_add refusing to adopt/clobber an existing
+# inner repo it didn't create, regardless of how it got there).
+mkdir -p "${RM_PROJ}/.git/nook/notes.git"
 run_cmd_in "${RM_PROJ}" "${NOOK}" add notes origin
 assert_exit_nonzero "re-add with stale inner repo refused (history is never silently adopted or destroyed)"
 assert_contains "refusal names the stale path" "${RUN_OUT}" ".git/nook/notes.git"
