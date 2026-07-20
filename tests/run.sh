@@ -1201,6 +1201,15 @@ printf 'z\n' > "${WA}/.beads/g.txt"
 LOG_B=$(cd "${WB}" && "${NOOK}" -n beads run log --oneline)
 assert_contains "commit from peer A visible from peer B" "${LOG_B}" "c2"
 
+section "nested: show reports the nested work-tree path (not the container)"
+NEST=${WORK}/proj-nested
+make_project_repo "${NEST}" yes nested-demo
+(cd "${NEST}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+NEST_SHOW=$(cd "${NEST}" && "${NOOK}" -n beads show)
+NEST_COMMON=$(cd "${NEST}" && git rev-parse --git-common-dir)
+NEST_WT="$(cd "${NEST}/${NEST_COMMON}" && pwd -P)/nook/beads.nook/.beads"
+assert_contains "show checkout: is the nested work-tree" "${NEST_SHOW}" "checkout: ${NEST_WT}/"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
