@@ -320,12 +320,12 @@ materialize_one() {
 # failure) so a retry starts clean. remove_exclude_entry strips both exclude
 # forms in one call, regardless of which stage failed.
 rollback_add() {
-    local name="$1" dir="$2" toplevel="$3" gitdir="$4" checkout_dir="$5" made_link="$6" made_ckout="$7"
+    local name="$1" dir="$2" toplevel="$3" gitdir="$4" container_dir="$5" made_link="$6" made_ckout="$7"
     rm -rf "${gitdir}"
     git config --remove-section "nook.${name}" 2>/dev/null || true
     remove_exclude_entry "${dir}"
     [[ -n "${made_link}" ]] && rm -f "${toplevel}/${dir}"
-    [[ -n "${made_ckout}" ]] && rm -rf "${checkout_dir}"
+    [[ -n "${made_ckout}" ]] && rm -rf "${container_dir}"
     : # ensure exit status 0 so the trailing [[ ]] && cmd never trips set -e
 }
 
@@ -413,7 +413,7 @@ cmd_add() {
         fi
     done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
 
-    local ref gitdir checkout_dir
+    local ref gitdir checkout_dir container_dir
     # shellcheck disable=SC2310 # failure handled by the || exit
     ref=$(resolve_ref "${ref_tpl}" "${name}") || exit 1
     gitdir=$(inner_git_dir "${name}")
@@ -448,6 +448,7 @@ cmd_add() {
 
     git config "nook.${name}.dir" "${dir}"
     checkout_dir=$(canonical_worktree "${name}")   # needs nook.<name>.dir, just written above
+    container_dir=$(canonical_container "${name}")
 
     echo "git-nook: added nook '${name}' (dir ${dir}/, target ${url}, ref ${ref})"
 
@@ -459,9 +460,9 @@ cmd_add() {
     # made_ckout tracks whether the checkout had no real content of its own
     # before this add ran (an empty or absent dir is not meaningful prior
     # state), so a later failure's rollback can safely remove it.
-    [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]] || made_ckout=1
+    [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
     if ! materialize_one "${name}"; then
-        rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${checkout_dir}" "${made_link}" "${made_ckout}"
+        rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
         exit 1
     fi
     made_link=1
@@ -487,13 +488,13 @@ cmd_add() {
     if git --git-dir="${gitdir}" fetch --quiet origin \
         && git --git-dir="${gitdir}" --work-tree="${checkout_dir}" reset --hard --quiet refs/remotes/origin/main; then
         if ! materialize_one "${name}"; then
-            rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${checkout_dir}" "${made_link}" "${made_ckout}"
+            rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
             err "bootstrap from ${url} failed; the nook was rolled back — fix the problem above and re-run add"
             exit 1
         fi
         echo "git-nook: bootstrapped ${dir}/ from ${ref}"
     else
-        rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${checkout_dir}" "${made_link}" "${made_ckout}"
+        rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
         err "bootstrap from ${url} failed; the nook was rolled back — fix the problem above and re-run add"
         exit 1
     fi
