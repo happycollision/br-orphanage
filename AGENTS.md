@@ -75,6 +75,26 @@ files the host repo cannot track, hidden in an inner repository under
 `.git/nook/<name>.git` and published to a custom ref (`refs/nook/...`) that
 never appears in branch listings or default clones.
 
+> **⚠️ BEADS IS CURRENTLY BROKEN IN THIS REPO (as of 2026-07-20).** `br`
+> refuses to operate against the beads nook because the nook's checkout lives
+> under `.git/`, and `br` v0.2.16 enforces a hard "never touch `.git/`"
+> invariant (**NGI-3**): `br ready`/`sync`/`create`/`where`-then-read all fail
+> with *"Path '.../.git/nook/beads.nook/.beads/issues.jsonl' targets git
+> internals - sync never accesses .git/ (safety invariant NGI-3)"*. There is no
+> `br` toggle for it. **Consequence:** the entire `br` workflow below (and the
+> session protocol above) does NOT work here right now — do not rely on `br`,
+> and you cannot file beads issues from this checkout. `git nook -n beads run
+> <git...>` passthrough still works fine (the break is br-side, not nook-side).
+>
+> Background: the `feat/nook-nested-content-dir` branch fixed a *separate* `br`
+> guard (directory name must be `.beads`/`_beads`) by nesting the content dir;
+> clearing that guard surfaced NGI-3 underneath. See
+> `docs/superpowers/specs/2026-07-19-nook-nested-content-dir-FINDINGS.md` for the
+> full write-up and the follow-up Discoveries that could not be filed in beads.
+> **Resolving NGI-3 (relocate nook checkouts outside `.git/`, or patch/upstream
+> `br`) is deferred to a new session.** Until then, track project work outside
+> beads.
+
 This project's own issues (beads) are tracked in exactly such a nook:
 
 ```bash
@@ -82,7 +102,7 @@ git nook list                 # see this repo's nooks (expect: beads)
 git nook -n beads run status  # any git command works against the nook
 ```
 
-The daily beads flow on this repo:
+The daily beads flow on this repo (**currently blocked by NGI-3 — see warning above**):
 
 ```bash
 br sync --flush-only          # beads DB -> .beads/issues.jsonl
