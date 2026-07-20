@@ -51,6 +51,13 @@ EOF
 
 err() { echo "git-nook: error: $*" >&2; }
 
+# Map every character outside [A-Za-z0-9] to '_'. Used to build the slug's
+# field values for ref/dir/config names. Lossy on purpose: exact values live
+# in the manifest. bash-3.2 safe (tr, not ${//} class tricks).
+sanitize_field() {
+    printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9' '_' 2>/dev/null | LC_ALL=C tr -d '\n'
+}
+
 require_work_tree() {
     # Inside a bare repo, `--is-inside-work-tree` prints "false" but still
     # EXITS 0, so a plain `if ! git ...` guard would not fire. Compare the
@@ -780,4 +787,7 @@ main() {
     esac
 }
 
-main "$@"
+# When sourced as a library (tests), skip running main.
+if [[ -z "${GIT_NOOK_LIB:-}" ]]; then
+    main "$@"
+fi

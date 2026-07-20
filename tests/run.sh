@@ -1395,6 +1395,20 @@ else
     echo "  shellcheck not installed; skipping."
 fi
 
+section "unit: sanitize_field maps non-alphanumerics to underscore"
+
+# Source the tool's helpers without running main. The script runs main "$@"
+# at the very end; guard by setting GIT_NOOK_LIB=1 (added in the impl step).
+# shellcheck source=/dev/null
+GIT_NOOK_LIB=1 . "${NOOK}"
+
+assert_eq "plain alnum unchanged" "beads" "$(sanitize_field 'beads')"
+assert_eq "dots to underscores" "my_notes" "$(sanitize_field 'my.notes')"
+assert_eq "slash and dash mapped" "a_b_c" "$(sanitize_field 'a/b-c')"
+assert_eq "mixed case preserved" "MyRepo" "$(sanitize_field 'MyRepo')"
+assert_eq "leading dot mapped" "_beads" "$(sanitize_field '.beads')"
+assert_eq "empty stays empty" "" "$(sanitize_field '')"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
