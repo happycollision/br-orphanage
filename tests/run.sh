@@ -1409,6 +1409,19 @@ assert_eq "mixed case preserved" "MyRepo" "$(sanitize_field 'MyRepo')"
 assert_eq "leading dot mapped" "_beads" "$(sanitize_field '.beads')"
 assert_eq "empty stays empty" "" "$(sanitize_field '')"
 
+section "unit: gen_uuid produces distinct lowercased hex-ish uuids"
+
+U1=$(gen_uuid)
+U2=$(gen_uuid)
+assert_true "uuid 1 nonempty" test -n "${U1}"
+assert_true "uuid 2 nonempty" test -n "${U2}"
+assert_true "two uuids differ" test "${U1}" != "${U2}"
+# At least 8 chars so a 3-char prefix is always available.
+assert_true "uuid at least 8 chars" test "${#U1}" -ge 8
+# id3 is the first 3 chars, lowercased alnum.
+ID3=$(printf '%s' "${U1}" | cut -c1-3)
+assert_eq "id3 is 3 chars" "3" "${#ID3}"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

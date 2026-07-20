@@ -58,6 +58,26 @@ sanitize_field() {
     printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9' '_' 2>/dev/null | LC_ALL=C tr -d '\n'
 }
 
+# Generate a lowercase UUID-ish identity string. Prefers uuidgen; falls back
+# to the kernel RNG, then to a hash of host+pid+time+RANDOM. bash-3.2 safe.
+# Output is lowercased and stripped of any non-hex/dash so id3 stays clean.
+gen_uuid() {
+    local raw=""
+    if command -v uuidgen >/dev/null 2>&1; then
+        raw=$(uuidgen 2>/dev/null)
+    fi
+    if [[ -z "${raw}" ]] && [[ -r /proc/sys/kernel/random/uuid ]]; then
+        raw=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    fi
+    if [[ -z "${raw}" ]]; then
+        # Portable last resort: hash entropy sources. git is always present.
+        raw=$(printf '%s-%s-%s-%s' "$(hostname 2>/dev/null)" "$$" \
+              "$(date +%s 2>/dev/null)" "${RANDOM}${RANDOM}${RANDOM}" \
+              | git hash-object --stdin 2>/dev/null)
+    fi
+    printf '%s' "${raw}" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-f0-9'
+}
+
 require_work_tree() {
     # Inside a bare repo, `--is-inside-work-tree` prints "false" but still
     # EXITS 0, so a plain `if ! git ...` guard would not fire. Compare the
