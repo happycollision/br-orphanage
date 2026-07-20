@@ -731,13 +731,34 @@ cmd_clone() {
             i=$((i+1)); printf '  %d) %s\n' "${i}" "${s}" >&2
         done < <(printf '%s\n' "${candidates}")
         printf 'Choose [1-%d]: ' "${i}" >&2
-        local pick; read -r pick
+        local pick
+        if ! read -r pick; then
+            err "invalid choice"; exit 1
+        fi
+        if ! printf '%s' "${pick}" | grep -qE '^[0-9]+$' || [[ "${pick}" -lt 1 || "${pick}" -gt "${i}" ]]; then
+            err "invalid choice"; exit 1
+        fi
         chosen=$(printf '%s\n' "${candidates}" | sed -n "${pick}p")
         [[ -n "${chosen}" ]] || { err "invalid choice"; exit 1; }
     fi
 
     [[ -n "${dir}" ]] || dir="${name}"
     dir="${dir%/}"
+    case "${dir}" in
+        /* | . | .. | ./* | ../* | */.. | */../* | .git | .git/* | */.git | */.git/*)
+            err "--dir must be a repo-relative path (no '..', not under .git)"; exit 1 ;;
+    esac
+    if [[ -n "$(git ls-files -- "${dir}" 2>/dev/null)" ]]; then
+        err "'${dir}/' contains files tracked by this repository; pick an untracked dir"; exit 1
+    fi
+    local key other_dir other_slug
+    while read -r key other_dir; do
+        [[ -n "${key}" ]] || continue
+        other_slug="${key#nook.}"; other_slug="${other_slug%.dir}"
+        if [[ "${dir}/" == "${other_dir}/"* || "${other_dir}/" == "${dir}/"* ]]; then
+            err "'${dir}/' overlaps nook '${other_slug}' (${other_dir}/)"; exit 1
+        fi
+    done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
 
     if channel_dir "${chosen}" >/dev/null 2>&1; then
         err "nook '${chosen}' already exists locally"; exit 1
@@ -765,10 +786,18 @@ cmd_clone() {
     checkout_dir=$(canonical_worktree "${chosen}")
     container_dir=$(canonical_container "${chosen}")
 
-    git --git-dir="${gitdir}" fetch -q origin || true
+    [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
+    # The files ref was proven to exist via ls-remote above, so a fetch
+    # failure here is always a real error (network, auth, remote gone
+    # since) -- never silently continue into an empty clone.
+    if ! git --git-dir="${gitdir}" fetch -q origin; then
+        rollback_add "${chosen}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
+        err "clone: could not fetch ${files_ref} from ${url}; rolled back"; exit 1
+    fi
+    # The manifest ref may legitimately be absent (e.g. not yet published);
+    # best-effort only.
     git --git-dir="${gitdir}" fetch -q origin "${meta_ref}:refs/nook-meta/manifest" 2>/dev/null || true
 
-    [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
     if git --git-dir="${gitdir}" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
         git --git-dir="${gitdir}" update-ref refs/heads/main refs/remotes/origin/main
         # A plain fetch + update-ref never touches the index (unlike a real

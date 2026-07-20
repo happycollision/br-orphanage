@@ -1572,6 +1572,16 @@ make_project_repo "${CLONE_CONS}" no cons
 assert_true "consumer has a symlinked .beads" test -L "${CLONE_CONS}/.beads"
 assert_contains "cloned content present" "$(cat "${CLONE_CONS}/.beads/issues.jsonl" 2>/dev/null)" "hi"
 
+section "clone refusals: tracked dir and bad --dir"
+CLR="${WORK}/clone-refuse"; make_project_repo "${CLR}" no clr
+( cd "${CLR}"; mkdir -p taken; echo t > taken/f; git add taken/f; git commit -q -m t )
+RC=$(cd "${CLR}"; "${NOOK}" clone beads "${CLONE_SHARED}" --dir taken >/dev/null 2>&1; echo $?)
+assert_eq "clone refuses a host-tracked dir" "1" "${RC}"
+assert_true "host-tracked file untouched" test -f "${CLR}/taken/f"
+assert_true "host-tracked dir did not become a symlink" test ! -L "${CLR}/taken"
+RC2=$(cd "${CLR}"; "${NOOK}" clone beads "${CLONE_SHARED}" --dir ../escape >/dev/null 2>&1; echo $?)
+assert_eq "clone refuses escaping --dir" "1" "${RC2}"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
