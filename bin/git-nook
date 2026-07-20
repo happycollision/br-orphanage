@@ -608,7 +608,7 @@ run_passthrough() {
     # which is exactly the primitive that keeps working here — so route
     # everything through that instead of toplevel.
     gitdir=$(inner_git_dir "${name}")
-    checkout_dir=$(canonical_checkout "${name}")
+    checkout_dir=$(canonical_worktree "${name}")
     if [[ ! -d "${gitdir}" ]]; then
         err "nook '${name}' has no inner repo at ${gitdir} (was it deleted?)"
         exit 1

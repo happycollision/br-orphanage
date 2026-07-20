@@ -1210,6 +1210,17 @@ NEST_COMMON=$(cd "${NEST}" && git rev-parse --git-common-dir)
 NEST_WT="$(cd "${NEST}/${NEST_COMMON}" && pwd -P)/nook/beads.nook/.beads"
 assert_contains "show checkout: is the nested work-tree" "${NEST_SHOW}" "checkout: ${NEST_WT}/"
 
+section "nested: passthrough commits tracked paths bare (no basename prefix)"
+NESTPT=${WORK}/proj-nested-pt
+make_project_repo "${NESTPT}" yes nested-pt-demo
+(cd "${NESTPT}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+echo '{"id":"x1"}' > "${NESTPT}/.beads/issues.jsonl"
+(cd "${NESTPT}" && "${NOOK}" -n beads run add --all >/dev/null)
+(cd "${NESTPT}" && "${NOOK}" -n beads run commit -q -m "seed" >/dev/null)
+NESTPT_TREE=$(cd "${NESTPT}" && "${NOOK}" -n beads run ls-tree --name-only -r HEAD)
+assert_eq "tracked path is bare issues.jsonl (no .beads/ prefix)" \
+    "issues.jsonl" "${NESTPT_TREE}"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
