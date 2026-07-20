@@ -667,12 +667,17 @@ cmd_init() {
     fi
     made_link=1
 
+    # main is unborn at init (no commits yet), so a combined push with the
+    # files refspec would fail atomically on the unmatched src -- and take
+    # the manifest push down with it. Publish only the manifest here; the
+    # files refspec (still on remote.origin.push, set above) publishes once
+    # the user's first commit + a bare `run push` gives main something to push.
     if git --git-dir="${gitdir}" push --quiet origin \
-         "refs/heads/main:${files_ref}" "refs/nook-meta/manifest:${meta_ref}" 2>/dev/null; then
+         "refs/nook-meta/manifest:${meta_ref}" 2>/dev/null; then
         index_add_entry "${gitdir}" "${url}" "${slug}" || \
           echo "git-nook: warning: index update failed; run: git nook reindex" >&2
     else
-        echo "git-nook: note: could not publish to ${url} yet; push later with: git nook -n ${slug} run push" >&2
+        echo "git-nook: note: could not publish manifest to ${url} yet; it will publish on your first: git nook -n ${slug} run push" >&2
     fi
 }
 

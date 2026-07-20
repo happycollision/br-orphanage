@@ -1517,8 +1517,15 @@ section "init: creates a slug-keyed wired hidden inner repo"
 
 IN_REPO="${WORK}/init-repo"
 make_project_repo "${IN_REPO}" yes myproj
+# Point origin at a reachable bare repo whose path still carries alice/myproj
+# provenance (owner_and_project derives owner/repo from the URL's last two
+# path segments), so the init-time manifest push in this section actually
+# lands on a real remote instead of an unreachable placeholder URL.
+IN_ORIGIN="${WORK}/origins/alice/myproj.git"
+mkdir -p "$(dirname "${IN_ORIGIN}")"
+git init -q --bare "${IN_ORIGIN}"
 ( cd "${IN_REPO}"
-  git remote set-url origin "git@github.com:alice/myproj.git"
+  git remote set-url origin "${IN_ORIGIN}"
   "${NOOK}" init beads origin --dir .beads
 )
 # Find the single configured slug.
@@ -1536,6 +1543,10 @@ assert_eq "fetch refspec reads /files" \
 assert_true "symlink materialized" test -L "${IN_REPO}/.beads"
 assert_eq "manifest name is the exact name" "beads" \
     "$(git --git-dir="${IN_GD}" show refs/nook-meta/manifest:manifest.json | grep '"name"' | sed -E 's/.*: *"(.*)".*/\1/')"
+assert_contains "manifest ref published to remote at init" \
+    "$(git ls-remote "${IN_ORIGIN}" "refs/nook/${IN_SLUG}/manifest")" "refs/nook/${IN_SLUG}/manifest"
+assert_eq "files ref NOT yet published at init (main unborn)" "" \
+    "$(git ls-remote "${IN_ORIGIN}" "refs/nook/${IN_SLUG}/files")"
 
 # --- Summary ---------------------------------------------------------------------
 
