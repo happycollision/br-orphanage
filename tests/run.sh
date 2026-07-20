@@ -1758,6 +1758,42 @@ assert_true "clone produced a symlink" test -L "${CL_CC}/notes"
 # Content of whichever candidate was chosen must be present.
 assert_true "cloned content nonempty" test -s "${CL_CC}/notes/x"
 
+section "pull guard: refuses when remote manifest uuid differs"
+
+PG_SHARED="${WORK}/origins/pgshared.git"; mkdir -p "$(dirname "${PG_SHARED}")"; git init -q --bare "${PG_SHARED}"
+PG="${WORK}/pg"; make_project_repo "${PG}" no pg
+( cd "${PG}"; git remote add origin git@github.com:alice/pg.git
+  "${NOOK}" init beads "${PG_SHARED}" --dir .beads
+  echo a > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+PG_SLUG=$(cd "${PG}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+PG_GD="${PG}/.git/nook/${PG_SLUG}.git"
+
+# Tamper: overwrite the UPSTREAM manifest ref with a DIFFERENT uuid.
+# shellcheck source=/dev/null
+GIT_NOOK_LIB=1 . "${NOOK}"
+BAD_BLOB=$(manifest_json "DIFFERENT-uuid" "beads" "alice" "pg" "" "x <x>" "2026-01-01T00:00:00Z" | git --git-dir="${PG_GD}" hash-object -w --stdin)
+BAD_TREE=$(printf '100644 blob %s\tmanifest.json\n' "${BAD_BLOB}" | git --git-dir="${PG_GD}" mktree)
+BAD_COMMIT=$(printf 'x\n' | git --git-dir="${PG_GD}" commit-tree "${BAD_TREE}")
+git --git-dir="${PG_GD}" update-ref refs/nook-tamper "${BAD_COMMIT}"
+git --git-dir="${PG_GD}" push -q -f "${PG_SHARED}" "refs/nook-tamper:refs/nook/${PG_SLUG}/manifest"
+
+# A guarded pull must now refuse (remote uuid != local uuid).
+PG_RC=$(cd "${PG}"; "${NOOK}" -n beads run pull >/dev/null 2>&1; echo $?)
+assert_eq "guarded pull refuses on uuid mismatch" "1" "${PG_RC}"
+
+section "pull guard: allows pull when uuids match"
+
+PG2_SHARED="${WORK}/origins/pg2shared.git"; mkdir -p "$(dirname "${PG2_SHARED}")"; git init -q --bare "${PG2_SHARED}"
+PG2="${WORK}/pg2"; make_project_repo "${PG2}" no pg2
+( cd "${PG2}"; git remote add origin git@github.com:alice/pg2.git
+  "${NOOK}" init beads "${PG2_SHARED}" --dir .beads
+  echo a > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+# A normal pull (uuids match) must succeed (exit 0). Nothing to pull, but no refusal.
+PG2_RC=$(cd "${PG2}"; "${NOOK}" -n beads run pull --no-rebase --no-edit >/dev/null 2>&1; echo $?)
+assert_eq "matching-uuid pull is allowed" "0" "${PG2_RC}"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

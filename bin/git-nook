@@ -1419,6 +1419,35 @@ run_passthrough() {
     if [[ "$(pwd -P)/" != "${checkout_dir}/"* ]]; then
         cd "${checkout_dir}"
     fi
+    # Pull/fetch UUID guard: if we recorded a local manifest uuid and the
+    # remote manifest ref carries a DIFFERENT uuid, refuse — a different nook
+    # was force-pushed onto our ref name. Best-effort: only refuse on a
+    # definite mismatch (unreachable/absent remote manifest does not block).
+    case "${1:-}" in
+        pull|fetch)
+            local slug="${name}" local_uuid remote_uuid meta_ref url gtmp
+            local_uuid=$(read_manifest_field "${gitdir}" refs/nook-meta/manifest uuid 2>/dev/null || printf '')
+            if [[ -n "${local_uuid}" ]]; then
+                url=$(git --git-dir="${gitdir}" config --get remote.origin.url 2>/dev/null || printf '')
+                meta_ref="refs/nook/${slug}/manifest"
+                if [[ -n "${url}" ]]; then
+                    gtmp=$(mktemp -d)
+                    git init -q --bare "${gtmp}/g.git"
+                    if git --git-dir="${gtmp}/g.git" fetch -q --depth 1 "${url}" \
+                         "${meta_ref}:refs/nook-meta/manifest" 2>/dev/null; then
+                        remote_uuid=$(read_manifest_field "${gtmp}/g.git" refs/nook-meta/manifest uuid 2>/dev/null || printf '')
+                        if [[ -n "${remote_uuid}" && "${remote_uuid}" != "${local_uuid}" ]]; then
+                            rm -rf "${gtmp}"
+                            err "refusing to ${1}: remote nook identity (${remote_uuid}) differs from local (${local_uuid})"
+                            err "a different nook may have been force-pushed onto ${meta_ref}"
+                            exit 1
+                        fi
+                    fi
+                    rm -rf "${gtmp}"
+                fi
+            fi
+            ;;
+    esac
     exec git --git-dir="${gitdir}" --work-tree="${checkout_dir}" "$@"
     # exec never returns; guard against a future edit accidentally falling
     # through to the dispatch's unknown-nook error after doing real work.
