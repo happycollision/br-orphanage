@@ -120,6 +120,7 @@ canonical_container() { printf '%s/nook/%s.nook\n' "$(common_git_dir)" "$1"; }
 canonical_worktree() {
     local name="$1" dir base
     dir=$(channel_dir "${name}" 2>/dev/null) || dir=""
+    dir="${dir%/}"
     base="${dir##*/}"
     if [[ -n "${base}" ]]; then
         printf '%s/%s\n' "$(canonical_container "${name}")" "${base}"
