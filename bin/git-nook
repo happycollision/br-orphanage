@@ -360,6 +360,9 @@ remove_exclude_entry() {
     mv "${tmp}" "${file}"
 }
 
+# STUB until the index task: no-op deindex. Returns 0.
+index_remove_entry() { return 0; }
+
 # Populate a nook's nested work-tree from the inner repo's committed HEAD.
 # Used only when the work-tree is the source of truth (absent / correct-symlink
 # / empty-real-dir cases) -- NEVER before migrating a legacy real dir, whose
@@ -1113,6 +1116,47 @@ cmd_remove() {
     echo "git-nook: removed nook '${slug}' locally (upstream untouched)."
 }
 
+cmd_destroy() {
+    require_work_tree
+    cd_to_toplevel
+    local partial="${1:-}"; shift || true
+    local yes=""
+    [[ "${1:-}" == "--yes" ]] && yes=1
+    [[ -n "${partial}" ]] || { err "usage: git nook -n <name> destroy --yes"; exit 1; }
+    local slug; slug=$(resolve_slug_prefix "${partial}") || exit 1
+    local gitdir url dir container_dir toplevel
+    gitdir=$(inner_git_dir "${slug}")
+    url=$(git --git-dir="${gitdir}" config --get remote.origin.url 2>/dev/null || printf '')
+
+    if [[ -z "${yes}" ]]; then
+        err "destroy is irreversible and deletes the published refs at ${url}"
+        err "re-run with --yes to confirm: git nook -n ${slug} destroy --yes"
+        exit 1
+    fi
+
+    if [[ -n "${url}" ]]; then
+        git --git-dir="${gitdir}" push --quiet "${url}" \
+            --delete "refs/nook/${slug}/files" "refs/nook/${slug}/manifest" 2>/dev/null \
+            || echo "git-nook: warning: could not delete upstream refs at ${url}" >&2
+        index_remove_entry "${gitdir}" "${url}" "${slug}" \
+            || echo "git-nook: warning: index deindex failed; run: git nook reindex" >&2
+    fi
+
+    dir=$(channel_dir "${slug}")
+    container_dir=$(canonical_container "${slug}")
+    toplevel=$(pwd)
+    if [[ -L "${toplevel}/${dir}" ]]; then
+        rm -f "${toplevel}/${dir}"
+    elif [[ -e "${toplevel}/${dir}" ]]; then
+        echo "git-nook: note: '${dir}' is not a git-nook symlink; leaving it in place." >&2
+    fi
+    git config --remove-section "nook.${slug}" 2>/dev/null || true
+    remove_exclude_entry "${dir}"
+    rm -rf "${gitdir}"
+    rm -rf "${container_dir}"
+    echo "git-nook: destroyed nook '${slug}' (local + upstream)."
+}
+
 run_passthrough() {
     local name="$1"; shift
     local gitdir checkout_dir
@@ -1194,6 +1238,8 @@ main() {
                     shift; cmd_show "${name}" "$@" ;;
                 remove)
                     shift; cmd_remove "${name}" "$@" ;;
+                destroy)
+                    shift; cmd_destroy "${name}" "$@" ;;
                 run)
                     shift
                     require_git_repo

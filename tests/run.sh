@@ -1614,6 +1614,35 @@ assert_true "host-tracked dir did not become a symlink" test ! -L "${CLR}/taken"
 RC2=$(cd "${CLR}"; "${NOOK}" clone beads "${CLONE_SHARED}" --dir ../escape >/dev/null 2>&1; echo $?)
 assert_eq "clone refuses escaping --dir" "1" "${RC2}"
 
+section "destroy: deletes upstream refs and local state"
+
+DS="${WORK}/ds"; make_project_repo "${DS}" yes dsproj
+( cd "${DS}"; "${NOOK}" init beads origin --dir .beads
+  echo z > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m seed; "${NOOK}" -n beads run push )
+DS_SLUG=$(cd "${DS}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+DS_ORIGIN="${WORK}/origins/dsproj.git"
+assert_contains "files ref present before destroy" \
+    "$(git ls-remote "${DS_ORIGIN}" "refs/nook/${DS_SLUG}/files")" "refs/nook/${DS_SLUG}/files"
+assert_contains "manifest ref present before destroy" \
+    "$(git ls-remote "${DS_ORIGIN}" "refs/nook/${DS_SLUG}/manifest")" "refs/nook/${DS_SLUG}/manifest"
+# Requires --yes; a bare destroy must refuse and change nothing.
+RC=$(cd "${DS}"; "${NOOK}" -n beads destroy >/dev/null 2>&1; echo $?)
+assert_eq "destroy without --yes refuses" "1" "${RC}"
+assert_contains "still configured after refusal" \
+    "$(cd "${DS}" && git config --get "nook.${DS_SLUG}.dir")" ".beads"
+assert_contains "files ref still there after refusal" \
+    "$(git ls-remote "${DS_ORIGIN}" "refs/nook/${DS_SLUG}/files")" "refs/nook/${DS_SLUG}/files"
+# With --yes: nukes upstream + local.
+( cd "${DS}"; "${NOOK}" -n beads destroy --yes )
+assert_eq "files ref gone after destroy" "" \
+    "$(git ls-remote "${DS_ORIGIN}" "refs/nook/${DS_SLUG}/files")"
+assert_eq "manifest ref gone after destroy" "" \
+    "$(git ls-remote "${DS_ORIGIN}" "refs/nook/${DS_SLUG}/manifest")"
+assert_true "local inner dir gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.git"
+assert_true "local container gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.nook"
+assert_true "local config gone" test -z "$(cd "${DS}" && git config --get "nook.${DS_SLUG}.dir" 2>/dev/null)"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
