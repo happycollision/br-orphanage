@@ -1314,6 +1314,31 @@ assert_eq "interrupted-migration: staged content intact" \
 assert_true "interrupted-migration: symlink resolves to nested work-tree" \
     test "$(cd "${INTR}/.beads" && pwd -P)" = "$(cd "${INTR_WT}" && pwd -P)"
 
+section "nested: interrupted migration with staged leftovers resumes, not orphans (regression)"
+ORPH=${WORK}/proj-migrate-orphan
+make_project_repo "${ORPH}" yes migrate-orphan-demo
+(cd "${ORPH}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+ORPH_COMMON=$(cd "${ORPH}" && git rev-parse --git-common-dir)
+ORPH_CONTAINER="$(cd "${ORPH}/${ORPH_COMMON}" && pwd)/nook/beads.nook"
+ORPH_WT="${ORPH_CONTAINER}/.beads"
+ORPH_STAGE="${ORPH_CONTAINER}/.git-nook-migrate"
+# Simulate a migration INTERRUPTED mid loop-2: staged leftover (untracked, precious),
+# a (possibly partial) work-tree dir, and the stale symlink still -> container.
+rm "${ORPH}/.beads"
+( shopt -s dotglob nullglob; for e in "${ORPH_WT}"/*; do mv "${e}" "${ORPH_CONTAINER}/"; done )
+rmdir "${ORPH_WT}"
+ln -s "${ORPH_CONTAINER}" "${ORPH}/.beads"
+mkdir -p "${ORPH_STAGE}"
+printf 'staged-precious\n' > "${ORPH_STAGE}/leftover.txt"   # untracked leftover from the interrupted run
+mkdir -p "${ORPH_WT}"
+printf 'partial\n' > "${ORPH_WT}/already-moved.txt"          # partial work-tree, non-empty (triggers the buggy detection path)
+(cd "${ORPH}" && "${NOOK}" materialize >/dev/null)
+assert_file_absent "orphan: stage dir cleaned up (not orphaned)" "${ORPH_STAGE}"
+assert_file_exists "orphan: staged leftover swept into work-tree" "${ORPH_WT}/leftover.txt"
+assert_eq "orphan: staged content intact" "staged-precious" "$(cat "${ORPH_WT}/leftover.txt")"
+assert_true "orphan: symlink resolves to work-tree" \
+    test "$(cd "${ORPH}/.beads" && pwd -P)" = "$(cd "${ORPH_WT}" && pwd -P)"
+
 section "nested: migration preserves uncommitted edits to tracked files (C1)"
 C1=${WORK}/proj-migrate-c1
 make_project_repo "${C1}" yes migrate-c1-demo

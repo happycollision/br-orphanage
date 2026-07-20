@@ -270,9 +270,13 @@ materialize_one() {
     # files/dirs directly, so even when one happens to collide in name with
     # basename(dir) (see the collision test) there is at least one OTHER
     # entry alongside it; an already-migrated container has nothing else --
-    # the work-tree dir is the sole entry. A stage dir left by an interrupted
-    # migration doesn't count as "migrated" (it's excluded from this count),
-    # so an interrupted migration correctly falls through to be resumed below.
+    # the work-tree dir is the sole entry. The entry scan itself ignores the
+    # transient stage dir's NAME (it must not count as an "other entry" that
+    # would defeat an otherwise-genuine already-migrated match), but a
+    # non-empty stage dir means a prior migration was interrupted mid-run,
+    # not that we are already migrated -- resumed below (the migration path's
+    # second loop sweeps the stage into the work-tree), never repointed. An
+    # empty/absent work-tree with no stage is the other case that resumes.
     if [[ -L "${content_path}" ]]; then
         t=$(cd "${content_path}" 2>/dev/null && pwd -P) || t=""
         if [[ -n "${t}" && "${t}" == "$(cd "${container_dir}" && pwd -P)" ]]; then
@@ -285,6 +289,12 @@ materialize_one() {
                       exit 1
                   done ) || only_entry=0
             else
+                only_entry=0
+            fi
+            # A populated staging dir means a prior migration was interrupted,
+            # not that we are already migrated -> resume (loop 2 below sweeps
+            # the stage into the work-tree), never repoint-only.
+            if [[ -d "${stage_probe}" ]] && [[ -n "$(ls -A "${stage_probe}" 2>/dev/null)" ]]; then
                 only_entry=0
             fi
             if [[ "${only_entry}" -eq 1 ]]; then
