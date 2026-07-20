@@ -213,6 +213,62 @@ canonical_worktree() {
     fi
 }
 
+# JSON-escape a scalar string value (quotes, backslashes, control chars).
+# bash-3.2 safe; handles the characters that appear in URLs/names/emails.
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\t'/\\t}"
+    s="${s//$'\r'/\\r}"
+    printf '%s' "${s}"
+}
+
+# Build manifest.json content from fields. Its own function so tests and
+# reindex can reuse it.
+manifest_json() {
+    local uuid="$1" name="$2" owner="$3" repo="$4" upstream="$5" user="$6" at="$7"
+    cat <<EOF
+{
+  "uuid": "$(json_escape "${uuid}")",
+  "name": "$(json_escape "${name}")",
+  "created": {
+    "owner": "$(json_escape "${owner}")",
+    "repo_dir": "$(json_escape "${repo}")",
+    "upstream": "$(json_escape "${upstream}")",
+    "user": "$(json_escape "${user}")",
+    "at": "$(json_escape "${at}")"
+  }
+}
+EOF
+}
+
+# Write manifest.json into a one-file tree and commit it to
+# refs/nook-meta/manifest in the inner repo (never on refs/heads/main).
+write_manifest_ref() {
+    local gd="$1" uuid="$2" name="$3" owner="$4" repo="$5" upstream="$6" user="$7" at="$8"
+    local blob tree commit
+    blob=$(manifest_json "${uuid}" "${name}" "${owner}" "${repo}" "${upstream}" "${user}" "${at}" \
+        | git --git-dir="${gd}" hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tmanifest.json\n' "${blob}" \
+        | git --git-dir="${gd}" mktree)
+    commit=$(printf 'nook manifest\n' \
+        | git --git-dir="${gd}" commit-tree "${tree}")
+    git --git-dir="${gd}" update-ref refs/nook-meta/manifest "${commit}"
+}
+
+# Read a top-level string field (uuid|name) or created.<field>
+# (owner|repo_dir|upstream|user|at) from the manifest.json committed at <ref>
+# in the inner repo. The manifest shape is fixed and machine-written, so a
+# line grep is safe.
+read_manifest_field() {
+    local gd="$1" ref="$2" field="$3" line
+    line=$(git --git-dir="${gd}" show "${ref}:manifest.json" 2>/dev/null \
+        | grep -E "\"${field}\"[[:space:]]*:" | head -n1) || return 1
+    printf '%s' "${line}" | sed -E 's/.*: *"(.*)".*/\1/'
+}
+
 # Prints "<owner>\t<project>" derived from the origin remote URL, falling
 # back to owner=local, project=<toplevel dirname> when there is no origin.
 owner_and_project() {

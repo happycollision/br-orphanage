@@ -1484,6 +1484,35 @@ assert_contains "ambiguous lists the other candidate" "${OUT}" "notes.f92.eve.ot
 assert_contains "narrowed prefix resolves uniquely" "${OUT}" "NARROW:notes.a3f.bob.projx"
 assert_contains "no match returns nonzero" "${OUT}" "NONE_RC:1"
 
+section "unit: manifest write to inner ref and read back"
+
+MF_REPO="${WORK}/mf-repo"
+make_project_repo "${MF_REPO}" yes mf
+( cd "${MF_REPO}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  cd "${MF_REPO}"
+  SLUG="beads.a3f.alice.proj"
+  git config "nook.${SLUG}.dir" ".beads"
+  gd=$(inner_git_dir "${SLUG}")
+  mkdir -p "$(dirname "${gd}")"
+  git init -q --bare "${gd}"
+  write_manifest_ref "${gd}" \
+    "a3f9c2e1-full-uuid" "beads" "alice" "my-proj" \
+    "git@github.com:alice/my-proj.git" "Alice <a@x>" "2026-07-20T00:00:00Z"
+  echo "UUID:$(read_manifest_field "${gd}" refs/nook-meta/manifest uuid)"
+  echo "NAME:$(read_manifest_field "${gd}" refs/nook-meta/manifest name)"
+  echo "OWNER:$(read_manifest_field "${gd}" refs/nook-meta/manifest owner)"
+  echo "REPO:$(read_manifest_field "${gd}" refs/nook-meta/manifest repo_dir)"
+  echo "UPSTREAM:$(read_manifest_field "${gd}" refs/nook-meta/manifest upstream)"
+) > "${WORK}/mf.out" 2>&1
+OUT=$(cat "${WORK}/mf.out")
+assert_contains "manifest uuid round-trips" "${OUT}" "UUID:a3f9c2e1-full-uuid"
+assert_contains "manifest name round-trips" "${OUT}" "NAME:beads"
+assert_contains "manifest owner round-trips" "${OUT}" "OWNER:alice"
+assert_contains "manifest repo_dir round-trips" "${OUT}" "REPO:my-proj"
+assert_contains "manifest upstream round-trips" "${OUT}" "UPSTREAM:git@github.com:alice/my-proj.git"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
