@@ -1097,9 +1097,17 @@ cmd_remove() {
         exit 1
     fi
 
+    # Remove the per-worktree content path defensively: only unlink a symlink.
+    # If it is a real directory (manually replaced, or a legacy flat layout),
+    # leave it in place rather than risk the user's files, and say so.
+    if [[ -L "${toplevel}/${dir}" ]]; then
+        rm -f "${toplevel}/${dir}"
+    elif [[ -e "${toplevel}/${dir}" ]]; then
+        echo "git-nook: note: '${dir}' is not a git-nook symlink; leaving it in place." >&2
+    fi
+
     git config --remove-section "nook.${slug}" 2>/dev/null || true
     remove_exclude_entry "${dir}"
-    rm -f "${toplevel}/${dir}"
     rm -rf "${gitdir}"
     rm -rf "${container_dir}"
     echo "git-nook: removed nook '${slug}' locally (upstream untouched)."

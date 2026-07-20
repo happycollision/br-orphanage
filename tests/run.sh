@@ -1000,6 +1000,19 @@ assert_true "still configured after refusal" test -n "$(cd "${RM2}" && git confi
 ( cd "${RM2}"; "${NOOK}" -n notes remove --force )
 assert_true "force removes despite unpushed" test -z "$(cd "${RM2}" && git config --get-regexp '^nook\..*\.dir$')"
 
+section "remove: real dir at content path is left in place, no stranded state"
+RM3="${WORK}/rm3"; make_project_repo "${RM3}" yes rm3
+( cd "${RM3}"; "${NOOK}" init beads origin --dir .beads
+  echo x > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+RM3_SLUG=$(cd "${RM3}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+# Replace the symlink with a real directory.
+( cd "${RM3}"; rm -f .beads; mkdir .beads; echo manual > .beads/keep )
+( cd "${RM3}"; "${NOOK}" -n beads remove )
+assert_true "config removed despite real dir" test -z "$(cd "${RM3}" && git config --get "nook.${RM3_SLUG}.dir" 2>/dev/null)"
+assert_true "inner git dir removed despite real dir" test ! -e "${RM3}/.git/nook/${RM3_SLUG}.git"
+assert_true "user real dir left in place" test -f "${RM3}/.beads/keep"
+
 section "remove: passthrough for a removed nook fails cleanly"
 
 RM_PROJ="${WORK}/proj-remove"
