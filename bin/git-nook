@@ -312,8 +312,112 @@ resolve_ref() {
     printf '%s\n' "${tpl}"
 }
 
-# STUB until the index task: no-op index update. Returns 0.
-index_add_entry() { return 0; }
+# --- Collection index (refs/nook/index) -------------------------------------
+# A derived, rebuildable cache: a commit whose tree holds info.json (a JSON
+# array of per-nook entries). Truth is the per-nook manifest refs; the index
+# only ever goes stale, never authoritatively wrong (rebuild via: git nook
+# reindex). Updates use compare-and-swap (git push --force-with-lease) so a
+# concurrent writer can't be silently clobbered.
+
+# Current remote index tip SHA (empty string if the ref doesn't exist yet).
+_index_tip() {
+    git ls-remote "$1" refs/nook/index 2>/dev/null | awk '{print $1}'
+}
+
+# Fetch the remote index's info.json (empty string if absent/unreadable).
+_index_show_json() {
+    local url="$1" tmp out=""
+    tmp=$(mktemp -d)
+    git init -q --bare "${tmp}/i.git"
+    if git --git-dir="${tmp}/i.git" fetch -q --depth 1 "${url}" \
+         refs/nook/index:refs/nook/index 2>/dev/null; then
+        out=$(git --git-dir="${tmp}/i.git" show refs/nook/index:info.json 2>/dev/null || printf '')
+    fi
+    rm -rf "${tmp}"
+    printf '%s' "${out}"
+}
+
+# Build one compact JSON object entry for a slug from its manifest in <gd>.
+_index_entry_json() {
+    local gd="$1" slug="$2" uuid name owner repo upstream user at
+    uuid=$(read_manifest_field "${gd}" refs/nook-meta/manifest uuid 2>/dev/null || printf '')
+    name=$(read_manifest_field "${gd}" refs/nook-meta/manifest name 2>/dev/null || printf '')
+    owner=$(read_manifest_field "${gd}" refs/nook-meta/manifest owner 2>/dev/null || printf '')
+    repo=$(read_manifest_field "${gd}" refs/nook-meta/manifest repo_dir 2>/dev/null || printf '')
+    upstream=$(read_manifest_field "${gd}" refs/nook-meta/manifest upstream 2>/dev/null || printf '')
+    user=$(read_manifest_field "${gd}" refs/nook-meta/manifest user 2>/dev/null || printf '')
+    at=$(read_manifest_field "${gd}" refs/nook-meta/manifest at 2>/dev/null || printf '')
+    printf '{"slug":"%s","uuid":"%s","name":"%s","owner":"%s","repo_dir":"%s","upstream":"%s","user":"%s","at":"%s"}' \
+        "$(json_escape "${slug}")" "$(json_escape "${uuid}")" "$(json_escape "${name}")" \
+        "$(json_escape "${owner}")" "$(json_escape "${repo}")" "$(json_escape "${upstream}")" \
+        "$(json_escape "${user}")" "$(json_escape "${at}")"
+}
+
+# Given the current array text (possibly empty), drop any entry for <slug>,
+# optionally append <entry> (may be empty to just drop), and print the
+# resulting compact JSON array. Splits objects on '},{'.
+_index_merge() {
+    local arr="$1" slug="$2" entry="$3" body piece kept="" first=1 out
+    arr="${arr#[}"; arr="${arr%]}"
+    body=$(printf '%s' "${arr}" | sed 's/},{/}\n{/g')
+    while IFS= read -r piece; do
+        [[ -n "${piece}" ]] || continue
+        case "${piece}" in
+            *"\"slug\":\"${slug}\""*) : ;;   # drop old entry for this slug
+            *) kept="${kept}${piece}"$'\n' ;;
+        esac
+    done < <(printf '%s\n' "${body}")
+    [[ -n "${entry}" ]] && kept="${kept}${entry}"$'\n'
+    out="["
+    while IFS= read -r piece; do
+        [[ -n "${piece}" ]] || continue
+        if [[ "${first}" -eq 1 ]]; then first=0; else out="${out},"; fi
+        out="${out}${piece}"
+    done < <(printf '%s\n' "${kept}")
+    out="${out}]"
+    printf '%s' "${out}"
+}
+
+# Push a new info.json (full array text) to refs/nook/index at <url> using
+# compare-and-swap against the tip we read (<oldtip>, empty if none existed).
+# Returns nonzero if the lease fails (concurrent writer moved it) or push
+# otherwise errors.
+_index_push() {
+    local url="$1" json="$2" oldtip="$3" tmp blob tree commit rc=0 lease
+    tmp=$(mktemp -d)
+    git init -q --bare "${tmp}/i.git"
+    if [[ -n "${oldtip}" ]]; then
+        git --git-dir="${tmp}/i.git" fetch -q --depth 1 "${url}" refs/nook/index:refs/nook/index 2>/dev/null || true
+    fi
+    blob=$(printf '%s' "${json}" | git --git-dir="${tmp}/i.git" hash-object -w --stdin)
+    tree=$(printf '100644 blob %s\tinfo.json\n' "${blob}" | git --git-dir="${tmp}/i.git" mktree)
+    if [[ -n "${oldtip}" ]]; then
+        commit=$(printf 'nook index\n' | git --git-dir="${tmp}/i.git" commit-tree -p "${oldtip}" "${tree}")
+    else
+        commit=$(printf 'nook index\n' | git --git-dir="${tmp}/i.git" commit-tree "${tree}")
+    fi
+    git --git-dir="${tmp}/i.git" update-ref refs/nook/index "${commit}"
+    # Compare-and-swap. Empty oldtip => lease expects the ref to NOT exist;
+    # this git accepts an empty expected-value in --force-with-lease=REF:VAL
+    # to mean exactly that (verified: create succeeds once, a second create
+    # attempt / concurrent mover causes the second push to be rejected).
+    lease="refs/nook/index:${oldtip}"
+    if ! git --git-dir="${tmp}/i.git" push -q --force-with-lease="${lease}" \
+         "${url}" refs/nook/index:refs/nook/index 2>/dev/null; then
+        rc=1
+    fi
+    rm -rf "${tmp}"
+    return "${rc}"
+}
+
+index_add_entry() {
+    local gd="$1" url="$2" slug="$3" existing entry merged oldtip
+    oldtip=$(_index_tip "${url}")
+    existing=$(_index_show_json "${url}")
+    entry=$(_index_entry_json "${gd}" "${slug}")
+    merged=$(_index_merge "${existing}" "${slug}" "${entry}")
+    _index_push "${url}" "${merged}" "${oldtip}"
+}
 
 validate_name() {
     local name="$1"
@@ -360,8 +464,14 @@ remove_exclude_entry() {
     mv "${tmp}" "${file}"
 }
 
-# STUB until the index task: no-op deindex. Returns 0.
-index_remove_entry() { return 0; }
+index_remove_entry() {
+    local gd="$1" url="$2" slug="$3" existing merged oldtip
+    oldtip=$(_index_tip "${url}")
+    [[ -n "${oldtip}" ]] || return 0   # no index published => nothing to deindex
+    existing=$(_index_show_json "${url}")
+    merged=$(_index_merge "${existing}" "${slug}" "")
+    _index_push "${url}" "${merged}" "${oldtip}"
+}
 
 # Populate a nook's nested work-tree from the inner repo's committed HEAD.
 # Used only when the work-tree is the source of truth (absent / correct-symlink
@@ -1161,6 +1271,48 @@ cmd_destroy() {
     echo "git-nook: destroyed nook '${slug}' (local + upstream)."
 }
 
+# Rebuild the collection index from truth (manifest refs) for every distinct
+# remote URL among locally configured nooks. Prints one line per URL
+# reindexed. Never touches nooks that publish elsewhere -- each URL's index
+# is rebuilt only from the local nooks that publish to it, so running this
+# from one checkout is complete as long as every nook publishing to a given
+# URL is configured somewhere reachable; running it from multiple checkouts
+# that each know a different subset of nooks converges after each has run.
+cmd_reindex() {
+    require_work_tree
+    cd_to_toplevel
+    local slug gd url seen="" want wgd wurl first entry json oldtip
+    while read -r slug; do
+        [[ -n "${slug}" ]] || continue
+        gd=$(inner_git_dir "${slug}")
+        [[ -d "${gd}" ]] || continue
+        url=$(git --git-dir="${gd}" config --get remote.origin.url 2>/dev/null || printf '')
+        [[ -n "${url}" ]] || continue
+        case "${seen}" in *"|${url}|"*) continue ;; esac
+        seen="${seen}|${url}|"
+        # Build info.json from every local nook publishing to this url.
+        first=1; json="["
+        while read -r want; do
+            [[ -n "${want}" ]] || continue
+            wgd=$(inner_git_dir "${want}")
+            [[ -d "${wgd}" ]] || continue
+            wurl=$(git --git-dir="${wgd}" config --get remote.origin.url 2>/dev/null || printf '')
+            [[ "${wurl}" == "${url}" ]] || continue
+            git --git-dir="${wgd}" rev-parse --verify -q refs/nook-meta/manifest >/dev/null 2>&1 || continue
+            entry=$(_index_entry_json "${wgd}" "${want}")
+            if [[ "${first}" -eq 1 ]]; then first=0; else json="${json},"; fi
+            json="${json}${entry}"
+        done < <(all_slugs)
+        json="${json}]"
+        oldtip=$(_index_tip "${url}")
+        if _index_push "${url}" "${json}" "${oldtip}"; then
+            echo "git-nook: reindexed ${url}"
+        else
+            echo "git-nook: warning: reindex push failed for ${url} (retry: git nook reindex)" >&2
+        fi
+    done < <(all_slugs)
+}
+
 run_passthrough() {
     local name="$1"; shift
     local gitdir checkout_dir
@@ -1215,6 +1367,7 @@ main() {
         clone)  shift; cmd_clone "$@" ;;
         list)   shift; cmd_list "$@" ;;
         materialize) shift; cmd_materialize "$@" ;;
+        reindex) shift; cmd_reindex "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;
         -h | --help | help | "") usage ;;
         -n | --name)

@@ -1656,6 +1656,49 @@ assert_eq "destroy aborts when upstream delete fails" "1" "${RC}"
 assert_true "local inner dir intact after abort" test -e "${DSF}/.git/nook/${DSF_SLUG}.git"
 assert_contains "config intact after abort" "$(cd "${DSF}" && git config --get "nook.${DSF_SLUG}.dir")" ".beads"
 
+section "index: init adds an entry; reindex rebuilds from manifests"
+
+IX_ORIGIN="${WORK}/origins/ixshared.git"; mkdir -p "$(dirname "${IX_ORIGIN}")"; git init -q --bare "${IX_ORIGIN}"
+IXA="${WORK}/ixa"; make_project_repo "${IXA}" no ixa
+( cd "${IXA}"; git remote add origin git@github.com:bob/ixa.git
+  "${NOOK}" init beads "${IX_ORIGIN}" --dir .beads
+  echo a > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+IDX=$(git ls-remote "${IX_ORIGIN}" refs/nook/index)
+assert_contains "index ref created by init" "${IDX}" "refs/nook/index"
+IXTMP="${WORK}/ixtmp.git"; git init -q --bare "${IXTMP}"
+git --git-dir="${IXTMP}" fetch -q --depth 1 "${IX_ORIGIN}" refs/nook/index:refs/nook/index
+INFO=$(git --git-dir="${IXTMP}" show refs/nook/index:info.json)
+assert_contains "info.json lists the beads slug" "${INFO}" "beads."
+assert_contains "info.json carries provenance owner" "${INFO}" "bob"
+
+section "reindex: rebuilds a wiped index from manifest refs"
+git --git-dir="${IXTMP}" push -q "${IX_ORIGIN}" --delete refs/nook/index
+assert_eq "index gone" "" "$(git ls-remote "${IX_ORIGIN}" refs/nook/index)"
+( cd "${IXA}"; "${NOOK}" reindex )
+assert_contains "reindex recreated the index" \
+    "$(git ls-remote "${IX_ORIGIN}" refs/nook/index)" "refs/nook/index"
+IXTMP2="${WORK}/ixtmp2.git"; git init -q --bare "${IXTMP2}"
+git --git-dir="${IXTMP2}" fetch -q --depth 1 "${IX_ORIGIN}" refs/nook/index:refs/nook/index
+INFO2=$(git --git-dir="${IXTMP2}" show refs/nook/index:info.json)
+assert_contains "reindexed info.json still lists beads" "${INFO2}" "beads."
+
+section "destroy: deindexes from the collection index"
+IXB="${WORK}/ixb"; make_project_repo "${IXB}" no ixb
+( cd "${IXB}"; git remote add origin git@github.com:carol/ixb.git
+  "${NOOK}" init notes "${IX_ORIGIN}" --dir notes
+  echo n > notes/f; "${NOOK}" -n notes run add --all
+  "${NOOK}" -n notes run commit -m s; "${NOOK}" -n notes run push )
+IXTMP3="${WORK}/ixtmp3.git"; git init -q --bare "${IXTMP3}"
+git --git-dir="${IXTMP3}" fetch -q --depth 1 "${IX_ORIGIN}" refs/nook/index:refs/nook/index
+assert_contains "index lists notes before destroy" \
+    "$(git --git-dir="${IXTMP3}" show refs/nook/index:info.json)" "notes."
+( cd "${IXB}"; "${NOOK}" -n notes destroy --yes )
+IXTMP4="${WORK}/ixtmp4.git"; git init -q --bare "${IXTMP4}"
+git --git-dir="${IXTMP4}" fetch -q --depth 1 "${IX_ORIGIN}" refs/nook/index:refs/nook/index
+INFO4=$(git --git-dir="${IXTMP4}" show refs/nook/index:info.json)
+assert_true "index no longer lists the destroyed notes slug" test -z "$(printf '%s' "${INFO4}" | grep -o 'notes\.[a-z0-9]*\.carol' || true)"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
