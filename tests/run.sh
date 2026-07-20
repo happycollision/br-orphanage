@@ -375,9 +375,9 @@ assert_true "content dir excluded (anchored, no trailing slash: it is a symlink)
 
 assert_true "content path is a symlink" test -L "${ADD_PROJ}/notes"
 ADD_CANON=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
-ADD_CANON="$(cd "${ADD_PROJ}/${ADD_CANON}" && pwd)/nook/notes.nook"
-assert_dir_exists "canonical checkout dir exists" "${ADD_CANON}"
-assert_eq "symlink points at canonical checkout" \
+ADD_CANON="$(cd "${ADD_PROJ}/${ADD_CANON}" && pwd)/nook/notes.nook/notes"
+assert_dir_exists "nested work-tree dir exists" "${ADD_CANON}"
+assert_eq "symlink points at nested work-tree" \
     "$(cd "${ADD_PROJ}/notes" && pwd -P)" "$(cd "${ADD_CANON}" && pwd -P)"
 
 inner_cfg() { git --git-dir="${ADD_GITDIR}" config --get "$1"; }
@@ -421,9 +421,9 @@ assert_dir_exists "explicit dotted --dir honored" "${ADD_PROJ}/.secret"
 assert_true "explicit dotted dir excluded" grep -qxF '/.secret' "${ADD_EXCLUDE}"
 assert_true "explicit dotted dir is a symlink" test -L "${ADD_PROJ}/.secret"
 SECRET_CANON=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
-SECRET_CANON="$(cd "${ADD_PROJ}/${SECRET_CANON}" && pwd)/nook/secret.nook"
-assert_dir_exists "canonical checkout dir exists" "${SECRET_CANON}"
-assert_eq "symlink points at canonical checkout" \
+SECRET_CANON="$(cd "${ADD_PROJ}/${SECRET_CANON}" && pwd)/nook/secret.nook/.secret"
+assert_dir_exists "nested work-tree dir exists" "${SECRET_CANON}"
+assert_eq "symlink points at nested work-tree" \
     "$(cd "${ADD_PROJ}/.secret" && pwd -P)" "$(cd "${SECRET_CANON}" && pwd -P)"
 
 section "exclude: entry has no trailing slash and remove cleans legacy forms"
@@ -504,9 +504,9 @@ make_project_repo "${PT_PROJ}" yes "pt-demo"
 
 assert_true "content path is a symlink" test -L "${PT_PROJ}/notes"
 PT_CANON=$(cd "${PT_PROJ}" && git rev-parse --git-common-dir)
-PT_CANON="$(cd "${PT_PROJ}/${PT_CANON}" && pwd)/nook/notes.nook"
-assert_dir_exists "canonical checkout dir exists" "${PT_CANON}"
-assert_eq "symlink points at canonical checkout" \
+PT_CANON="$(cd "${PT_PROJ}/${PT_CANON}" && pwd)/nook/notes.nook/notes"
+assert_dir_exists "nested work-tree dir exists" "${PT_CANON}"
+assert_eq "symlink points at nested work-tree" \
     "$(cd "${PT_PROJ}/notes" && pwd -P)" "$(cd "${PT_CANON}" && pwd -P)"
 
 printf 'hello nook\n' > "${PT_PROJ}/notes/first.md"
@@ -826,8 +826,8 @@ AM=${WORK}/proj-add-migrate; make_project_repo "${AM}" yes addmig
 mkdir -p "${AM}/.data"; printf 'pre\n' > "${AM}/.data/pre.txt"
 (cd "${AM}" && "${NOOK}" add data origin --dir .data >/dev/null)
 assert_true "add migrated pre-existing dir to a symlink" test -L "${AM}/.data"
-AM_CANON=$(cd "${AM}" && git rev-parse --git-common-dir); AM_CANON="$(cd "${AM}/${AM_CANON}" && pwd)/nook/data.nook"
-assert_file_exists "pre-existing content moved into canonical checkout" "${AM_CANON}/pre.txt"
+AM_CANON=$(cd "${AM}" && git rev-parse --git-common-dir); AM_CANON="$(cd "${AM}/${AM_CANON}" && pwd)/nook/data.nook/.data"
+assert_file_exists "pre-existing content moved into nested work-tree" "${AM_CANON}/pre.txt"
 assert_file_exists "pre-existing content reachable via symlink" "${AM}/.data/pre.txt"
 
 # --- two clones: concurrency and conflicts ----------------------------------------
@@ -1097,12 +1097,12 @@ section "materialize: migrates a legacy real dir when the checkout is empty"
 MZ2=${WORK}/proj-migrate-ok; make_project_repo "${MZ2}" yes migrate-ok
 (cd "${MZ2}" && "${NOOK}" add docs origin --dir docsdir)   # no leading period on purpose
 rm "${MZ2}/docsdir"                     # remove the symlink add created
-CDIR=$(cd "${MZ2}" && git rev-parse --git-common-dir); CDIR="$(cd "${MZ2}/${CDIR}" && pwd)/nook/docs.nook"
-rm -rf "${CDIR:?}/"* 2>/dev/null || true  # ensure canonical checkout is empty
+CDIR=$(cd "${MZ2}" && git rev-parse --git-common-dir); CDIR="$(cd "${MZ2}/${CDIR}" && pwd)/nook/docs.nook/docsdir"
+rm -rf "${CDIR:?}/"* 2>/dev/null || true  # ensure nested work-tree is empty
 mkdir -p "${MZ2}/docsdir"; printf 'legacy\n' > "${MZ2}/docsdir/old.txt"
 (cd "${MZ2}" && "${NOOK}" materialize >/dev/null)
 assert_true "migrated real dir becomes a symlink" test -L "${MZ2}/docsdir"
-assert_file_exists "legacy content moved into canonical checkout" "${CDIR}/old.txt"
+assert_file_exists "legacy content moved into nested work-tree" "${CDIR}/old.txt"
 assert_file_exists "legacy content reachable via symlink" "${MZ2}/docsdir/old.txt"
 
 section "materialize: upgrades a legacy real-dir nook that has commit history"
@@ -1130,8 +1130,8 @@ assert_true "precondition: not a symlink yet" bash -c '[ ! -L "'"${UP}"'/.legacy
 UP_OUT=$(cd "${UP}" && "${NOOK}" materialize 2>&1); UP_RC=$?
 assert_eq "materialize succeeds on a legacy nook with history (out: ${UP_OUT})" "0" "${UP_RC}"
 assert_true "legacy dir became a symlink" test -L "${UP}/.legacy"
-UP_CANON=$(cd "${UP}" && git rev-parse --git-common-dir); UP_CANON="$(cd "${UP}/${UP_CANON}" && pwd)/nook/legacy.nook"
-assert_file_exists "legacy content migrated into canonical checkout" "${UP_CANON}/data.txt"
+UP_CANON=$(cd "${UP}" && git rev-parse --git-common-dir); UP_CANON="$(cd "${UP}/${UP_CANON}" && pwd)/nook/legacy.nook/.legacy"
+assert_file_exists "legacy content migrated into nested work-tree" "${UP_CANON}/data.txt"
 assert_file_exists "legacy content reachable via symlink" "${UP}/.legacy/data.txt"
 # passthrough works and history is intact
 UP_LOG=$(cd "${UP}" && "${NOOK}" -n legacy run log --oneline)
@@ -1232,6 +1232,51 @@ assert_dir_exists "nested work-tree dir exists" "${NESTM_WT}"
 assert_eq "symlink target basename is .beads" ".beads" "$(basename "$(cd "${NESTM}/.beads" && pwd -P)")"
 assert_eq "symlink resolves to the nested work-tree" \
     "$(cd "${NESTM}/.beads" && pwd -P)" "$(cd "${NESTM_WT}" && pwd -P)"
+
+section "nested: materialize migrates an old flat checkout to nested layout"
+MIG=${WORK}/proj-migrate-nested
+make_project_repo "${MIG}" yes migrate-nested-demo
+(cd "${MIG}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+MIG_COMMON=$(cd "${MIG}" && git rev-parse --git-common-dir)
+MIG_CONTAINER="$(cd "${MIG}/${MIG_COMMON}" && pwd)/nook/beads.nook"
+MIG_WT="${MIG_CONTAINER}/.beads"
+# Simulate the OLD flat layout: content directly in the container, symlink -> container.
+rm "${MIG}/.beads"
+( shopt -s dotglob nullglob; for e in "${MIG_WT}"/*; do mv "${e}" "${MIG_CONTAINER}/"; done )
+rmdir "${MIG_WT}"
+ln -s "${MIG_CONTAINER}" "${MIG}/.beads"
+echo '{"id":"mig1"}' > "${MIG_CONTAINER}/issues.jsonl"
+mkdir -p "${MIG_CONTAINER}/.br_history"; echo hist > "${MIG_CONTAINER}/.br_history/h1"
+(cd "${MIG}" && "${NOOK}" materialize >/dev/null)
+assert_true "post-migration content path is a symlink" test -L "${MIG}/.beads"
+assert_eq "symlink now resolves to the nested work-tree" \
+    "$(cd "${MIG}/.beads" && pwd -P)" "$(cd "${MIG_WT}" && pwd -P)"
+assert_file_exists "flat file migrated into nested work-tree" "${MIG_WT}/issues.jsonl"
+assert_file_exists "flat subdir file migrated too" "${MIG_WT}/.br_history/h1"
+assert_file_absent "no leftover issues.jsonl at container top level" "${MIG_CONTAINER}/issues.jsonl"
+(cd "${MIG}" && "${NOOK}" materialize >/dev/null)
+assert_eq "second materialize keeps nested target" \
+    "$(cd "${MIG}/.beads" && pwd -P)" "$(cd "${MIG_WT}" && pwd -P)"
+assert_file_exists "content still present after idempotent re-run" "${MIG_WT}/issues.jsonl"
+
+section "nested: migration handles a tracked entry named basename(dir)"
+COL=${WORK}/proj-migrate-collision
+make_project_repo "${COL}" yes migrate-collision-demo
+(cd "${COL}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+COL_COMMON=$(cd "${COL}" && git rev-parse --git-common-dir)
+COL_CONTAINER="$(cd "${COL}/${COL_COMMON}" && pwd)/nook/beads.nook"
+COL_WT="${COL_CONTAINER}/.beads"
+rm "${COL}/.beads"
+( shopt -s dotglob nullglob; for e in "${COL_WT}"/*; do mv "${e}" "${COL_CONTAINER}/"; done )
+rmdir "${COL_WT}"
+ln -s "${COL_CONTAINER}" "${COL}/.beads"
+# tracked content includes a dir literally named .beads (same as basename(dir))
+mkdir -p "${COL_CONTAINER}/.beads"; echo inner > "${COL_CONTAINER}/.beads/nested.txt"
+echo top > "${COL_CONTAINER}/top.txt"
+(cd "${COL}" && "${NOOK}" materialize >/dev/null)
+assert_true "collision: content path is a symlink" test -L "${COL}/.beads"
+assert_file_exists "collision: top-level tracked file migrated" "${COL_WT}/top.txt"
+assert_file_exists "collision: same-named tracked dir migrated intact" "${COL_WT}/.beads/nested.txt"
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 

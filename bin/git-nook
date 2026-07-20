@@ -65,8 +65,8 @@ require_work_tree() {
 
 # Looser than require_work_tree: succeeds anywhere git can resolve a repo,
 # INCLUDING physically inside a .git dir. The passthrough dispatch needs this
-# because a materialized nook's content path is a symlink into the canonical
-# checkout under the parent's .git/, so `cd`-ing into a nook lands cwd inside
+# because a materialized nook's content path is a symlink into the nested
+# work-tree under the parent's .git/, so `cd`-ing into a nook lands cwd inside
 # .git — where --is-inside-work-tree prints "false" but run_passthrough still
 # works (it only needs common_git_dir). Rejecting that would break passthrough.
 require_git_repo() {
@@ -128,12 +128,6 @@ canonical_worktree() {
         canonical_container "${name}"
     fi
 }
-
-# TEMPORARY shim: kept only until the last stale-name references (e.g. test
-# assertions still expecting a symlink target of the container itself) are
-# migrated; no production call site uses it anymore. Safe to delete once
-# nothing references it.
-canonical_checkout() { canonical_container "$1"; }
 
 # Prints "<owner>\t<project>" derived from the origin remote URL, falling
 # back to owner=local, project=<toplevel dirname> when there is no origin.
@@ -223,11 +217,11 @@ remove_exclude_entry() {
     mv "${tmp}" "${file}"
 }
 
-# Populate a nook's canonical checkout from the inner repo's committed HEAD.
-# Used only when the checkout is the source of truth (absent / correct-symlink
+# Populate a nook's nested work-tree from the inner repo's committed HEAD.
+# Used only when the work-tree is the source of truth (absent / correct-symlink
 # / empty-real-dir cases) -- NEVER before migrating a legacy real dir, whose
 # on-disk files are themselves the authoritative content. Unborn/empty HEAD is
-# a clean no-op (leave the checkout empty). Returns 1 on a real checkout error.
+# a clean no-op (leave the work-tree empty). Returns 1 on a real checkout error.
 populate_checkout_from_head() {
     local gitdir="$1" checkout_dir="$2"
     if git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -239,9 +233,9 @@ populate_checkout_from_head() {
 }
 
 # Ensure a single nook is correctly materialized in the CURRENT worktree: the
-# canonical checkout exists, and the configured path is a symlink to it
-# (migrating an old real dir if present). Callers must already have cd'd to
-# the parent repo toplevel.
+# nook's nested work-tree exists, and the configured path is a symlink to it
+# (migrating an old real dir, or an old flat container layout, if present).
+# Callers must already have cd'd to the parent repo toplevel.
 materialize_one() {
     local name="$1" toplevel dir container_dir checkout_dir gitdir content_path t checkout_real c_has d_has
     toplevel=$(git rev-parse --show-toplevel)
@@ -251,27 +245,46 @@ materialize_one() {
     gitdir=$(inner_git_dir "${name}")
     content_path="${toplevel}/${dir}"
 
-    # Ensure the container and the nested work-tree dir exist (empty for now).
-    mkdir -p "${checkout_dir}"
-
     # MIGRATION: an old flat layout has tracked files directly in the container
     # and a symlink pointing at the container (not the nested work-tree). Detect
     # by the symlink's resolved target, never by content names. Move the flat
     # files down into the nested work-tree, then fall through to normal symlink
     # reconciliation (which will repoint at the work-tree).
+    #
+    # Detection must run BEFORE the nested work-tree dir is created: if it were
+    # created first, a tracked container entry that happens to be named
+    # basename(dir) would be indistinguishable from the just-created work-tree
+    # dir, and the "skip the work-tree we just made" check below would wrongly
+    # skip that tracked entry (or collide with it). So migration stages every
+    # container entry into a throwaway staging dir FIRST (a name that cannot
+    # collide with anything tracked), and only then creates the nested
+    # work-tree and moves the staged entries into it.
     if [[ -L "${content_path}" ]]; then
         t=$(cd "${content_path}" 2>/dev/null && pwd -P) || t=""
         if [[ -n "${t}" && "${t}" == "$(cd "${container_dir}" && pwd -P)" ]]; then
-            # symlink still points at the container -> old flat layout. Move every
-            # container entry EXCEPT the nested work-tree dir itself down into it.
+            # symlink still points at the container -> old flat layout.
+            local stage="${container_dir}/.git-nook-migrate"
+            rm -rf "${stage}"   # clean up any leftovers from a prior interrupted migration
+            mkdir "${stage}" || { err "could not stage migration for '${name}'"; return 1; }
             ( shopt -s dotglob nullglob
               for e in "${container_dir}"/*; do
-                  [[ "${e}" == "${checkout_dir}" ]] && continue
+                  [[ "${e}" == "${stage}" ]] && continue
+                  mv "${e}" "${stage}/" || { err "failed to stage '${e}' for migration"; exit 1; }
+              done ) || { rm -rf "${stage}"; return 1; }
+            mkdir -p "${checkout_dir}"
+            ( shopt -s dotglob nullglob
+              for e in "${stage}"/*; do
                   mv "${e}" "${checkout_dir}/" || { err "failed to migrate '${e}' into '${checkout_dir}'"; exit 1; }
               done ) || return 1
+            rmdir "${stage}" || { err "could not remove migration staging dir '${stage}'"; return 1; }
             rm -f "${content_path}"   # drop the stale symlink; re-created below
         fi
     fi
+
+    # Ensure the nested work-tree dir exists (empty for now). Already created
+    # above when a flat-layout migration ran; this is a no-op in that case and
+    # covers every other path (fresh add, correct symlink, absent).
+    mkdir -p "${checkout_dir}"
 
     # Reconcile the per-worktree path content_path against the work-tree.
     if [[ -L "${content_path}" ]]; then
@@ -430,9 +443,9 @@ cmd_add() {
         exit 1
     fi
 
-    # Bookkeeping for rollback: whether THIS run created the canonical
-    # checkout dir and/or the per-worktree symlink, so a failure can undo
-    # exactly what it made and nothing the user already had.
+    # Bookkeeping for rollback: whether THIS run created the container dir
+    # and/or the per-worktree symlink, so a failure can undo exactly what it
+    # made and nothing the user already had.
     local made_ckout="" made_link=""
 
     mkdir -p "$(dirname "${gitdir}")"
@@ -454,12 +467,13 @@ cmd_add() {
 
     # Materialize as a fresh local nook first (mirrors the old code's eager
     # mkdir -p "${dir}"): this migrates a pre-existing untracked ${dir} into
-    # the canonical checkout and symlinks it in, regardless of whether a
+    # the nook's nested work-tree and symlinks it in, regardless of whether a
     # remote ref turns out to exist below. If a remote ref IS found and is
     # safe to adopt, the bootstrap step below overlays real content on top.
-    # made_ckout tracks whether the checkout had no real content of its own
-    # before this add ran (an empty or absent dir is not meaningful prior
-    # state), so a later failure's rollback can safely remove it.
+    # made_ckout tracks whether the container had no real content of its own
+    # before this add ran (an empty or absent container is not meaningful
+    # prior state), so a later failure's rollback can safely rm -rf the whole
+    # container.
     [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
     if ! materialize_one "${name}"; then
         rollback_add "${name}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
@@ -477,7 +491,7 @@ cmd_add() {
 
     # Would bootstrapping clobber local content? materialize_one above
     # already made ${dir} a symlink to ${checkout_dir}, so checking the
-    # canonical checkout's contents covers both.
+    # nested work-tree's contents covers both.
     if [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]]; then
         echo "git-nook: note: ${ref} already exists at the target and ${dir}/ is not empty."
         echo "git-nook: commit your local files, then reconcile:"
@@ -602,16 +616,18 @@ run_passthrough() {
     # Deliberately do NOT call `git rev-parse --show-toplevel` here (nor
     # anything else that requires a configured work tree). The caller's cwd
     # may be physically inside the parent's .git dir: the per-worktree
-    # content path is a symlink to the canonical checkout under
-    # <common-git-dir>/nook/<name>.nook, so `cd`-ing into a nook (directly,
-    # or via a shell that resolves symlinks) puts $PWD there. From such a
-    # cwd, git's ambient discovery still resolves --git-dir/--git-common-dir
-    # and config correctly (it just walks up to the real .git that contains
-    # the cwd) but --show-toplevel refuses ("fatal: this operation must be
-    # run in a work tree") because there is no work tree configured for that
-    # location. inner_git_dir/canonical_checkout only need common_git_dir,
-    # which is exactly the primitive that keeps working here — so route
-    # everything through that instead of toplevel.
+    # content path is a symlink to the nook's nested work-tree under
+    # <common-git-dir>/nook/<name>.nook/<basename(dir)>, so `cd`-ing into a
+    # nook (directly, or via a shell that resolves symlinks) puts $PWD there.
+    # From such a cwd, git's ambient discovery still resolves
+    # --git-dir/--git-common-dir and config correctly (it just walks up to
+    # the real .git that contains the cwd) but --show-toplevel refuses
+    # ("fatal: this operation must be run in a work tree") because there is
+    # no work tree configured for that location. inner_git_dir only needs
+    # common_git_dir; canonical_worktree additionally reads the
+    # nook.<name>.dir config via channel_dir, which git resolves fine even
+    # from inside .git. Both keep working here — so route everything through
+    # those instead of toplevel.
     gitdir=$(inner_git_dir "${name}")
     checkout_dir=$(canonical_worktree "${name}")
     if [[ ! -d "${gitdir}" ]]; then
