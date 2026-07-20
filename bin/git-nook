@@ -681,6 +681,110 @@ cmd_init() {
     fi
 }
 
+# List candidate slugs on a remote matching <name>, via ls-remote on the
+# content refs. Prints matching slugs (one per line).
+remote_slugs_for_name() {
+    local url="$1" name="$2" ref slug
+    git ls-remote "${url}" 'refs/nook/*/files' 2>/dev/null | while read -r _ ref; do
+        slug="${ref#refs/nook/}"; slug="${slug%/files}"
+        case "${slug}" in
+            "${name}".*) printf '%s\n' "${slug}" ;;
+        esac
+    done
+}
+
+cmd_clone() {
+    require_work_tree
+    cd_to_toplevel
+    local toplevel; toplevel=$(pwd)
+
+    local name="" target="" dir=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dir) [[ $# -ge 2 ]] || { err "--dir requires a value"; exit 1; }; dir="$2"; shift 2 ;;
+            -*) err "unknown clone option '$1'"; exit 1 ;;
+            *) if [[ -z "${name}" ]]; then name="$1"
+               elif [[ -z "${target}" ]]; then target="$1"
+               else err "unexpected extra argument '$1'"; exit 1; fi; shift ;;
+        esac
+    done
+    [[ -n "${name}" && -n "${target}" ]] || { err "usage: git nook clone <name> <target-url-or-remote> [--dir <d>]"; exit 1; }
+
+    local url
+    if url=$(git remote get-url "${target}" 2>/dev/null); then :
+    elif [[ "${target}" == *[:/]* ]]; then url="${target}"
+    else err "'${target}' is not a remote in this repo (and doesn't look like a URL)"; exit 1; fi
+
+    local candidates chosen count
+    candidates=$(remote_slugs_for_name "${url}" "${name}")
+    candidates=$(printf '%s\n' "${candidates}" | grep -v '^$' || true)
+    count=$(printf '%s\n' "${candidates}" | grep -c '.' || true)
+    if [[ "${count}" -eq 0 ]]; then
+        err "no nook named '${name}' found at ${url}; create one with: git nook init ${name} ${target}"; exit 1
+    elif [[ "${count}" -eq 1 ]]; then
+        chosen="${candidates}"
+    else
+        echo "Multiple nooks named '${name}' at ${url}:" >&2
+        local i=0 s
+        while read -r s; do
+            [[ -n "${s}" ]] || continue
+            i=$((i+1)); printf '  %d) %s\n' "${i}" "${s}" >&2
+        done < <(printf '%s\n' "${candidates}")
+        printf 'Choose [1-%d]: ' "${i}" >&2
+        local pick; read -r pick
+        chosen=$(printf '%s\n' "${candidates}" | sed -n "${pick}p")
+        [[ -n "${chosen}" ]] || { err "invalid choice"; exit 1; }
+    fi
+
+    [[ -n "${dir}" ]] || dir="${name}"
+    dir="${dir%/}"
+
+    if channel_dir "${chosen}" >/dev/null 2>&1; then
+        err "nook '${chosen}' already exists locally"; exit 1
+    fi
+
+    local files_ref meta_ref gitdir checkout_dir container_dir made_ckout="" made_link=""
+    files_ref="refs/nook/${chosen}/files"
+    meta_ref="refs/nook/${chosen}/manifest"
+    gitdir=$(inner_git_dir "${chosen}")
+    [[ -e "${gitdir}" ]] && { err "an inner repo already exists at ${gitdir}"; exit 1; }
+
+    mkdir -p "$(dirname "${gitdir}")"
+    git init --quiet --bare "${gitdir}"
+    git --git-dir="${gitdir}" symbolic-ref HEAD refs/heads/main
+    git --git-dir="${gitdir}" config core.bare false
+    git --git-dir="${gitdir}" config core.autocrlf false
+    git --git-dir="${gitdir}" config remote.origin.url "${url}"
+    git --git-dir="${gitdir}" config remote.origin.fetch "+${files_ref}:refs/remotes/origin/main"
+    git --git-dir="${gitdir}" config remote.origin.push "refs/nook-meta/manifest:${meta_ref}"
+    git --git-dir="${gitdir}" config --add remote.origin.push "refs/heads/main:${files_ref}"
+    git --git-dir="${gitdir}" config branch.main.remote origin
+    git --git-dir="${gitdir}" config branch.main.merge "${files_ref}"
+
+    git config "nook.${chosen}.dir" "${dir}"
+    checkout_dir=$(canonical_worktree "${chosen}")
+    container_dir=$(canonical_container "${chosen}")
+
+    git --git-dir="${gitdir}" fetch -q origin || true
+    git --git-dir="${gitdir}" fetch -q origin "${meta_ref}:refs/nook-meta/manifest" 2>/dev/null || true
+
+    [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
+    if git --git-dir="${gitdir}" rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then
+        git --git-dir="${gitdir}" update-ref refs/heads/main refs/remotes/origin/main
+        # A plain fetch + update-ref never touches the index (unlike a real
+        # `git clone`, which checks out afterward). Seed it from the newly
+        # fetched HEAD so materialize_one's populate_checkout_from_head --
+        # which does a plain `checkout -- .` against the index, not HEAD --
+        # has something to check out instead of failing on an empty index.
+        git --git-dir="${gitdir}" read-tree HEAD
+    fi
+    if ! materialize_one "${chosen}"; then
+        rollback_add "${chosen}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
+        err "clone of ${chosen} failed; rolled back"; exit 1
+    fi
+    echo "git-nook: cloned ${chosen} -> ${dir}/"
+}
+
 cmd_add() {
     require_work_tree
     cd_to_toplevel
@@ -999,6 +1103,7 @@ main() {
     case "${1:-}" in
         add)    shift; cmd_add "$@" ;;
         init)   shift; cmd_init "$@" ;;
+        clone)  shift; cmd_clone "$@" ;;
         list)   shift; cmd_list "$@" ;;
         materialize) shift; cmd_materialize "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;
@@ -1012,6 +1117,17 @@ main() {
             name="$2"
             shift 2
             validate_name "${name}" || exit 1
+            # Resolve a plain/partial name to its slug when there's no exact
+            # config key for it (e.g. init/clone-produced slugs carry a
+            # provenance suffix the user didn't type). Ambiguous or no-match
+            # falls through to the exact-match error paths below, preserving
+            # existing messages for those cases.
+            if ! channel_dir "${name}" >/dev/null 2>&1; then
+                local resolved
+                if resolved=$(resolve_slug_prefix "${name}" 2>/dev/null) && [[ -n "${resolved}" ]]; then
+                    name="${resolved}"
+                fi
+            fi
             case "${1:-}" in
                 show)
                     shift; cmd_show "${name}" "$@" ;;

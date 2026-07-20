@@ -1548,6 +1548,30 @@ assert_contains "manifest ref published to remote at init" \
 assert_eq "files ref NOT yet published at init (main unborn)" "" \
     "$(git ls-remote "${IN_ORIGIN}" "refs/nook/${IN_SLUG}/files")"
 
+section "clone: fetches an existing nook by name"
+
+# Producer repo inits a nook and pushes content to a shared bare origin.
+CLONE_SHARED="${WORK}/origins/shared-nooks.git"
+mkdir -p "$(dirname "${CLONE_SHARED}")"; git init -q --bare "${CLONE_SHARED}"
+CLONE_PROD="${WORK}/clone-prod-repo"
+make_project_repo "${CLONE_PROD}" no prod
+( cd "${CLONE_PROD}"
+  git remote add origin "git@github.com:bob/prod.git"   # provenance only
+  "${NOOK}" init beads "${CLONE_SHARED}" --dir .beads
+  echo "hi" > .beads/issues.jsonl
+  "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m "seed"
+  "${NOOK}" -n beads run push
+)
+# Consumer clones by name into a fresh repo.
+CLONE_CONS="${WORK}/clone-cons-repo"
+make_project_repo "${CLONE_CONS}" no cons
+( cd "${CLONE_CONS}"
+  "${NOOK}" clone beads "${CLONE_SHARED}" --dir .beads
+)
+assert_true "consumer has a symlinked .beads" test -L "${CLONE_CONS}/.beads"
+assert_contains "cloned content present" "$(cat "${CLONE_CONS}/.beads/issues.jsonl" 2>/dev/null)" "hi"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
