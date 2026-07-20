@@ -1456,6 +1456,34 @@ assert_contains "inner_git_dir uses slug" "$(cat "${WORK}/ph.out")" "GDOK"
 assert_contains "canonical_container uses slug" "$(cat "${WORK}/ph.out")" "CDOK"
 assert_contains "canonical_worktree nests basename" "$(cat "${WORK}/ph.out")" "WTOK"
 
+section "unit: resolve_slug_prefix matches minimal left-anchored prefix"
+
+RP_REPO="${WORK}/rp-repo"
+make_project_repo "${RP_REPO}" yes rp
+( cd "${RP_REPO}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  cd "${RP_REPO}"
+  git config "nook.beads.7c1.bob.projx.dir" ".beads"
+  git config "nook.notes.a3f.bob.projx.dir" "notes"
+  git config "nook.notes.f92.eve.other.dir" "n2"
+
+  echo "UNIQ:$(resolve_slug_prefix 'beads' 2>&1)"
+  echo "EXACT:$(resolve_slug_prefix 'beads.7c1.bob.projx' 2>&1)"
+  echo "AMBIG_RC:$(resolve_slug_prefix 'notes' >/dev/null 2>&1; echo $?)"
+  echo "AMBIG_MSG:$(resolve_slug_prefix 'notes' 2>&1 || true)"
+  echo "NARROW:$(resolve_slug_prefix 'notes.a3f' 2>&1)"
+  echo "NONE_RC:$(resolve_slug_prefix 'zzz' >/dev/null 2>&1; echo $?)"
+) > "${WORK}/rp.out" 2>&1
+OUT=$(cat "${WORK}/rp.out")
+assert_contains "unique name resolves to full slug" "${OUT}" "UNIQ:beads.7c1.bob.projx"
+assert_contains "exact slug resolves to itself" "${OUT}" "EXACT:beads.7c1.bob.projx"
+assert_contains "ambiguous prefix returns nonzero" "${OUT}" "AMBIG_RC:1"
+assert_contains "ambiguous lists both candidates" "${OUT}" "notes.a3f.bob.projx"
+assert_contains "ambiguous lists the other candidate" "${OUT}" "notes.f92.eve.other"
+assert_contains "narrowed prefix resolves uniquely" "${OUT}" "NARROW:notes.a3f.bob.projx"
+assert_contains "no match returns nonzero" "${OUT}" "NONE_RC:1"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

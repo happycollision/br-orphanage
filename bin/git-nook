@@ -132,6 +132,47 @@ cd_to_toplevel() {
 # Config is keyed by SLUG: nook.<slug>.dir
 channel_dir() { local slug="$1"; git config --get "nook.${slug}.dir"; }
 
+# List all configured slugs (one per line). Keyed by nook.<slug>.dir.
+all_slugs() {
+    local key
+    while read -r key _; do
+        [[ -n "${key}" ]] || continue
+        key="${key#nook.}"; key="${key%.dir}"
+        printf '%s\n' "${key}"
+    done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
+}
+
+# Resolve a user-supplied partial to exactly one configured slug by minimal
+# left-anchored prefix. Prints the full slug on success. On zero matches:
+# error + return 1. On multiple: error listing candidates + return 1.
+resolve_slug_prefix() {
+    local partial="$1" s matches=""
+    while read -r s; do
+        [[ -n "${s}" ]] || continue
+        # Exact match wins immediately.
+        if [[ "${s}" == "${partial}" ]]; then
+            printf '%s\n' "${s}"
+            return 0
+        fi
+        if [[ "${s}" == "${partial}"* ]]; then
+            matches="${matches}${s}"$'\n'
+        fi
+    done < <(all_slugs)
+    matches="${matches%$'\n'}"
+    if [[ -z "${matches}" ]]; then
+        err "no nook matches '${partial}' (see: git nook list)"
+        return 1
+    fi
+    if [[ "$(printf '%s\n' "${matches}" | wc -l | tr -d ' ')" -gt 1 ]]; then
+        err "'${partial}' is ambiguous; matches:"
+        printf '%s\n' "${matches}" | while read -r s; do
+            [[ -n "${s}" ]] && err "  ${s}"
+        done
+        return 1
+    fi
+    printf '%s\n' "${matches}"
+}
+
 # Absolute path of the parent's common git dir (worktree-safe; portable
 # normalization because --git-common-dir may print a relative path).
 # All wrapper commands cd to the parent toplevel first, so relative is safe
