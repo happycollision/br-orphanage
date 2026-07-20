@@ -274,10 +274,11 @@ materialize_one() {
                   [[ "${e}" == "${stage}" ]] && continue
                   mv "${e}" "${stage}/" || { err "failed to stage '${e}' during migration"; exit 1; }
               done ) || { err "migration staging left content in '${stage}'; resolve manually and re-run: git nook materialize"; return 1; }
-            mkdir -p "${checkout_dir}"
+            mkdir -p "${checkout_dir}" || { err "could not create the nook work-tree at ${checkout_dir}"; return 1; }
             # If interrupted mid-loop here, a re-run re-stages the (possibly
             # half-populated) work-tree via the container-scan above -- data is
-            # preserved (may need one more materialize), never destroyed.
+            # never destroyed, but an interruption mid-move may leave a nested
+            # dir to un-nest by hand (not just another materialize).
             ( shopt -s dotglob nullglob
               for e in "${stage}"/*; do
                   mv "${e}" "${checkout_dir}/" || { err "failed to migrate '${e}' into '${checkout_dir}'"; exit 1; }

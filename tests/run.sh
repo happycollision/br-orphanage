@@ -414,6 +414,16 @@ assert_eq "non-refs/ template lands under refs/heads/" \
 assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
 assert_true "custom dir excluded" grep -qxF '/tmp/scratch' "${ADD_EXCLUDE}"
 
+# multi-segment --dir: symlink lives at tmp/scratch, work-tree leaf is the basename only
+assert_true "multi-segment content path is a symlink" test -L "${ADD_PROJ}/tmp/scratch"
+SCRATCH_WT=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
+SCRATCH_WT="$(cd "${ADD_PROJ}/${SCRATCH_WT}" && pwd)/nook/scratch.nook/scratch"
+assert_dir_exists "multi-segment nested work-tree dir exists" "${SCRATCH_WT}"
+assert_eq "multi-segment symlink target basename is the leaf (scratch)" \
+    "scratch" "$(basename "$(cd "${ADD_PROJ}/tmp/scratch" && pwd -P)")"
+assert_eq "multi-segment symlink resolves to nook/scratch.nook/scratch" \
+    "$(cd "${ADD_PROJ}/tmp/scratch" && pwd -P)" "$(cd "${SCRATCH_WT}" && pwd -P)"
+
 section "add: explicit dotted --dir is still honored"
 
 (cd "${ADD_PROJ}" && "${NOOK}" add secret "${ADD_TGT_BARE}" --dir .secret)
