@@ -1734,6 +1734,30 @@ assert_contains "surviving keep.1 entry is present and intact" "${IMM_OUT}" '"sl
 assert_contains "result is a well-formed single-entry array" "${IMM_OUT}" \
     'RESULT:[{"slug":"keep.1","uuid":"u1","name":"n1","owner":"o1","repo_dir":"r1","upstream":"up1","user":"a","at":"t1"}]'
 
+section "clone: disambiguates two same-named nooks using the index"
+
+CL_SHARED="${WORK}/origins/clshared.git"; mkdir -p "$(dirname "${CL_SHARED}")"; git init -q --bare "${CL_SHARED}"
+CL_P1="${WORK}/cl-p1"; make_project_repo "${CL_P1}" no p1
+( cd "${CL_P1}"; git remote add origin git@github.com:alice/repo-one.git
+  "${NOOK}" init notes "${CL_SHARED}" --dir notes
+  echo one > notes/x; "${NOOK}" -n notes run add --all
+  "${NOOK}" -n notes run commit -m one; "${NOOK}" -n notes run push )
+CL_P2="${WORK}/cl-p2"; make_project_repo "${CL_P2}" no p2
+( cd "${CL_P2}"; git remote add origin git@github.com:bob/repo-two.git
+  "${NOOK}" init notes "${CL_SHARED}" --dir notes
+  echo two > notes/x; "${NOOK}" -n notes run add --all
+  "${NOOK}" -n notes run commit -m two; "${NOOK}" -n notes run push )
+
+# Consumer clones 'notes'; two candidates exist -> picker. Pick #2 via stdin.
+CL_CC="${WORK}/cl-cons"; make_project_repo "${CL_CC}" no cc
+CL_OUT=$( cd "${CL_CC}"; printf '2\n' | "${NOOK}" clone notes "${CL_SHARED}" --dir notes 2>&1 ) || true
+# The picker must show provenance from the index (repo_dir + owner), which
+# ls-remote alone cannot provide.
+assert_contains "picker shows a repo_dir from the index" "${CL_OUT}" "repo-"
+assert_true "clone produced a symlink" test -L "${CL_CC}/notes"
+# Content of whichever candidate was chosen must be present.
+assert_true "cloned content nonempty" test -s "${CL_CC}/notes/x"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

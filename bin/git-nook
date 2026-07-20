@@ -849,32 +849,78 @@ cmd_clone() {
     elif [[ "${target}" == *[:/]* ]]; then url="${target}"
     else err "'${target}' is not a remote in this repo (and doesn't look like a URL)"; exit 1; fi
 
-    local candidates chosen count
-    candidates=$(remote_slugs_for_name "${url}" "${name}")
-    candidates=$(printf '%s\n' "${candidates}" | grep -v '^$' || true)
-    count=$(printf '%s\n' "${candidates}" | grep -c '.' || true)
-    if [[ "${count}" -eq 0 ]]; then
-        err "no nook named '${name}' found at ${url}; create one with: git nook init ${name} ${target}"; exit 1
-    elif [[ "${count}" -eq 1 ]]; then
-        chosen="${candidates}"
-    else
-        echo "Multiple nooks named '${name}' at ${url}:" >&2
-        local i=0 s
-        while read -r s; do
-            [[ -n "${s}" ]] || continue
-            i=$((i+1)); printf '  %d) %s\n' "${i}" "${s}" >&2
-        done < <(printf '%s\n' "${candidates}")
-        printf 'Choose [1-%d]: ' "${i}" >&2
-        local pick
-        if ! read -r pick; then
-            err "invalid choice"; exit 1
-        fi
-        if ! printf '%s' "${pick}" | grep -qE '^[0-9]+$' || [[ "${pick}" -lt 1 || "${pick}" -gt "${i}" ]]; then
-            err "invalid choice"; exit 1
-        fi
-        chosen=$(printf '%s\n' "${candidates}" | sed -n "${pick}p")
-        [[ -n "${chosen}" ]] || { err "invalid choice"; exit 1; }
+    local chosen
+
+    # Prefer the index: one fetch yields rich provenance for the picker (which
+    # repo each same-named nook came from), so the user can tell them apart.
+    # Falls back to ls-remote slug discovery when no index has been published
+    # (e.g. a nook created before the index existed, or an index that was
+    # wiped and not yet rebuilt).
+    local index_json candidates_rich=""
+    index_json=$(_index_show_json "${url}")
+    if [[ -n "${index_json}" ]]; then
+        local body piece ename eslug eowner erepo
+        body=$(printf '%s' "${index_json}" | sed 's/},{"slug":/}\n{"slug":/g; s/^\[//; s/\]$//')
+        while IFS= read -r piece; do
+            [[ -n "${piece}" ]] || continue
+            ename=$(printf '%s' "${piece}" | sed -E 's/.*"name":"([^"]*)".*/\1/')
+            [[ "${ename}" == "${name}" ]] || continue
+            eslug=$(printf '%s' "${piece}" | sed -E 's/.*"slug":"([^"]*)".*/\1/')
+            eowner=$(printf '%s' "${piece}" | sed -E 's/.*"owner":"([^"]*)".*/\1/')
+            erepo=$(printf '%s' "${piece}" | sed -E 's/.*"repo_dir":"([^"]*)".*/\1/')
+            candidates_rich="${candidates_rich}${eslug}"$'\t'"${eowner}"$'\t'"${erepo}"$'\n'
+        done < <(printf '%s\n' "${body}")
     fi
+
+    if [[ -n "${candidates_rich}" ]]; then
+        local rc_lines; rc_lines=$(printf '%s' "${candidates_rich}" | grep -c '.' || true)
+        if [[ "${rc_lines}" -eq 1 ]]; then
+            chosen=$(printf '%s' "${candidates_rich}" | head -n1 | cut -f1)
+        else
+            echo "Multiple nooks named '${name}' at ${url}:" >&2
+            local i=0 cs co cr
+            while IFS=$'\t' read -r cs co cr; do
+                [[ -n "${cs}" ]] || continue
+                i=$((i+1)); printf '  %d) %s  from %s (%s)\n' "${i}" "${cs}" "${cr}" "${co}" >&2
+            done < <(printf '%s' "${candidates_rich}")
+            printf 'Choose [1-%d]: ' "${i}" >&2
+            local pick
+            if ! read -r pick; then
+                err "invalid choice"; exit 1
+            fi
+            if ! printf '%s' "${pick}" | grep -qE '^[0-9]+$' || [[ "${pick}" -lt 1 || "${pick}" -gt "${i}" ]]; then
+                err "invalid choice"; exit 1
+            fi
+            chosen=$(printf '%s' "${candidates_rich}" | sed -n "${pick}p" | cut -f1)
+        fi
+    else
+        local candidates count
+        candidates=$(remote_slugs_for_name "${url}" "${name}")
+        candidates=$(printf '%s\n' "${candidates}" | grep -v '^$' || true)
+        count=$(printf '%s\n' "${candidates}" | grep -c '.' || true)
+        if [[ "${count}" -eq 0 ]]; then
+            chosen=""
+        elif [[ "${count}" -eq 1 ]]; then
+            chosen="${candidates}"
+        else
+            echo "Multiple nooks named '${name}' at ${url}:" >&2
+            local i=0 s
+            while read -r s; do
+                [[ -n "${s}" ]] || continue
+                i=$((i+1)); printf '  %d) %s\n' "${i}" "${s}" >&2
+            done < <(printf '%s\n' "${candidates}")
+            printf 'Choose [1-%d]: ' "${i}" >&2
+            local pick
+            if ! read -r pick; then
+                err "invalid choice"; exit 1
+            fi
+            if ! printf '%s' "${pick}" | grep -qE '^[0-9]+$' || [[ "${pick}" -lt 1 || "${pick}" -gt "${i}" ]]; then
+                err "invalid choice"; exit 1
+            fi
+            chosen=$(printf '%s\n' "${candidates}" | sed -n "${pick}p")
+        fi
+    fi
+    [[ -n "${chosen}" ]] || { err "no nook named '${name}' found at ${url}; create one with: git nook init ${name} ${target}"; exit 1; }
 
     [[ -n "${dir}" ]] || dir="${name}"
     dir="${dir%/}"
