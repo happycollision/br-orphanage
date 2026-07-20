@@ -1643,6 +1643,19 @@ assert_true "local inner dir gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.git"
 assert_true "local container gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.nook"
 assert_true "local config gone" test -z "$(cd "${DS}" && git config --get "nook.${DS_SLUG}.dir" 2>/dev/null)"
 
+section "destroy: aborts and changes nothing if upstream delete fails"
+DSF="${WORK}/dsf"; make_project_repo "${DSF}" yes dsfproj
+( cd "${DSF}"; "${NOOK}" init beads origin --dir .beads
+  echo z > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+DSF_SLUG=$(cd "${DSF}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+# Repoint the inner repo's origin at a nonexistent path so push --delete fails.
+git --git-dir="${DSF}/.git/nook/${DSF_SLUG}.git" config remote.origin.url "${WORK}/origins/does-not-exist.git"
+RC=$(cd "${DSF}"; "${NOOK}" -n beads destroy --yes >/dev/null 2>&1; echo $?)
+assert_eq "destroy aborts when upstream delete fails" "1" "${RC}"
+assert_true "local inner dir intact after abort" test -e "${DSF}/.git/nook/${DSF_SLUG}.git"
+assert_contains "config intact after abort" "$(cd "${DSF}" && git config --get "nook.${DSF_SLUG}.dir")" ".beads"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

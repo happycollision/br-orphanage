@@ -1135,9 +1135,13 @@ cmd_destroy() {
     fi
 
     if [[ -n "${url}" ]]; then
-        git --git-dir="${gitdir}" push --quiet "${url}" \
-            --delete "refs/nook/${slug}/files" "refs/nook/${slug}/manifest" 2>/dev/null \
-            || echo "git-nook: warning: could not delete upstream refs at ${url}" >&2
+        if ! git --git-dir="${gitdir}" push --quiet "${url}" \
+             --delete "refs/nook/${slug}/files" "refs/nook/${slug}/manifest" 2>/dev/null; then
+            err "could not delete the published refs at ${url} (remote unreachable?)"
+            err "nothing was changed locally. retry when the remote is reachable,"
+            err "or delete only the local nook with: git nook -n ${slug} remove --force"
+            exit 1
+        fi
         index_remove_entry "${gitdir}" "${url}" "${slug}" \
             || echo "git-nook: warning: index deindex failed; run: git nook reindex" >&2
     fi
