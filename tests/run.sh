@@ -1221,6 +1221,18 @@ NESTPT_TREE=$(cd "${NESTPT}" && "${NOOK}" -n beads run ls-tree --name-only -r HE
 assert_eq "tracked path is bare issues.jsonl (no .beads/ prefix)" \
     "issues.jsonl" "${NESTPT_TREE}"
 
+section "nested: add materializes symlink to the nested work-tree"
+NESTM=${WORK}/proj-nested-mat
+make_project_repo "${NESTM}" yes nested-mat-demo
+(cd "${NESTM}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+assert_true "content path is a symlink" test -L "${NESTM}/.beads"
+NESTM_COMMON=$(cd "${NESTM}" && git rev-parse --git-common-dir)
+NESTM_WT="$(cd "${NESTM}/${NESTM_COMMON}" && pwd)/nook/beads.nook/.beads"
+assert_dir_exists "nested work-tree dir exists" "${NESTM_WT}"
+assert_eq "symlink target basename is .beads" ".beads" "$(basename "$(cd "${NESTM}/.beads" && pwd -P)")"
+assert_eq "symlink resolves to the nested work-tree" \
+    "$(cd "${NESTM}/.beads" && pwd -P)" "$(cd "${NESTM_WT}" && pwd -P)"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
