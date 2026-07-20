@@ -1422,6 +1422,18 @@ assert_true "uuid at least 8 chars" test "${#U1}" -ge 8
 ID3=$(printf '%s' "${U1}" | cut -c1-3)
 assert_eq "id3 is 3 chars" "3" "${#ID3}"
 
+section "unit: build_slug joins sanitized fields"
+
+assert_eq "basic slug" \
+    "beads.a3f.alice.my_simple_project" \
+    "$(build_slug 'beads' 'a3f9c2e1' 'alice' 'my-simple-project')"
+assert_eq "dotted name sanitized in slug" \
+    "my_notes.7c1.bob.repo" \
+    "$(build_slug 'my.notes' '7c1zzzz' 'bob' 'repo')"
+assert_eq "owner with dots sanitized" \
+    "n.abc.a_b.c_d" \
+    "$(build_slug 'n' 'abcdef' 'a.b' 'c.d')"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

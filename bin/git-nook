@@ -78,6 +78,19 @@ gen_uuid() {
     printf '%s' "${raw}" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -cd 'a-f0-9'
 }
 
+# Build the canonical slug from (name, full-uuid, owner, repo_dir). Each field
+# is sanitized; id3 = first 3 chars of the uuid (already lowercase hex from
+# gen_uuid). The slug is used identically for local dirs, config, and refs.
+build_slug() {
+    local name="$1" uuid="$2" owner="$3" repo="$4" id3
+    id3=$(printf '%s' "${uuid}" | cut -c1-3)
+    printf '%s.%s.%s.%s' \
+        "$(sanitize_field "${name}")" \
+        "$(sanitize_field "${id3}")" \
+        "$(sanitize_field "${owner}")" \
+        "$(sanitize_field "${repo}")"
+}
+
 require_work_tree() {
     # Inside a bare repo, `--is-inside-work-tree` prints "false" but still
     # EXITS 0, so a plain `if ! git ...` guard would not fire. Compare the
