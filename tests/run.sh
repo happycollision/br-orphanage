@@ -1314,6 +1314,46 @@ assert_eq "interrupted-migration: staged content intact" \
 assert_true "interrupted-migration: symlink resolves to nested work-tree" \
     test "$(cd "${INTR}/.beads" && pwd -P)" = "$(cd "${INTR_WT}" && pwd -P)"
 
+section "nested: migration preserves uncommitted edits to tracked files (C1)"
+C1=${WORK}/proj-migrate-c1
+make_project_repo "${C1}" yes migrate-c1-demo
+(cd "${C1}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+C1_COMMON=$(cd "${C1}" && git rev-parse --git-common-dir)
+C1_CONTAINER="$(cd "${C1}/${C1_COMMON}" && pwd)/nook/beads.nook"
+C1_WT="${C1_CONTAINER}/.beads"
+# commit a tracked file through the nook
+echo 'v1-committed' > "${C1}/.beads/file.txt"
+(cd "${C1}" && "${NOOK}" -n beads run add --all >/dev/null && "${NOOK}" -n beads run commit -q -m v1 >/dev/null)
+# simulate OLD FLAT layout WITH an uncommitted edit to that tracked file
+rm "${C1}/.beads"
+( shopt -s dotglob nullglob; for e in "${C1_WT}"/*; do mv "${e}" "${C1_CONTAINER}/"; done )
+rmdir "${C1_WT}"
+ln -s "${C1_CONTAINER}" "${C1}/.beads"
+echo 'v2-uncommitted-precious' > "${C1_CONTAINER}/file.txt"    # dirty tracked file
+(cd "${C1}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "C1: migrated file present in work-tree" "${C1_WT}/file.txt"
+assert_eq "C1: uncommitted edit PRESERVED (not clobbered to HEAD)" \
+    "v2-uncommitted-precious" "$(cat "${C1_WT}/file.txt")"
+
+section "nested: stale flat symlink on an already-migrated container just repoints (C2)"
+C2=${WORK}/proj-migrate-c2
+make_project_repo "${C2}" yes migrate-c2-demo
+(cd "${C2}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+C2_COMMON=$(cd "${C2}" && git rev-parse --git-common-dir)
+C2_CONTAINER="$(cd "${C2}/${C2_COMMON}" && pwd)/nook/beads.nook"
+C2_WT="${C2_CONTAINER}/.beads"
+echo 'shared' > "${C2}/.beads/data.txt"
+(cd "${C2}" && "${NOOK}" -n beads run add --all >/dev/null && "${NOOK}" -n beads run commit -q -m d >/dev/null)
+# the container is ALREADY migrated (nested .beads work-tree exists).
+# Simulate a SECOND worktree's stale symlink: replace the good symlink with one -> container.
+rm "${C2}/.beads"
+ln -s "${C2_CONTAINER}" "${C2}/.beads"     # stale flat-style symlink -> container
+(cd "${C2}" && "${NOOK}" materialize >/dev/null)
+assert_true "C2: symlink resolves to the nested work-tree (repointed)" \
+    test "$(cd "${C2}/.beads" && pwd -P)" = "$(cd "${C2_WT}" && pwd -P)"
+assert_file_absent "C2: no double-nested work-tree" "${C2_WT}/.beads"
+assert_file_exists "C2: content intact at the single nesting level" "${C2_WT}/data.txt"
+
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
 section "shellcheck (optional, skipped gracefully if unavailable)"
