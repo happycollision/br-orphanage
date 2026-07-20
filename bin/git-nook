@@ -312,6 +312,9 @@ resolve_ref() {
     printf '%s\n' "${tpl}"
 }
 
+# STUB until the index task: no-op index update. Returns 0.
+index_add_entry() { return 0; }
+
 validate_name() {
     local name="$1"
     if [[ "${name}" == -* || "${name}" == */* ]] \
@@ -552,6 +555,126 @@ rollback_add() {
 }
 
 # --- Subcommands ------------------------------------------------------------------
+
+cmd_init() {
+    require_work_tree
+    cd_to_toplevel
+    local toplevel; toplevel=$(pwd)
+
+    local name="" target="" dir=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dir)
+                [[ $# -ge 2 ]] || { err "--dir requires a value"; exit 1; }
+                dir="$2"; shift 2 ;;
+            -*) err "unknown init option '$1'"; exit 1 ;;
+            *)
+                if [[ -z "${name}" ]]; then name="$1"
+                elif [[ -z "${target}" ]]; then target="$1"
+                else err "unexpected extra argument '$1'"; exit 1; fi
+                shift ;;
+        esac
+    done
+    if [[ -z "${name}" || -z "${target}" ]]; then
+        err "usage: git nook init <name> <target-url-or-remote> [--dir <d>]"
+        exit 1
+    fi
+    validate_name "${name}" || exit 1
+
+    local url
+    if url=$(git remote get-url "${target}" 2>/dev/null); then :
+    elif [[ "${target}" == *[:/]* ]]; then url="${target}"
+    else err "'${target}' is not a remote in this repo (and doesn't look like a URL)"; exit 1; fi
+
+    local owner project uuid slug
+    IFS=$'\t' read -r owner project < <(owner_and_project)
+    uuid=$(gen_uuid)
+    slug=$(build_slug "${name}" "${uuid}" "${owner}" "${project}")
+
+    if channel_dir "${slug}" >/dev/null 2>&1; then
+        err "nook '${slug}' already exists (see: git nook -n ${slug} show)"; exit 1
+    fi
+    local existing existing_lc slug_lc
+    slug_lc=$(printf '%s' "${slug}" | tr '[:upper:]' '[:lower:]')
+    while read -r existing; do
+        [[ -n "${existing}" ]] || continue
+        existing_lc=$(printf '%s' "${existing}" | tr '[:upper:]' '[:lower:]')
+        if [[ "${existing_lc}" == "${slug_lc}" ]]; then
+            err "nook '${existing}' already exists and differs only by case (unsafe on case-insensitive filesystems)"; exit 1
+        fi
+    done < <(all_slugs)
+
+    [[ -n "${dir}" ]] || dir="${name}"
+    dir="${dir%/}"
+    case "${dir}" in
+        /* | . | .. | ./* | ../* | */.. | */../* | .git | .git/* | */.git | */.git/*)
+            err "--dir must be a repo-relative path (no '..', not under .git)"; exit 1 ;;
+    esac
+    if [[ -n "$(git ls-files -- "${dir}" 2>/dev/null)" ]]; then
+        err "'${dir}/' contains files tracked by this repository; pick an untracked dir"; exit 1
+    fi
+    local key other_dir other_slug
+    while read -r key other_dir; do
+        [[ -n "${key}" ]] || continue
+        other_slug="${key#nook.}"; other_slug="${other_slug%.dir}"
+        if [[ "${dir}/" == "${other_dir}/"* || "${other_dir}/" == "${dir}/"* ]]; then
+            err "'${dir}/' overlaps nook '${other_slug}' (${other_dir}/)"; exit 1
+        fi
+    done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
+
+    local files_ref meta_ref gitdir checkout_dir container_dir
+    files_ref="refs/nook/${slug}/files"
+    meta_ref="refs/nook/${slug}/manifest"
+    gitdir=$(inner_git_dir "${slug}")
+    if [[ -e "${gitdir}" ]]; then
+        err "an inner repo already exists at ${gitdir}"; exit 1
+    fi
+    if [[ -e "${dir}" || -L "${dir}" ]] && [[ ! -d "${dir}" ]]; then
+        err "'${dir}' exists but is not a directory"; exit 1
+    fi
+
+    local made_ckout="" made_link=""
+    mkdir -p "$(dirname "${gitdir}")"
+    git init --quiet --bare "${gitdir}"
+    git --git-dir="${gitdir}" symbolic-ref HEAD refs/heads/main
+    git --git-dir="${gitdir}" config core.bare false
+    git --git-dir="${gitdir}" config core.autocrlf false
+    git --git-dir="${gitdir}" config remote.origin.url "${url}"
+    git --git-dir="${gitdir}" config remote.origin.fetch "+${files_ref}:refs/remotes/origin/main"
+    git --git-dir="${gitdir}" config remote.origin.push "refs/nook-meta/manifest:${meta_ref}"
+    git --git-dir="${gitdir}" config --add remote.origin.push "refs/heads/main:${files_ref}"
+    git --git-dir="${gitdir}" config branch.main.remote origin
+    git --git-dir="${gitdir}" config branch.main.merge "${files_ref}"
+
+    git config "nook.${slug}.dir" "${dir}"
+    checkout_dir=$(canonical_worktree "${slug}")
+    container_dir=$(canonical_container "${slug}")
+
+    local host_origin user_ident now uname uemail
+    host_origin=$(git remote get-url origin 2>/dev/null || printf '')
+    uname=$(git config user.name 2>/dev/null || printf '')
+    uemail=$(git config user.email 2>/dev/null || printf '')
+    user_ident="${uname} <${uemail}>"
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)
+    write_manifest_ref "${gitdir}" "${uuid}" "${name}" "${owner}" "${project}" "${host_origin}" "${user_ident}" "${now}"
+
+    echo "git-nook: initialized nook '${name}' as ${slug} (dir ${dir}/, target ${url})"
+
+    [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
+    if ! materialize_one "${slug}"; then
+        rollback_add "${slug}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
+        err "materializing ${slug} failed; rolled back"; exit 1
+    fi
+    made_link=1
+
+    if git --git-dir="${gitdir}" push --quiet origin \
+         "refs/heads/main:${files_ref}" "refs/nook-meta/manifest:${meta_ref}" 2>/dev/null; then
+        index_add_entry "${gitdir}" "${url}" "${slug}" || \
+          echo "git-nook: warning: index update failed; run: git nook reindex" >&2
+    else
+        echo "git-nook: note: could not publish to ${url} yet; push later with: git nook -n ${slug} run push" >&2
+    fi
+}
 
 cmd_add() {
     require_work_tree
@@ -870,6 +993,7 @@ run_passthrough() {
 main() {
     case "${1:-}" in
         add)    shift; cmd_add "$@" ;;
+        init)   shift; cmd_init "$@" ;;
         list)   shift; cmd_list "$@" ;;
         materialize) shift; cmd_materialize "$@" ;;
         --version | version) echo "git-nook ${VERSION}" ;;

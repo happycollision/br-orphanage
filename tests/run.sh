@@ -1513,6 +1513,30 @@ assert_contains "manifest owner round-trips" "${OUT}" "OWNER:alice"
 assert_contains "manifest repo_dir round-trips" "${OUT}" "REPO:my-proj"
 assert_contains "manifest upstream round-trips" "${OUT}" "UPSTREAM:git@github.com:alice/my-proj.git"
 
+section "init: creates a slug-keyed wired hidden inner repo"
+
+IN_REPO="${WORK}/init-repo"
+make_project_repo "${IN_REPO}" yes myproj
+( cd "${IN_REPO}"
+  git remote set-url origin "git@github.com:alice/myproj.git"
+  "${NOOK}" init beads origin --dir .beads
+)
+# Find the single configured slug.
+IN_SLUG=$(cd "${IN_REPO}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+assert_contains "slug has name.id3.owner.repo shape" "${IN_SLUG}" "beads."
+case "${IN_SLUG}" in beads.*.alice.myproj) pass "slug carries provenance owner/repo";; *) fail "slug provenance wrong: ${IN_SLUG}";; esac
+IN_GD="${IN_REPO}/.git/nook/${IN_SLUG}.git"
+assert_dir_exists "inner git dir exists at slug path" "${IN_GD}"
+assert_eq "push refspec targets /files" \
+    "refs/heads/main:refs/nook/${IN_SLUG}/files" \
+    "$(git --git-dir="${IN_GD}" config --get remote.origin.push)"
+assert_eq "fetch refspec reads /files" \
+    "+refs/nook/${IN_SLUG}/files:refs/remotes/origin/main" \
+    "$(git --git-dir="${IN_GD}" config --get remote.origin.fetch)"
+assert_true "symlink materialized" test -L "${IN_REPO}/.beads"
+assert_eq "manifest name is the exact name" "beads" \
+    "$(git --git-dir="${IN_GD}" show refs/nook-meta/manifest:manifest.json | grep '"name"' | sed -E 's/.*: *"(.*)".*/\1/')"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
