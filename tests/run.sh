@@ -754,13 +754,15 @@ else
     else
         pass "exclude entry rolled back after bootstrap failure"
     fi
-    # The pre-created ${BS_D}/notes was empty test scaffolding, not real
-    # user data: materialize_one folded it into the (also-empty) canonical
-    # checkout and replaced it with a symlink, so rollback's job is just to
-    # remove that symlink and the (content-less) checkout -- there is no
-    # real content to have kept. Assert nothing of value was lost, not that
-    # the specific empty directory inode survived.
-    assert_file_absent "empty pre-add dir consumed; rollback leaves no stray content dir" "${BS_D}/notes"
+    # The read-only canonical container makes materialize_one fail at its
+    # very first write (creating the nested work-tree dir), before it ever
+    # touches ${BS_D}/notes. So the pre-created empty dir is left exactly as
+    # it was -- untouched real estate, never folded into a symlink -- and
+    # rollback's job is just to remove the (never-populated) canonical
+    # checkout. Assert nothing of value was lost, not that a symlink got
+    # cleaned up.
+    assert_true "empty pre-add dir left untouched (not converted to a symlink)" \
+        test -d "${BS_D}/notes" -a ! -L "${BS_D}/notes"
     assert_file_absent "canonical checkout removed by rollback" "${BS_D_CANON}"
 
     # Once writable again, the same add succeeds (nothing stale left behind).
@@ -1277,6 +1279,30 @@ echo top > "${COL_CONTAINER}/top.txt"
 assert_true "collision: content path is a symlink" test -L "${COL}/.beads"
 assert_file_exists "collision: top-level tracked file migrated" "${COL_WT}/top.txt"
 assert_file_exists "collision: same-named tracked dir migrated intact" "${COL_WT}/.beads/nested.txt"
+
+section "nested: interrupted migration re-run preserves staged data"
+INTR=${WORK}/proj-migrate-interrupted
+make_project_repo "${INTR}" yes migrate-intr-demo
+(cd "${INTR}" && "${NOOK}" add beads origin --dir .beads >/dev/null)
+INTR_COMMON=$(cd "${INTR}" && git rev-parse --git-common-dir)
+INTR_CONTAINER="$(cd "${INTR}/${INTR_COMMON}" && pwd)/nook/beads.nook"
+INTR_WT="${INTR_CONTAINER}/.beads"
+INTR_STAGE="${INTR_CONTAINER}/.git-nook-migrate"
+# Simulate a migration interrupted BETWEEN the two move loops:
+# stage populated with UNTRACKED content, work-tree dir created, symlink still -> container.
+rm "${INTR}/.beads"
+( shopt -s dotglob nullglob; for e in "${INTR_WT}"/*; do mv "${e}" "${INTR_CONTAINER}/"; done )
+rmdir "${INTR_WT}"
+ln -s "${INTR_CONTAINER}" "${INTR}/.beads"
+mkdir -p "${INTR_STAGE}"
+printf 'uncommitted-precious\n' > "${INTR_STAGE}/issues.jsonl"   # untracked, only in the stage
+# Re-run materialize: it must NOT delete the staged file; it must land in the work-tree.
+(cd "${INTR}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "interrupted-migration: staged untracked file preserved into work-tree" "${INTR_WT}/issues.jsonl"
+assert_eq "interrupted-migration: staged content intact" \
+    "uncommitted-precious" "$(cat "${INTR_WT}/issues.jsonl")"
+assert_true "interrupted-migration: symlink resolves to nested work-tree" \
+    test "$(cd "${INTR}/.beads" && pwd -P)" = "$(cd "${INTR_WT}" && pwd -P)"
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
