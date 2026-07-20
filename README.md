@@ -90,16 +90,24 @@ shares the same underlying nook checkout.
 
 ## How it works
 
-A nook is three paths:
+A nook is four paths:
 
 ```
-.git/nook/notes.git    # the inner bare repository (hidden inside your .git)
-.git/nook/notes.nook/  # the one real checkout, shared by every worktree
-notes/                 # a symlink to the checkout above; excluded via .git/info/exclude
+.git/nook/notes.git         # the inner bare repository (hidden inside your .git)
+.git/nook/notes.nook/       # the container git-nook owns, shared by every worktree
+.git/nook/notes.nook/notes/ # the real checkout (the work-tree); its basename
+                            #   matches your content dir, so name-sensitive tools
+                            #   (e.g. br's .beads) accept it
+notes/                      # a symlink to the work-tree above; excluded via .git/info/exclude
 ```
 
-The real files live once, under `.git/nook/<name>.nook/` in the host repo's
-*common* git dir. Each worktree of the host repo exposes those files
+The real files live once, in a content directory nested inside the
+container at `.git/nook/<name>.nook/<dir-basename>/` in the host repo's
+*common* git dir. That nested directory's name is the basename of your
+content dir (`notes`, or `.beads` for `--dir .beads`), so a tool that
+resolves the symlink and insists on a particular directory name — like
+`br`, which requires a `.beads`/`_beads` directory — sees exactly the name
+it expects. Each worktree of the host repo exposes those files
 through a plain symlink at the configured path (`notes/` by default) —
 the symlink itself, not a directory, is what's excluded via
 `.git/info/exclude`, so `git status` in the host repo never mentions it.
@@ -117,7 +125,7 @@ only through the wrapper:
 
 ```
 git nook -n <name> run <any-git-args...>
-# ≈ git --git-dir=.git/nook/<name>.git --work-tree=.git/nook/<name>.nook <any-git-args...>
+# ≈ git --git-dir=.git/nook/<name>.git --work-tree=.git/nook/<name>.nook/<dir-basename> <any-git-args...>
 ```
 
 So `git nook -n notes run log -p`, `git nook -n notes run branch`, `git nook -n notes run stash`
