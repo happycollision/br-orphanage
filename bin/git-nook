@@ -921,12 +921,18 @@ cmd_clone() {
         body=$(_index_split_entries "${index_json}")
         while IFS= read -r piece; do
             [[ -n "${piece}" ]] || continue
-            ename=$(printf '%s' "${piece}" | sed -E 's/.*"name":"([^"]*)".*/\1/')
+            ename=$(printf '%s' "${piece}" | sed -nE 's/.*"name":"([^"]*)".*/\1/p')
             [[ "${ename}" == "${name}" ]] || continue
-            eslug=$(printf '%s' "${piece}" | sed -E 's/.*"slug":"([^"]*)".*/\1/')
-            eowner=$(printf '%s' "${piece}" | sed -E 's/.*"owner":"([^"]*)".*/\1/')
-            erepo=$(printf '%s' "${piece}" | sed -E 's/.*"repo_dir":"([^"]*)".*/\1/')
-            edir=$(printf '%s' "${piece}" | sed -E 's/.*"dir":"([^"]*)".*/\1/')
+            eslug=$(printf '%s' "${piece}" | sed -nE 's/.*"slug":"([^"]*)".*/\1/p')
+            eowner=$(printf '%s' "${piece}" | sed -nE 's/.*"owner":"([^"]*)".*/\1/p')
+            erepo=$(printf '%s' "${piece}" | sed -nE 's/.*"repo_dir":"([^"]*)".*/\1/p')
+            # -n + /p: no match (e.g. an older index entry with no "dir" key)
+            # yields EMPTY, not the input passed through unchanged -- a plain
+            # `s///` substitution with no match prints piece verbatim, which
+            # would make edir (and every other field here) become the WHOLE
+            # JSON entry, flowing through chosen_dir into the clone's --dir
+            # default and creating a JSON-named directory on disk.
+            edir=$(printf '%s' "${piece}" | sed -nE 's/.*"dir":"([^"]*)".*/\1/p')
             candidates_rich="${candidates_rich}${eslug}"$'\t'"${eowner}"$'\t'"${erepo}"$'\t'"${edir}"$'\n'
         done < <(printf '%s\n' "${body}")
     fi
@@ -941,7 +947,7 @@ cmd_clone() {
             local i=0 cs co cr cd_
             while IFS=$'\t' read -r cs co cr cd_; do
                 [[ -n "${cs}" ]] || continue
-                i=$((i+1)); printf '  %d) %s  from %s (%s) -> %s/\n' "${i}" "${cs}" "${cr}" "${co}" "${cd_}" >&2
+                i=$((i+1)); printf '  %d) %s  from %s (%s) -> %s/\n' "${i}" "${cs}" "${cr}" "${co}" "${cd_:-${name}}" >&2
             done < <(printf '%s' "${candidates_rich}")
             printf 'Choose [1-%d]: ' "${i}" >&2
             local pick

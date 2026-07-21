@@ -1946,6 +1946,33 @@ RDC2="${WORK}/rd-cons2"; make_project_repo "${RDC2}" no rdc2
 assert_true "explicit --dir wins" test -L "${RDC2}/elsewhere"
 assert_true "recorded dir not used when --dir given" test ! -e "${RDC2}/.beads"
 
+section "record-dir: clone against a dir-less index entry falls back to name (no JSON-named dir)"
+RDL_SHARED="${WORK}/origins/rdl.git"; mkdir -p "$(dirname "${RDL_SHARED}")"; git init -q --bare "${RDL_SHARED}"
+RDLP="${WORK}/rdl-prod"; make_project_repo "${RDLP}" no rdlp
+( cd "${RDLP}"; git remote add origin git@github.com:alice/rdlp.git
+  "${NOOK}" init beads "${RDL_SHARED}" --dir .beads
+  echo hi > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+RDL_SLUG=$(cd "${RDLP}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+# Overwrite the published index with a legacy-style entry that has NO "dir" key.
+RDLT="${WORK}/rdlt.git"; git init -q --bare "${RDLT}"
+LEGACY_ENTRY=$(printf '[{"slug":"%s","uuid":"u","name":"beads","owner":"alice","repo_dir":"rdlp","upstream":"","user":"x","at":"t"}]' "${RDL_SLUG}")
+LB=$(printf '%s' "${LEGACY_ENTRY}" | git --git-dir="${RDLT}" hash-object -w --stdin)
+LT=$(printf '100644 blob %s\tinfo.json\n' "${LB}" | git --git-dir="${RDLT}" mktree)
+LC=$(printf 'legacy index\n' | git --git-dir="${RDLT}" commit-tree "${LT}")
+git --git-dir="${RDLT}" update-ref refs/nook/index "${LC}"
+git --git-dir="${RDLT}" push -q -f "${RDL_SHARED}" refs/nook/index:refs/nook/index
+# Clone with no --dir: must fall back to the bare name 'beads', NOT a JSON-named dir.
+RDLC="${WORK}/rdl-cons"; make_project_repo "${RDLC}" no rdlc
+( cd "${RDLC}"; "${NOOK}" clone beads "${RDL_SHARED}" )
+assert_true "fell back to bare-name dir" test -L "${RDLC}/beads"
+RDLC_JSON_NAMED=""
+for f in "${RDLC}"/*; do
+    case "$(basename "${f}")" in *"{"*) RDLC_JSON_NAMED="${f}" ;; esac
+done
+assert_true "no JSON-named dir created" test -z "${RDLC_JSON_NAMED}"
+assert_contains "content present at fallback dir" "$(cat "${RDLC}/beads/f" 2>/dev/null)" "hi"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"
