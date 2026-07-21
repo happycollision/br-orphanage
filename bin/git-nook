@@ -1393,13 +1393,19 @@ main() {
             warn_if_legacy
             # Resolve a plain/partial name to its slug when there's no exact
             # config key for it (e.g. init/clone-produced slugs carry a
-            # provenance suffix the user didn't type). Ambiguous or no-match
-            # falls through to the exact-match error paths below, preserving
-            # existing messages for those cases.
+            # provenance suffix the user didn't type). A no-match falls
+            # through to the exact-match error paths below, preserving the
+            # existing "no nook named" message. An AMBIGUOUS partial, however,
+            # must surface resolve_slug_prefix's detailed "ambiguous; matches:"
+            # listing rather than the misleading generic message -- so capture
+            # its stderr (combined output, exit-code branched) and re-emit it.
             if ! channel_dir "${name}" >/dev/null 2>&1; then
-                local resolved
-                if resolved=$(resolve_slug_prefix "${name}" 2>/dev/null) && [[ -n "${resolved}" ]]; then
-                    name="${resolved}"
+                local resolve_out
+                if resolve_out=$(resolve_slug_prefix "${name}" 2>&1); then
+                    [[ -n "${resolve_out}" ]] && name="${resolve_out}"
+                elif [[ "${resolve_out}" == *"is ambiguous"* ]]; then
+                    printf '%s\n' "${resolve_out}" >&2
+                    exit 1
                 fi
             fi
             case "${1:-}" in

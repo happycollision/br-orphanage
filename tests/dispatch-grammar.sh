@@ -236,6 +236,29 @@ assert_contains "'-n ghost run status' error message" "${RUN_OUT}" "no nook name
 run_cmd_in "${PROJECT}" "${NOOK}" -n notes run status
 assert_exit_zero "'-n notes run status' still works for a configured nook"
 
+# --- 6. Ambiguous '-n <partial>' surfaces the ambiguity, not a generic error --
+#
+# Two nooks whose sanitized names share a prefix (foo-bar -> foo_bar,
+# foo-baz -> foo_baz) both prefix-match a partial of 'foo'. The dispatch
+# path must surface resolve_slug_prefix's "ambiguous; matches:" detail
+# (which lists both slugs) rather than swallowing its stderr and falling
+# through to the generic "no nook named 'foo'" message.
+
+section "6. ambiguous '-n <partial>' surfaces the ambiguity"
+
+AMB_PROJ="${WORK}/proj-ambig"
+make_project_repo "${AMB_PROJ}" yes ambig
+run_cmd_in "${AMB_PROJ}" "${NOOK}" init foo-bar origin
+assert_exit_zero "init nook 'foo-bar'"
+run_cmd_in "${AMB_PROJ}" "${NOOK}" init foo-baz origin
+assert_exit_zero "init nook 'foo-baz'"
+
+run_cmd_in "${AMB_PROJ}" "${NOOK}" -n foo run status
+assert_exit_nonzero "'-n foo run status' fails (ambiguous prefix)"
+assert_contains "'-n foo run status' reports ambiguity" "${RUN_OUT}" "ambiguous"
+assert_contains "'-n foo run status' lists first match" "${RUN_OUT}" "foo_bar"
+assert_contains "'-n foo run status' lists second match" "${RUN_OUT}" "foo_baz"
+
 # --- Summary ------------------------------------------------------------------
 
 section "Summary"
