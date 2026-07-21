@@ -281,11 +281,12 @@ json_unescape() {
 # Build manifest.json content from fields. Its own function so tests and
 # reindex can reuse it.
 manifest_json() {
-    local uuid="$1" name="$2" owner="$3" repo="$4" upstream="$5" user="$6" at="$7"
+    local uuid="$1" name="$2" owner="$3" repo="$4" upstream="$5" user="$6" at="$7" dir="$8"
     cat <<EOF
 {
   "uuid": "$(json_escape "${uuid}")",
   "name": "$(json_escape "${name}")",
+  "dir": "$(json_escape "${dir}")",
   "created": {
     "owner": "$(json_escape "${owner}")",
     "repo_dir": "$(json_escape "${repo}")",
@@ -300,9 +301,9 @@ EOF
 # Write manifest.json into a one-file tree and commit it to
 # refs/nook-meta/manifest in the inner repo (never on refs/heads/main).
 write_manifest_ref() {
-    local gd="$1" uuid="$2" name="$3" owner="$4" repo="$5" upstream="$6" user="$7" at="$8"
+    local gd="$1" uuid="$2" name="$3" owner="$4" repo="$5" upstream="$6" user="$7" at="$8" dir="$9"
     local blob tree commit
-    blob=$(manifest_json "${uuid}" "${name}" "${owner}" "${repo}" "${upstream}" "${user}" "${at}" \
+    blob=$(manifest_json "${uuid}" "${name}" "${owner}" "${repo}" "${upstream}" "${user}" "${at}" "${dir}" \
         | git --git-dir="${gd}" hash-object -w --stdin)
     tree=$(printf '100644 blob %s\tmanifest.json\n' "${blob}" \
         | git --git-dir="${gd}" mktree)
@@ -377,17 +378,18 @@ _index_show_json() {
 
 # Build one compact JSON object entry for a slug from its manifest in <gd>.
 _index_entry_json() {
-    local gd="$1" slug="$2" uuid name owner repo upstream user at
+    local gd="$1" slug="$2" uuid name owner repo dir upstream user at
     uuid=$(read_manifest_field "${gd}" refs/nook-meta/manifest uuid 2>/dev/null || printf '')
     name=$(read_manifest_field "${gd}" refs/nook-meta/manifest name 2>/dev/null || printf '')
     owner=$(read_manifest_field "${gd}" refs/nook-meta/manifest owner 2>/dev/null || printf '')
     repo=$(read_manifest_field "${gd}" refs/nook-meta/manifest repo_dir 2>/dev/null || printf '')
+    dir=$(read_manifest_field "${gd}" refs/nook-meta/manifest dir 2>/dev/null || printf '')
     upstream=$(read_manifest_field "${gd}" refs/nook-meta/manifest upstream 2>/dev/null || printf '')
     user=$(read_manifest_field "${gd}" refs/nook-meta/manifest user 2>/dev/null || printf '')
     at=$(read_manifest_field "${gd}" refs/nook-meta/manifest at 2>/dev/null || printf '')
-    printf '{"slug":"%s","uuid":"%s","name":"%s","owner":"%s","repo_dir":"%s","upstream":"%s","user":"%s","at":"%s"}' \
+    printf '{"slug":"%s","uuid":"%s","name":"%s","owner":"%s","repo_dir":"%s","dir":"%s","upstream":"%s","user":"%s","at":"%s"}' \
         "$(json_escape "${slug}")" "$(json_escape "${uuid}")" "$(json_escape "${name}")" \
-        "$(json_escape "${owner}")" "$(json_escape "${repo}")" "$(json_escape "${upstream}")" \
+        "$(json_escape "${owner}")" "$(json_escape "${repo}")" "$(json_escape "${dir}")" "$(json_escape "${upstream}")" \
         "$(json_escape "${user}")" "$(json_escape "${at}")"
 }
 
@@ -829,7 +831,7 @@ cmd_init() {
     uemail=$(git config user.email 2>/dev/null || printf '')
     user_ident="${uname} <${uemail}>"
     now=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date +%Y-%m-%dT%H:%M:%SZ)
-    write_manifest_ref "${gitdir}" "${uuid}" "${name}" "${owner}" "${project}" "${host_origin}" "${user_ident}" "${now}"
+    write_manifest_ref "${gitdir}" "${uuid}" "${name}" "${owner}" "${project}" "${host_origin}" "${user_ident}" "${now}" "${dir}"
 
     echo "git-nook: initialized nook '${name}' as ${slug} (dir ${dir}/, target ${url})"
 
@@ -905,7 +907,7 @@ cmd_clone() {
         exit 1
     fi
 
-    local chosen
+    local chosen chosen_dir=""
 
     # Prefer the index: one fetch yields rich provenance for the picker (which
     # repo each same-named nook came from), so the user can tell them apart.
@@ -915,7 +917,7 @@ cmd_clone() {
     local index_json candidates_rich=""
     index_json=$(_index_show_json "${url}")
     if [[ -n "${index_json}" ]]; then
-        local body piece ename eslug eowner erepo
+        local body piece ename eslug eowner erepo edir
         body=$(_index_split_entries "${index_json}")
         while IFS= read -r piece; do
             [[ -n "${piece}" ]] || continue
@@ -924,7 +926,8 @@ cmd_clone() {
             eslug=$(printf '%s' "${piece}" | sed -E 's/.*"slug":"([^"]*)".*/\1/')
             eowner=$(printf '%s' "${piece}" | sed -E 's/.*"owner":"([^"]*)".*/\1/')
             erepo=$(printf '%s' "${piece}" | sed -E 's/.*"repo_dir":"([^"]*)".*/\1/')
-            candidates_rich="${candidates_rich}${eslug}"$'\t'"${eowner}"$'\t'"${erepo}"$'\n'
+            edir=$(printf '%s' "${piece}" | sed -E 's/.*"dir":"([^"]*)".*/\1/')
+            candidates_rich="${candidates_rich}${eslug}"$'\t'"${eowner}"$'\t'"${erepo}"$'\t'"${edir}"$'\n'
         done < <(printf '%s\n' "${body}")
     fi
 
@@ -932,12 +935,13 @@ cmd_clone() {
         local rc_lines; rc_lines=$(printf '%s' "${candidates_rich}" | grep -c '.' || true)
         if [[ "${rc_lines}" -eq 1 ]]; then
             chosen=$(printf '%s' "${candidates_rich}" | head -n1 | cut -f1)
+            chosen_dir=$(printf '%s' "${candidates_rich}" | head -n1 | cut -f4)
         else
             echo "Multiple nooks named '${name}' at ${url}:" >&2
-            local i=0 cs co cr
-            while IFS=$'\t' read -r cs co cr; do
+            local i=0 cs co cr cd_
+            while IFS=$'\t' read -r cs co cr cd_; do
                 [[ -n "${cs}" ]] || continue
-                i=$((i+1)); printf '  %d) %s  from %s (%s)\n' "${i}" "${cs}" "${cr}" "${co}" >&2
+                i=$((i+1)); printf '  %d) %s  from %s (%s) -> %s/\n' "${i}" "${cs}" "${cr}" "${co}" "${cd_}" >&2
             done < <(printf '%s' "${candidates_rich}")
             printf 'Choose [1-%d]: ' "${i}" >&2
             local pick
@@ -948,6 +952,7 @@ cmd_clone() {
                 err "invalid choice"; exit 1
             fi
             chosen=$(printf '%s' "${candidates_rich}" | sed -n "${pick}p" | cut -f1)
+            chosen_dir=$(printf '%s' "${candidates_rich}" | sed -n "${pick}p" | cut -f4)
         fi
     else
         local candidates count
@@ -981,7 +986,17 @@ cmd_clone() {
     fi
     [[ -n "${chosen}" ]] || { err "no nook named '${name}' found at ${url}; create one with: git nook init ${name} ${target}"; exit 1; }
 
-    [[ -n "${dir}" ]] || dir="${name}"
+    if [[ -z "${dir}" ]]; then
+        # No explicit --dir: prefer the dir recorded in the manifest (via the
+        # index entry when we have it), else fall back to the bare name. The
+        # ls-remote fallback path (no index published) never has chosen_dir,
+        # so it defaults to name as before.
+        if [[ -n "${chosen_dir:-}" ]]; then
+            dir="${chosen_dir}"
+        else
+            dir="${name}"
+        fi
+    fi
     dir="${dir%/}"
     case "${dir}" in
         /* | . | .. | ./* | ../* | */.. | */../* | .git | .git/* | */.git | */.git/*)

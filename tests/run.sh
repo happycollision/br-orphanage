@@ -1558,11 +1558,12 @@ make_project_repo "${MF_REPO}" yes mf
   git init -q --bare "${gd}"
   write_manifest_ref "${gd}" \
     "a3f9c2e1-full-uuid" "beads" "alice" "my-proj" \
-    "git@github.com:alice/my-proj.git" "Alice <a@x>" "2026-07-20T00:00:00Z"
+    "git@github.com:alice/my-proj.git" "Alice <a@x>" "2026-07-20T00:00:00Z" ".beads"
   echo "UUID:$(read_manifest_field "${gd}" refs/nook-meta/manifest uuid)"
   echo "NAME:$(read_manifest_field "${gd}" refs/nook-meta/manifest name)"
   echo "OWNER:$(read_manifest_field "${gd}" refs/nook-meta/manifest owner)"
   echo "REPO:$(read_manifest_field "${gd}" refs/nook-meta/manifest repo_dir)"
+  echo "DIR:$(read_manifest_field "${gd}" refs/nook-meta/manifest dir)"
   echo "UPSTREAM:$(read_manifest_field "${gd}" refs/nook-meta/manifest upstream)"
 ) > "${WORK}/mf.out" 2>&1
 OUT=$(cat "${WORK}/mf.out")
@@ -1570,6 +1571,7 @@ assert_contains "manifest uuid round-trips" "${OUT}" "UUID:a3f9c2e1-full-uuid"
 assert_contains "manifest name round-trips" "${OUT}" "NAME:beads"
 assert_contains "manifest owner round-trips" "${OUT}" "OWNER:alice"
 assert_contains "manifest repo_dir round-trips" "${OUT}" "REPO:my-proj"
+assert_contains "manifest dir round-trips" "${OUT}" "DIR:.beads"
 assert_contains "manifest upstream round-trips" "${OUT}" "UPSTREAM:git@github.com:alice/my-proj.git"
 
 section "init: creates a slug-keyed wired hidden inner repo"
@@ -1750,7 +1752,7 @@ MFE="${WORK}/mfe-repo"; make_project_repo "${MFE}" yes mfe
   GIT_NOOK_LIB=1 . "${NOOK}"
   cd "${MFE}"
   gd="$(pwd)/.git/nook/x.git"; mkdir -p "$(dirname "${gd}")"; git init -q --bare "${gd}"
-  write_manifest_ref "${gd}" "uuid1" "beads" "alice" "proj" "" 'Don "D" Denton <d@x>' "2026-01-01T00:00:00Z"
+  write_manifest_ref "${gd}" "uuid1" "beads" "alice" "proj" "" 'Don "D" Denton <d@x>' "2026-01-01T00:00:00Z" ".beads"
   echo "USER:$(read_manifest_field "${gd}" refs/nook-meta/manifest user)"
 ) > "${WORK}/mfe.out" 2>&1
 assert_contains "user identity decodes with literal quotes" "$(cat "${WORK}/mfe.out")" 'USER:Don "D" Denton <d@x>'
@@ -1871,7 +1873,7 @@ PG_GD="${PG}/.git/nook/${PG_SLUG}.git"
 # Tamper: overwrite the UPSTREAM manifest ref with a DIFFERENT uuid.
 # shellcheck source=/dev/null
 GIT_NOOK_LIB=1 . "${NOOK}"
-BAD_BLOB=$(manifest_json "DIFFERENT-uuid" "beads" "alice" "pg" "" "x <x>" "2026-01-01T00:00:00Z" | git --git-dir="${PG_GD}" hash-object -w --stdin)
+BAD_BLOB=$(manifest_json "DIFFERENT-uuid" "beads" "alice" "pg" "" "x <x>" "2026-01-01T00:00:00Z" ".beads" | git --git-dir="${PG_GD}" hash-object -w --stdin)
 BAD_TREE=$(printf '100644 blob %s\tmanifest.json\n' "${BAD_BLOB}" | git --git-dir="${PG_GD}" mktree)
 BAD_COMMIT=$(printf 'x\n' | git --git-dir="${PG_GD}" commit-tree "${BAD_TREE}")
 git --git-dir="${PG_GD}" update-ref refs/nook-tamper "${BAD_COMMIT}"
@@ -1916,6 +1918,33 @@ MD="${WORK}/modern"; make_project_repo "${MD}" yes md
 ( cd "${MD}"; "${NOOK}" init beads origin --dir .beads )
 MD_OUT=$(cd "${MD}"; "${NOOK}" list 2>&1 || true)
 assert_true "modern slug nook does not warn about legacy" test -z "$(printf '%s' "${MD_OUT}" | grep -i 'older git-nook layout' || true)"
+
+section "record-dir: init records the content dir in the manifest"
+RD="${WORK}/rd"; make_project_repo "${RD}" yes rdproj
+( cd "${RD}"; "${NOOK}" init beads origin --dir .beads )
+RD_SLUG=$(cd "${RD}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+RD_GD="${RD}/.git/nook/${RD_SLUG}.git"
+assert_eq "manifest records the dir" ".beads" \
+    "$(git --git-dir="${RD_GD}" show refs/nook-meta/manifest:manifest.json | grep '\"dir\"' | grep -v repo_dir | sed -E 's/.*: *\"(.*)\".*/\1/')"
+
+section "record-dir: clone defaults to the recorded dir when --dir omitted"
+RDS="${WORK}/origins/rdshared.git"; mkdir -p "$(dirname "${RDS}")"; git init -q --bare "${RDS}"
+RDP="${WORK}/rd-prod"; make_project_repo "${RDP}" no rdp
+( cd "${RDP}"; git remote add origin git@github.com:alice/rdp.git
+  "${NOOK}" init beads "${RDS}" --dir .beads
+  echo hi > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+RDC="${WORK}/rd-cons"; make_project_repo "${RDC}" no rdc
+( cd "${RDC}"; "${NOOK}" clone beads "${RDS}" )   # NO --dir
+assert_true "clone landed at the recorded .beads (not ./beads)" test -L "${RDC}/.beads"
+assert_true "clone did NOT use the bare name dir" test ! -e "${RDC}/beads"
+assert_contains "cloned content present at recorded dir" "$(cat "${RDC}/.beads/f" 2>/dev/null)" "hi"
+
+section "record-dir: explicit --dir still overrides the recorded dir"
+RDC2="${WORK}/rd-cons2"; make_project_repo "${RDC2}" no rdc2
+( cd "${RDC2}"; "${NOOK}" clone beads "${RDS}" --dir elsewhere )
+assert_true "explicit --dir wins" test -L "${RDC2}/elsewhere"
+assert_true "recorded dir not used when --dir given" test ! -e "${RDC2}/.beads"
 
 # --- Summary ---------------------------------------------------------------------
 
