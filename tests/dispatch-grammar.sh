@@ -123,8 +123,8 @@ make_project_repo "${PROJECT}" yes proj
 
 section "1. nook named after a former reserved word / git verb"
 
-run_cmd_in "${PROJECT}" "${NOOK}" add push origin
-assert_exit_zero "add nook named 'push'"
+run_cmd_in "${PROJECT}" "${NOOK}" init push origin
+assert_exit_zero "init nook named 'push'"
 
 run_cmd_in "${PROJECT}" "${NOOK}" -n push run status
 assert_exit_zero "'-n push run status' reaches the nook"
@@ -140,8 +140,8 @@ assert_exit_zero "'-n push remove' succeeds"
 
 section "2. 'run' is a hard boundary — git-nook does no further option parsing after it"
 
-run_cmd_in "${PROJECT}" "${NOOK}" add notes origin
-assert_exit_zero "add nook 'notes'"
+run_cmd_in "${PROJECT}" "${NOOK}" init notes origin
+assert_exit_zero "init nook 'notes'"
 
 NOTES_DIR="${PROJECT}/notes"
 echo "hello" > "${NOTES_DIR}/hello.txt"
@@ -163,13 +163,16 @@ run_cmd_in "${PROJECT}" "${NOOK}" -n
 assert_exit_nonzero "'-n' with no following token fails"
 assert_contains "'-n' error message" "${RUN_OUT}" "missing value for -n/--name"
 
+# The -n dispatch resolves a bare/partial name to its full slug before
+# printing these messages (e.g. "notes" -> "notes.<id3>.<owner>.<repo>"), so
+# the error text names the resolved slug, not the bare name typed on the CLI.
 run_cmd_in "${PROJECT}" "${NOOK}" -n notes
 assert_exit_nonzero "'-n notes' with no verb fails"
-assert_contains "'-n notes' error message" "${RUN_OUT}" "no command given for nook 'notes'"
+assert_contains "'-n notes' error message" "${RUN_OUT}" "no command given for nook 'notes."
 
 run_cmd_in "${PROJECT}" "${NOOK}" -n notes bogus
 assert_exit_nonzero "'-n notes bogus' fails (unknown verb)"
-assert_contains "'-n notes bogus' error message" "${RUN_OUT}" "unknown command 'bogus' for nook 'notes'"
+assert_contains "'-n notes bogus' error message" "${RUN_OUT}" "unknown command 'bogus' for nook 'notes."
 
 run_cmd_in "${PROJECT}" "${NOOK}" beads status
 assert_exit_nonzero "old bare-name shorthand 'beads status' fails (regression guard)"
@@ -177,7 +180,7 @@ assert_contains "bare-name shorthand error message" "${RUN_OUT}" "unknown comman
 
 # The -n value is validated (ref-format/shape only) before dispatching. A
 # name shaped like a flag, empty, or containing '/' is rejected with the same
-# clear message `add` gives — NOT confused for a nook or a verb.
+# clear message `init`/`clone` give — NOT confused for a nook or a verb.
 run_cmd_in "${PROJECT}" "${NOOK}" -n -x run status
 assert_exit_nonzero "'-n -x run status' fails (flag-shaped name rejected)"
 assert_contains "'-n -x' error message" "${RUN_OUT}" "not a valid nook name"
@@ -194,8 +197,8 @@ assert_contains "'-n bad/name' error message" "${RUN_OUT}" "not a valid nook nam
 
 section "4. '--name' long form"
 
-run_cmd_in "${PROJECT}" "${NOOK}" add pull origin
-assert_exit_zero "add nook 'pull'"
+run_cmd_in "${PROJECT}" "${NOOK}" init pull origin
+assert_exit_zero "init nook 'pull'"
 
 run_cmd_in "${PROJECT}" "${NOOK}" --name pull run status
 assert_exit_zero "'--name pull run status' works"
@@ -212,8 +215,8 @@ assert_contains "'--name pull show' prints the nook name" "${RUN_OUT}" "name:   
 
 section "5. 'run' requires a configured nook"
 
-run_cmd_in "${PROJECT}" "${NOOK}" add gone origin
-assert_exit_zero "add nook 'gone'"
+run_cmd_in "${PROJECT}" "${NOOK}" init gone origin
+assert_exit_zero "init nook 'gone'"
 
 run_cmd_in "${PROJECT}" "${NOOK}" -n gone remove
 assert_exit_zero "'-n gone remove' succeeds"
