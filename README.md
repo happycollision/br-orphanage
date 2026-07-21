@@ -6,7 +6,7 @@
 diffs, log, branches, merges, conflicts, push, pull — even when the host
 repo cannot or should not track them itself. Each tracked directory (a
 "nook") is backed by a genuine git repository hidden inside the host repo's
-`.git/`, and published to a custom ref that appears in no branch listing, no
+`.git/`, and published to custom refs that appear in no branch listing, no
 host web UI, and no default clone. Once a nook exists, every day-to-day
 operation is a plain git command you already know; the tool's only jobs are
 creating nooks and handing your git invocations to the right one.
@@ -53,14 +53,14 @@ source itself is never mutated.
 ## Quick start
 
 ```sh
-git nook add notes origin
+git nook init notes origin
 ```
 
-This creates a hidden inner git repository for a nook named `notes`, wires
-its remote to a custom ref on `origin`, and gives you the nook's files at
-`notes/` (a symlink into the shared checkout, excluded from the host repo
-via `.git/info/exclude`, so `git status` in the host repo never mentions
-it). Edit files there like any other directory:
+This creates a hidden inner git repository for a nook named `notes`, assigns
+it an immutable identity, wires its remote to custom refs on `origin`, and
+gives you the nook's files at `notes/` (a symlink into the shared checkout,
+excluded from the host repo via `.git/info/exclude`, so `git status` in the
+host repo never mentions it). Edit files there like any other directory:
 
 ```sh
 echo "today's notes" > notes/today.md
@@ -72,14 +72,16 @@ git nook -n notes run push
 
 On another machine (or a fresh clone of the host repo), one command
 bootstraps the whole thing — inner repo, exclude entry, and content —
-straight from the published ref:
+straight from the published refs, for a nook that already exists:
 
 ```sh
-git nook add notes origin
+git nook clone notes origin
 ```
 
-If the ref already has history, `add` fetches it and materializes `notes/`
-automatically; there's nothing else to run.
+`clone` fetches the existing nook's history and materializes `notes/`
+automatically; there's nothing else to run. (If several nooks on the remote
+share the name `notes`, `clone` disambiguates by asking you to pick one — see
+"Identity & storage" below.)
 
 After a plain `git clone` of the host repo, the nook's config comes along
 but its worktree symlink doesn't — run `git nook materialize` once to link
@@ -90,19 +92,20 @@ shares the same underlying nook checkout.
 
 ## How it works
 
-A nook is four paths:
+A nook is four paths, named after its **slug** (see "Identity & storage"
+below), not just its bare name:
 
 ```
-.git/nook/notes.git         # the inner bare repository (hidden inside your .git)
-.git/nook/notes.nook/       # the container git-nook owns, shared by every worktree
-.git/nook/notes.nook/notes/ # the real checkout (the work-tree); its basename
-                            #   matches your content dir, so name-sensitive tools
-                            #   (e.g. br's .beads) accept it
-notes/                      # a symlink to the work-tree above; excluded via .git/info/exclude
+.git/nook/<slug>.git              # the inner bare repository (hidden inside your .git)
+.git/nook/<slug>.nook/            # the container git-nook owns, shared by every worktree
+.git/nook/<slug>.nook/notes/      # the real checkout (the work-tree); its basename
+                                  #   matches your content dir, so name-sensitive tools
+                                  #   (e.g. br's .beads) accept it
+notes/                            # a symlink to the work-tree above; excluded via .git/info/exclude
 ```
 
 The real files live once, in a content directory nested inside the
-container at `.git/nook/<name>.nook/<dir-basename>/` in the host repo's
+container at `.git/nook/<slug>.nook/<dir-basename>/` in the host repo's
 *common* git dir. That nested directory's name is the basename of your
 content dir (`notes`, or `.beads` for `--dir .beads`), so a tool that
 resolves the symlink and insists on a particular directory name — like
@@ -117,7 +120,7 @@ one checkout, one set of refs, one `HEAD`. Run `git nook materialize` in a
 worktree that doesn't have the symlink yet (see "Quick start" and
 "Commands" below).
 
-`notes/` has no `.git` file of its own — `git nook add` never runs a
+`notes/` has no `.git` file of its own — `git nook init`/`clone` never runs a
 plain `git init` inside the content dir, so the host repo sees only a
 plain excluded symlink: no gitlink, no submodule confusion, no trace that
 another repository is involved at all. The inner repository is reachable
@@ -125,49 +128,73 @@ only through the wrapper:
 
 ```
 git nook -n <name> run <any-git-args...>
-# ≈ git --git-dir=.git/nook/<name>.git --work-tree=.git/nook/<name>.nook/<dir-basename> <any-git-args...>
+# ≈ git --git-dir=.git/nook/<slug>.git --work-tree=.git/nook/<slug>.nook/<dir-basename> <any-git-args...>
 ```
 
 So `git nook -n notes run log -p`, `git nook -n notes run branch`, `git nook -n notes run stash`
 — anything git can do — works exactly as it would in a normal checkout.
 Local branches, stash, reflog, your merge tool: all available. The one
-branch-shaped constraint is that publication is single-ref — `add` bakes a
-push refspec that always publishes the inner repo's `main` branch to one
-custom ref, so `push`/`pull` and tracking output (`ahead 1`, `behind 2`)
-work out of the box without you configuring anything.
+branch-shaped constraint is that publication is single-ref for content —
+`init`/`clone` bake a push refspec that always publishes the inner repo's
+`main` branch to one custom ref, so `push`/`pull` and tracking output
+(`ahead 1`, `behind 2`) work out of the box without you configuring anything.
 
 Conflicts are ordinary git conflicts: markers land in your working files,
 you resolve them with whatever tooling you already use, and you commit the
 resolution — no special merge mode, no policy machinery.
 
-## Choosing a target and ref
+## Identity & storage
 
-`git nook add <name> <target> [--dir <dir>] [--ref <template>]`
+Every nook gets an immutable UUID the moment it's created. From that UUID,
+the name, and the host repo's owner/project, `git-nook` derives a **slug**:
+`<name>.<id3>.<owner>.<repo_dir>` (each field has non-alphanumeric characters
+mapped to `_`; `<id3>` is the first three characters of the UUID). The slug
+— not the bare name — is what's actually used for local dirs
+(`.git/nook/<slug>.git`, `.git/nook/<slug>.nook/`), the config key
+(`nook.<slug>.dir`), and the published refs. This is why two different repos
+(or two nooks in the same repo) can both be called `notes` or `beads` without
+colliding: their slugs differ even when their names don't.
+
+`-n <name>` accepts any left-anchored prefix of a slug — a bare unique name
+(`-n notes`) works when it's unambiguous, and you disambiguate by typing
+further into the slug (`-n notes.a1b.acme`) when it isn't.
+
+Each nook publishes **three refs** on its target remote:
+
+- `refs/nook/<slug>/files` — the nook's actual content, published on your
+  first commit + push.
+- `refs/nook/<slug>/manifest` — write-once metadata (the full UUID, name,
+  and provenance: owner, repo, upstream, user, creation time), published at
+  `init`/`clone` time.
+- `refs/nook/index` — a derived, rebuildable cache listing every nook on
+  that remote, used to disambiguate `clone` by name in a single fetch
+  (rebuild it with `git nook reindex` if it goes stale or missing).
+
+Nooks created by the older, pre-slug `add` command use a single flat ref
+(`refs/nook/<owner>/<project>/<name>`) and no manifest. `git-nook` detects
+these "legacy" nooks and prints a warning; migrating one to the new layout
+is a deliberate, manual procedure — see `MIGRATION.md` — and is never done
+automatically.
+
+## Choosing a target
+
+`git nook init <name> <target> [--dir <dir>]` — create a fresh nook.
+`git nook clone <name> <target> [--dir <dir>]` — adopt an existing nook,
+published under that name, from `<target>`.
 
 `<target>` is either the name of an existing remote in the host repo (most
-commonly `origin`) or a literal git URL, resolved to a URL once, at `add`
-time.
+commonly `origin`) or a literal git URL, resolved to a URL once, at
+`init`/`clone` time.
 
 - **Same-repo `origin` (the default posture)** — hidden in plain sight.
   Nothing shows up in branch listings or the web UI, but anyone with read
-  access to the repo can still discover the ref with `git ls-remote
+  access to the repo can still discover the refs with `git ls-remote
   origin`. This is the right choice when the goal is keeping clutter out of
   normal git workflows, not restricting who can see the content.
 - **A private repo you own** — full access-control separation. Point
-  `add` at a URL (or a remote name) for a repo whose access list you
-  control independently of the host repo's. The host repo stays exactly as
-  traceless either way; only the target changes.
-
-By default the published ref is `refs/nook/<owner>/<project>/<name>`, with
-`<owner>` and `<project>` derived from the host repo's `origin` URL. Pass
-`--ref` to override the template:
-
-- A value starting with `refs/` is used verbatim — e.g. `--ref
-  refs/heads/notes` publishes to a normal, browsable branch instead of a
-  hidden custom ref.
-- Anything else is treated as a branch name and prefixed with
-  `refs/heads/` automatically (useful for hosts that restrict which ref
-  namespaces can be pushed).
+  `init`/`clone` at a URL (or a remote name) for a repo whose access list
+  you control independently of the host repo's. The host repo stays exactly
+  as traceless either way; only the target changes.
 
 `--dir` sets the content directory (default `<name>/`); use it to put a
 nook's files somewhere other than the default — including a dotted path
@@ -180,7 +207,7 @@ A common motivating case: tracking [beads](https://github.com/Dicklesworthstone/
 project's own git history. Point a nook's content dir straight at `.beads`:
 
 ```sh
-git nook add beads origin --dir .beads
+git nook init beads origin --dir .beads
 ```
 
 `br` already ships its own `.beads/.gitignore` that excludes local state
@@ -206,8 +233,8 @@ git nook -n beads run pull            # reconcile if another machine pushed sinc
 git nook -n beads run push
 ```
 
-On a fresh machine, `git nook add beads origin --dir .beads` bootstraps
-`.beads/` from the published ref; run `br init` first if the local `br`
+On a fresh machine, `git nook clone beads origin --dir .beads` bootstraps
+`.beads/` from the published refs; run `br init` first if the local `br`
 workspace files (config, DB) aren't present yet, then `br sync
 --import-only` to load the fetched issues into the local database. If
 you're instead cloning a repo that already has the nook configured (or
@@ -239,42 +266,53 @@ with a few deltas:
   inside the host's working tree and dies with an aggressive clean. A
   nook's git-dir lives under the host's own `.git/`, which `clean` never
   touches.
-- **One-command setup.** `git nook add` encodes the whole per-machine
-  ritual — exclude entry, byte-identity config, refspecs, branch tracking,
-  safety refusals, bootstrap from an existing ref — that the alias
-  approach leaves as a wiki page for you to remember.
+- **One-command setup.** `git nook init`/`clone` encode the whole
+  per-machine ritual — exclude entry, byte-identity config, refspecs,
+  branch tracking, safety refusals, bootstrap from an existing set of refs —
+  that the alias approach leaves as a wiki page for you to remember.
 
 The remaining trade-offs are per-nook choices, not tool limitations:
 
-- **Hidden refs get no host UI.** No web view, no PRs, no CI triggers.
-  When browsability matters more than invisibility, `--ref
-  refs/heads/...` publishes to a normal branch on the target today.
+- **Hidden refs get no host UI.** No web view, no PRs, no CI triggers —
+  the `refs/nook/...` refs are custom refs by design, with no
+  user-facing option to publish to a normal branch instead.
 - **Hidden is not secret.** Anyone with read access to the target can
   `ls-remote` the refs, and nothing is encrypted. When access control
-  matters, point `add` at a private target you control — see "Choosing a
-  target and ref" above.
+  matters, point `init`/`clone` at a private target you control — see
+  "Choosing a target" above.
 
 ## Commands
 
 ```
-git nook add <name> <target-url-or-remote> [--dir <dir>] [--ref <template>]
+git nook init <name> <target-url-or-remote> [--dir <dir>]     # create a fresh nook
+git nook clone <name> <target-url-or-remote> [--dir <dir>]    # adopt an existing nook
 git nook list
 git nook materialize             # link configured nooks into this worktree
+git nook reindex                 # rebuild the collection index from truth
 git nook -n <name> show
-git nook -n <name> remove
+git nook -n <name> remove [--force]
+git nook -n <name> destroy --yes
 git nook -n <name> run <git-args...>    # run any git command against the nook
 git nook --help | --version
 ```
 
-`add` creates and wires a nook; `list` shows every nook configured in the
-current repo (flagging any that aren't linked into the current worktree);
-`-n <name> show` prints its resolved checkout path, link state, remote URL,
-push refspec, and current branch/tracking state; `-n <name> remove` drops the
-nook's config entry and exclude line but — deliberately — never deletes the
-checkout or the inner repo's history, so nothing is destroyed silently;
+`init` creates and wires a brand-new nook; `clone` fetches and wires an
+existing nook published under that name (disambiguating by slug if several
+match); `list` shows every nook configured in the current repo (flagging any
+that aren't linked into the current worktree, and warning about any legacy,
+pre-slug nooks); `-n <name> show` prints its slug, name, uuid, and resolved
+checkout path, link state, remote URL, push refspec, and current
+branch/tracking state; `-n <name> remove [--force]` fully deletes the nook
+*locally* — config, exclude entry, inner git dir, container, and symlink —
+refusing if there are unpushed commits unless `--force` is given; it never
+touches the upstream. `-n <name> destroy --yes` removes the nook locally
+and *also* deletes its published refs on the remote and deindexes it — this
+is irreversible and aborts, changing nothing, if it can't reach the remote.
 `materialize` creates the missing symlink(s) for already-configured nooks
 in the worktree you run it from — use it after `git clone` or after `git
-worktree add`; everything else (`-n <name> run <git-args...>`) is passthrough git.
+worktree add`; `reindex` rebuilds `refs/nook/index` from every nook's
+manifest, for when the index is stale or missing; everything else
+(`-n <name> run <git-args...>`) is passthrough git.
 
 ## Releasing
 
