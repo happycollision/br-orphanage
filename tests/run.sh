@@ -1837,6 +1837,25 @@ PG2="${WORK}/pg2"; make_project_repo "${PG2}" no pg2
 PG2_RC=$(cd "${PG2}"; "${NOOK}" -n beads run pull --no-rebase --no-edit >/dev/null 2>&1; echo $?)
 assert_eq "matching-uuid pull is allowed" "0" "${PG2_RC}"
 
+section "migration: legacy bare-name nook is detected and flagged (no auto-migrate)"
+
+LG="${WORK}/legacy"; make_project_repo "${LG}" yes lg
+# Simulate an OLD-layout nook: a config key with a bare name (no .id3.owner.repo).
+( cd "${LG}"; git config "nook.beads.dir" ".beads"
+  mkdir -p .git/nook/beads.git .git/nook/beads.nook/.beads )
+LG_OUT=$(cd "${LG}"; "${NOOK}" list 2>&1 || true)
+assert_contains "legacy layout is detected" "${LG_OUT}" "older git-nook layout"
+assert_contains "points at MIGRATION.md" "${LG_OUT}" "MIGRATION.md"
+assert_contains "tells agent not to auto-migrate" "${LG_OUT}" "do not"
+assert_file_exists "MIGRATION.md exists in repo" "${REPO_UNDER_TEST}/MIGRATION.md"
+
+section "migration: a modern slug nook does NOT trigger the legacy warning"
+
+MD="${WORK}/modern"; make_project_repo "${MD}" yes md
+( cd "${MD}"; "${NOOK}" init beads origin --dir .beads )
+MD_OUT=$(cd "${MD}"; "${NOOK}" list 2>&1 || true)
+assert_true "modern slug nook does not warn about legacy" test -z "$(printf '%s' "${MD_OUT}" | grep -i 'older git-nook layout' || true)"
+
 # --- Summary ---------------------------------------------------------------------
 
 section "Summary"

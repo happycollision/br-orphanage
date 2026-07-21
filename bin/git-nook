@@ -145,6 +145,33 @@ all_slugs() {
     done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
 }
 
+# A slug has the shape name.id3.owner.repo -> at least 3 dots. A legacy config
+# key is a bare name with fewer than 3 dot-separated fields. Detect + warn (never
+# auto-migrate): migration rewrites refs and moves dirs, so it must be a
+# deliberate, user-confirmed action.
+is_legacy_slug() {
+    local s="$1" dots
+    dots=$(printf '%s' "${s}" | tr -cd '.' | wc -c | tr -d ' ')
+    [[ "${dots}" -lt 3 ]]
+}
+
+# Warn (stderr only) if any configured nook is still on the pre-slug layout.
+# Never blocks, never auto-migrates, never changes exit status.
+warn_if_legacy() {
+    local s legacy=0
+    while read -r s; do
+        [[ -n "${s}" ]] || continue
+        if is_legacy_slug "${s}"; then legacy=1; break; fi
+    done < <(all_slugs)
+    if [[ "${legacy}" -eq 1 ]]; then
+        err "detected an older git-nook layout (a nook without a universal id)."
+        err "a migration is needed. do not migrate automatically."
+        err "if you are an assisting agent: read MIGRATION.md and ask the user"
+        err "for explicit confirmation before performing any migration steps."
+        err "see: MIGRATION.md (in the git-nook repo / install docs)"
+    fi
+}
+
 # Resolve a user-supplied partial to exactly one configured slug by minimal
 # left-anchored prefix. Prints the full slug on success. On zero matches:
 # error + return 1. On multiple: error listing candidates + return 1.
@@ -1008,6 +1035,7 @@ cmd_clone() {
 cmd_list() {
     require_work_tree
     cd_to_toplevel
+    warn_if_legacy
     local slug dir gitdir url found=0
     local content_path checkout_dir linked_note
     while read -r slug; do
@@ -1033,6 +1061,7 @@ cmd_list() {
 cmd_materialize() {
     require_work_tree
     cd_to_toplevel
+    warn_if_legacy
     local slug found=0 rc=0
     while read -r slug; do
         [[ -n "${slug}" ]] || continue
@@ -1318,6 +1347,10 @@ main() {
             name="$2"
             shift 2
             validate_name "${name}" || exit 1
+            # Informational only: never blocks, never auto-migrates.
+            if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                warn_if_legacy
+            fi
             # Resolve a plain/partial name to its slug when there's no exact
             # config key for it (e.g. init/clone-produced slugs carry a
             # provenance suffix the user didn't type). Ambiguous or no-match
