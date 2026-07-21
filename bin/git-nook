@@ -382,20 +382,26 @@ _index_entry_json() {
         "$(json_escape "${user}")" "$(json_escape "${at}")"
 }
 
+# Split a compact info.json array body into one object per line, cutting only
+# at real object boundaries (before {"slug":), so a '},{' inside a value is
+# safe. Every entry begins with {"slug":..., so anchor the split on that
+# marker rather than on any '},{' -- a free-form value (e.g. a user identity)
+# can itself contain a literal '},{' with nothing else adjacent to that exact
+# marker, so splitting there would cut a value in half and leave an orphan
+# fragment in the output. Splitting only where '},{' is immediately followed
+# by '"slug":' guarantees the cut lands on a real object boundary. Also
+# strips a leading '[' and trailing ']' if present, so callers can pass
+# either the bare array or its body.
+_index_split_entries() {
+    printf '%s' "$1" | sed 's/^\[//; s/\]$//; s/},{"slug":/}\n{"slug":/g'
+}
+
 # Given the current array text (possibly empty), drop any entry for <slug>,
 # optionally append <entry> (may be empty to just drop), and print the
 # resulting compact JSON array. Splits objects on '},{'.
 _index_merge() {
     local arr="$1" slug="$2" entry="$3" body piece kept="" first=1 out
-    arr="${arr#[}"; arr="${arr%]}"
-    # Every entry begins with {"slug":..., so anchor the split on that marker
-    # rather than on any '},{' -- a free-form value (e.g. a user identity)
-    # can itself contain a literal '},{' with nothing else adjacent to that
-    # exact marker, so splitting there would cut a value in half and leave
-    # an orphan fragment in the output. Splitting only where '},{' is
-    # immediately followed by '"slug":' guarantees the cut lands on a real
-    # object boundary.
-    body=$(printf '%s' "${arr}" | sed 's/},{"slug":/}\n{"slug":/g')
+    body=$(_index_split_entries "${arr}")
     while IFS= read -r piece; do
         [[ -n "${piece}" ]] || continue
         case "${piece}" in
@@ -571,7 +577,7 @@ materialize_one() {
     # empty/absent work-tree with no stage is the other case that resumes.
     if [[ -L "${content_path}" ]]; then
         t=$(cd "${content_path}" 2>/dev/null && pwd -P) || t=""
-        if [[ -n "${t}" && "${t}" == "$(cd "${container_dir}" && pwd -P)" ]]; then
+        if [[ -n "${t}" && "${t}" == "$(cd "${container_dir}" 2>/dev/null && pwd -P)" ]]; then
             local stage_probe="${container_dir}/.git-nook-migrate" only_entry=1
             if [[ -d "${checkout_dir}" ]] && [[ -n "$(ls -A "${checkout_dir}" 2>/dev/null)" ]]; then
                 ( shopt -s dotglob nullglob
@@ -884,7 +890,7 @@ cmd_clone() {
     index_json=$(_index_show_json "${url}")
     if [[ -n "${index_json}" ]]; then
         local body piece ename eslug eowner erepo
-        body=$(printf '%s' "${index_json}" | sed 's/},{"slug":/}\n{"slug":/g; s/^\[//; s/\]$//')
+        body=$(_index_split_entries "${index_json}")
         while IFS= read -r piece; do
             [[ -n "${piece}" ]] || continue
             ename=$(printf '%s' "${piece}" | sed -E 's/.*"name":"([^"]*)".*/\1/')
@@ -1006,9 +1012,12 @@ cmd_clone() {
     container_dir=$(canonical_container "${chosen}")
 
     [[ -n "$(ls -A "${container_dir}" 2>/dev/null)" ]] || made_ckout=1
-    # The files ref was proven to exist via ls-remote above, so a fetch
-    # failure here is always a real error (network, auth, remote gone
-    # since) -- never silently continue into an empty clone.
+    # The fetch can still fail even after the discovery above: the index path
+    # only proves an entry was published at some point (the index/candidate
+    # list can be stale -- e.g. the nook was since destroyed remotely), and
+    # even the ls-remote path can race with a concurrent deletion. Either way,
+    # a fetch failure here is a real error (stale reference, network, auth,
+    # remote gone since) -- never silently continue into an empty clone.
     if ! git --git-dir="${gitdir}" fetch -q origin; then
         rollback_add "${chosen}" "${dir}" "${toplevel}" "${gitdir}" "${container_dir}" "${made_link}" "${made_ckout}"
         err "clone: could not fetch ${files_ref} from ${url}; rolled back"; exit 1

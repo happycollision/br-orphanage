@@ -1800,6 +1800,35 @@ assert_contains "picker shows a repo_dir from the index" "${CL_OUT}" "repo-"
 assert_true "clone produced a symlink" test -L "${CL_CC}/notes"
 # Content of whichever candidate was chosen must be present.
 assert_true "cloned content nonempty" test -s "${CL_CC}/notes/x"
+# The index appends entries in push order (p1/alice/repo-one pushed first,
+# p2/bob/repo-two pushed second), so pick #2 deterministically selects
+# bob/repo-two's content ("two"), not alice/repo-one's ("one"). Assert the
+# specific candidate was actually materialized, not just "some" content.
+assert_eq "pick #2 selects bob/repo-two's content" "two" "$(cat "${CL_CC}/notes/x")"
+
+section "clone: falls back to ls-remote slug discovery when refs/nook/index is absent"
+
+# init always publishes refs/nook/index, so the normal single-candidate clone
+# test above goes through the index path. Force the OTHER path (no in-suite
+# coverage otherwise): delete refs/nook/index from the shared origin after
+# publishing a nook, then clone by name into a fresh repo and confirm it
+# still succeeds via remote_slugs_for_name's ls-remote scan.
+NI_SHARED="${WORK}/origins/nishared.git"; mkdir -p "$(dirname "${NI_SHARED}")"; git init -q --bare "${NI_SHARED}"
+NI_P1="${WORK}/ni-p1"; make_project_repo "${NI_P1}" no nip1
+( cd "${NI_P1}"; git remote add origin git@github.com:carol/repo-ni.git
+  "${NOOK}" init stash "${NI_SHARED}" --dir stash
+  echo stashed > stash/y; "${NOOK}" -n stash run add --all
+  "${NOOK}" -n stash run commit -m s; "${NOOK}" -n stash run push )
+
+# Delete the index ref the producer just published, forcing ls-remote fallback.
+git push -q "${NI_SHARED}" --delete refs/nook/index
+assert_eq "index ref deleted from origin" "" "$(git ls-remote "${NI_SHARED}" refs/nook/index)"
+
+NI_CC="${WORK}/ni-cons"; make_project_repo "${NI_CC}" no nicc
+NI_OUT=$( cd "${NI_CC}"; "${NOOK}" clone stash "${NI_SHARED}" --dir stash 2>&1 ) || true
+assert_true "no-index clone succeeds" test -L "${NI_CC}/stash"
+assert_eq "no-index clone content matches producer" "stashed" "$(cat "${NI_CC}/stash/y" 2>/dev/null)"
+assert_true "no-index clone reports success" test -z "$(printf '%s' "${NI_OUT}" | grep -i 'error\|refuse' || true)"
 
 section "pull guard: refuses when remote manifest uuid differs"
 
