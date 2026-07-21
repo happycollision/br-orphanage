@@ -176,16 +176,25 @@ warn_if_legacy() {
 # Resolve a user-supplied partial to exactly one configured slug by minimal
 # left-anchored prefix. Prints the full slug on success. On zero matches:
 # error + return 1. On multiple: error listing candidates + return 1.
+#
+# A slug's name field is always sanitized (build_slug runs it through
+# sanitize_field), so a raw partial containing any non-alphanumeric char
+# (e.g. "my-notes") can never literally prefix-match its own slug
+# ("my_notes.<id3>...") -- only the sanitized form of the partial can. Match
+# against BOTH the raw partial (covers a user typing an already-sanitized
+# slug/prefix verbatim) and its sanitized form (covers a user typing the
+# original, unsanitized name), so either spelling resolves.
 resolve_slug_prefix() {
-    local partial="$1" s matches=""
+    local partial="$1" sanitized s matches=""
+    sanitized=$(sanitize_field "${partial}")
     while read -r s; do
         [[ -n "${s}" ]] || continue
-        # Exact match wins immediately.
-        if [[ "${s}" == "${partial}" ]]; then
+        # Exact match wins immediately (raw or sanitized form).
+        if [[ "${s}" == "${partial}" || "${s}" == "${sanitized}" ]]; then
             printf '%s\n' "${s}"
             return 0
         fi
-        if [[ "${s}" == "${partial}"* ]]; then
+        if [[ "${s}" == "${partial}"* || "${s}" == "${sanitized}"* ]]; then
             matches="${matches}${s}"$'\n'
         fi
     done < <(all_slugs)
@@ -847,12 +856,19 @@ cmd_init() {
 
 # List candidate slugs on a remote matching <name>, via ls-remote on the
 # content refs. Prints matching slugs (one per line).
+#
+# A slug's name field is always sanitized (build_slug runs it through
+# sanitize_field), so the RAW name (e.g. "my-notes") never literally
+# prefixes its own slug ("my_notes.<id3>..."). Sanitize the name before
+# matching so this ls-remote fallback agrees with the index-discovery path's
+# effective behavior for such names.
 remote_slugs_for_name() {
-    local url="$1" name="$2" ref slug
+    local url="$1" name="$2" sname ref slug
+    sname=$(sanitize_field "${name}")
     git ls-remote "${url}" 'refs/nook/*/files' 2>/dev/null | while read -r _ ref; do
         slug="${ref#refs/nook/}"; slug="${slug%/files}"
         case "${slug}" in
-            "${name}".*) printf '%s\n' "${slug}" ;;
+            "${sname}".*) printf '%s\n' "${slug}" ;;
         esac
     done
 }
@@ -878,6 +894,16 @@ cmd_clone() {
     if url=$(git remote get-url "${target}" 2>/dev/null); then :
     elif [[ "${target}" == *[:/]* ]]; then url="${target}"
     else err "'${target}' is not a remote in this repo (and doesn't look like a URL)"; exit 1; fi
+
+    # Probe reachability up front. Without this, an unreachable remote lets
+    # remote_slugs_for_name's `git ls-remote ... | while read` die under
+    # `set -o pipefail` before any err() runs -- exit 128, no message at all.
+    # Fail loudly and distinctly here instead (this is a different diagnosis
+    # than "reachable but no matching nook", handled later).
+    if ! git ls-remote "${url}" >/dev/null 2>&1; then
+        err "cannot reach '${url}' to look for nook '${name}'"
+        exit 1
+    fi
 
     local chosen
 
@@ -925,7 +951,10 @@ cmd_clone() {
         fi
     else
         local candidates count
-        candidates=$(remote_slugs_for_name "${url}" "${name}")
+        # The reachability probe above already owns the "unreachable" error;
+        # don't let a residual pipefail failure here (e.g. a race between the
+        # probe and this call) abort silently under set -e.
+        candidates=$(remote_slugs_for_name "${url}" "${name}") || true
         candidates=$(printf '%s\n' "${candidates}" | grep -v '^$' || true)
         count=$(printf '%s\n' "${candidates}" | grep -c '.' || true)
         if [[ "${count}" -eq 0 ]]; then

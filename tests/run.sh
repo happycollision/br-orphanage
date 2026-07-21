@@ -1830,6 +1830,33 @@ assert_true "no-index clone succeeds" test -L "${NI_CC}/stash"
 assert_eq "no-index clone content matches producer" "stashed" "$(cat "${NI_CC}/stash/y" 2>/dev/null)"
 assert_true "no-index clone reports success" test -z "$(printf '%s' "${NI_OUT}" | grep -i 'error\|refuse' || true)"
 
+section "names: a name with a dash is addressable by -n and clonable"
+
+DN="${WORK}/dashname"; make_project_repo "${DN}" yes dnproj
+( cd "${DN}"; "${NOOK}" init my-notes origin --dir my-notes
+  echo hi > my-notes/f; "${NOOK}" -n my-notes run add --all
+  "${NOOK}" -n my-notes run commit -m s; "${NOOK}" -n my-notes run push )
+# -n by the raw dashed name must resolve:
+DN_RC=$(cd "${DN}"; "${NOOK}" -n my-notes run status >/dev/null 2>&1; echo $?)
+assert_eq "-n resolves a dashed name" "0" "${DN_RC}"
+# clone by dashed name via the NO-INDEX fallback must find it (delete index first):
+DN_ORIGIN="${WORK}/origins/dnproj.git"
+DN_SLUG=$(cd "${DN}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+git --git-dir="${DN}/.git/nook/${DN_SLUG}.git" push -q "${DN_ORIGIN}" --delete refs/nook/index
+assert_eq "index ref deleted for dashed-name origin" "" "$(git ls-remote "${DN_ORIGIN}" refs/nook/index)"
+DN2="${WORK}/dashname-clone"; make_project_repo "${DN2}" no dn2
+DN2_RC=$(cd "${DN2}"; "${NOOK}" clone my-notes "${DN_ORIGIN}" --dir my-notes >/dev/null 2>&1; echo $?)
+assert_eq "clone finds a dashed name via ls-remote fallback" "0" "${DN2_RC}"
+assert_contains "cloned dashed-name content present" "$(cat "${DN2}/my-notes/f" 2>/dev/null)" "hi"
+
+section "clone: unreachable remote fails with a clear message, not silently"
+
+UC="${WORK}/unreach"; make_project_repo "${UC}" no uc
+UC_RC=$(cd "${UC}"; "${NOOK}" clone notes /nonexistent/remote.git --dir notes >/dev/null 2>&1; echo $?)
+assert_eq "clone unreachable remote exits nonzero" "1" "${UC_RC}"
+UC_ERR=$(cd "${UC}"; "${NOOK}" clone notes /nonexistent/remote.git --dir notes 2>&1 >/dev/null || true)
+assert_contains "clone unreachable prints a reason" "${UC_ERR}" "cannot reach"
+
 section "pull guard: refuses when remote manifest uuid differs"
 
 PG_SHARED="${WORK}/origins/pgshared.git"; mkdir -p "$(dirname "${PG_SHARED}")"; git init -q --bare "${PG_SHARED}"
