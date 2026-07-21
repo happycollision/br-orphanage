@@ -472,13 +472,21 @@ assert_exit_nonzero "--dir pointing at a non-directory refused"
 assert_contains "non-directory --dir error is a clean err()" "${RUN_OUT}" "not a directory"
 rm "${ADD_PROJ}/badlink"
 
-# Names differing only by case would collide on case-insensitive filesystems.
+# Content dirs differing only by case would collide on case-insensitive
+# filesystems (the symlink/container paths would alias). This is a property
+# of the CONFIGURED DIR, not the nook name/slug (slugs embed a fresh random
+# uuid per init, so two same-named-but-differently-cased nooks never
+# actually produce colliding slugs) -- so exercise it via --dir, not name.
+# Deliberately filesystem-independent: the guard compares config values
+# textually and refuses before any filesystem operation, so this assertion
+# holds identically on case-sensitive (Linux) and case-insensitive (macOS)
+# filesystems alike.
 CASE_PROJ="${WORK}/proj-case-collide"
 make_project_repo "${CASE_PROJ}" yes "case-collide"
-(cd "${CASE_PROJ}" && "${NOOK}" init Casey origin >/dev/null)
-run_cmd_in "${CASE_PROJ}" "${NOOK}" init casey origin
-assert_exit_nonzero "case-colliding nook name refused"
-assert_contains "case-collision error names the existing nook" "${RUN_OUT}" "Casey"
+(cd "${CASE_PROJ}" && "${NOOK}" init one origin --dir Notes >/dev/null)
+run_cmd_in "${CASE_PROJ}" "${NOOK}" init two origin --dir notes
+assert_exit_nonzero "case-colliding content dir refused"
+assert_contains "case-collision error names the existing dir" "${RUN_OUT}" "differs only by case"
 
 section "list / show"
 
@@ -937,9 +945,10 @@ section "init refusals: duplicates and overlap"
 # collides on the DIR overlap check (both want dir "notes/"), which is the
 # real "you already have a nook here" refusal under init. A literal
 # same-slug collision (checked via channel_dir "${slug}") is not reachable
-# from the CLI with a fresh uuid; the case-insensitive full-slug collision
-# guard just below it is covered by the "init: creates a slug-keyed..."
-# section's case-collide coverage further up.
+# from the CLI with a fresh uuid; the case-insensitive collision guard is
+# dir-based (see "init refuses a content dir differing only by case"
+# further up), since that -- not the name/slug -- is the real hazard on a
+# case-insensitive filesystem.
 (cd "${REF_PROJ}" && "${NOOK}" init notes origin >/dev/null)
 run_cmd_in "${REF_PROJ}" "${NOOK}" init notes origin
 assert_exit_nonzero "re-init with the same default dir refused"
@@ -1631,6 +1640,22 @@ assert_true "host-tracked file untouched" test -f "${CLR}/taken/f"
 assert_true "host-tracked dir did not become a symlink" test ! -L "${CLR}/taken"
 RC2=$(cd "${CLR}"; "${NOOK}" clone beads "${CLONE_SHARED}" --dir ../escape >/dev/null 2>&1; echo $?)
 assert_eq "clone refuses escaping --dir" "1" "${RC2}"
+
+section "clone refuses a non-empty content dir (no silent content drop)"
+# Regression: clone must never silently drop fetched remote content because
+# the target dir already has local (untracked) files -- the old failure mode
+# exited 0, left the local files in place, and the fetched remote content
+# was simply absent from the work-tree; the documented daily flow (run add
+# --all && commit && push) would then publish a commit DELETING every
+# remote file upstream. Reuses the "beads" nook already pushed to
+# CLONE_SHARED above.
+CLND="${WORK}/clnd"; make_project_repo "${CLND}" no clnd
+( cd "${CLND}"; mkdir .beads; echo mine > .beads/local )
+RC3=$(cd "${CLND}"; "${NOOK}" clone beads "${CLONE_SHARED}" --dir .beads >/dev/null 2>&1; echo $?)
+assert_eq "clone refuses non-empty content dir" "1" "${RC3}"
+assert_true "local file preserved" test -f "${CLND}/.beads/local"
+assert_true "no nook was configured" test -z "$(cd "${CLND}" && git config --get-regexp '^nook\..*\.dir$')"
+assert_true "no inner repo created" test -z "$(ls -A "${CLND}/.git/nook" 2>/dev/null || true)"
 
 section "destroy: deletes upstream refs and local state"
 

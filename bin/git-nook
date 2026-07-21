@@ -715,15 +715,6 @@ cmd_init() {
     if channel_dir "${slug}" >/dev/null 2>&1; then
         err "nook '${slug}' already exists (see: git nook -n ${slug} show)"; exit 1
     fi
-    local existing existing_lc slug_lc
-    slug_lc=$(printf '%s' "${slug}" | tr '[:upper:]' '[:lower:]')
-    while read -r existing; do
-        [[ -n "${existing}" ]] || continue
-        existing_lc=$(printf '%s' "${existing}" | tr '[:upper:]' '[:lower:]')
-        if [[ "${existing_lc}" == "${slug_lc}" ]]; then
-            err "nook '${existing}' already exists and differs only by case (unsafe on case-insensitive filesystems)"; exit 1
-        fi
-    done < <(all_slugs)
 
     [[ -n "${dir}" ]] || dir="${name}"
     dir="${dir%/}"
@@ -740,6 +731,24 @@ cmd_init() {
         other_slug="${key#nook.}"; other_slug="${other_slug%.dir}"
         if [[ "${dir}/" == "${other_dir}/"* || "${other_dir}/" == "${dir}/"* ]]; then
             err "'${dir}/' overlaps nook '${other_slug}' (${other_dir}/)"; exit 1
+        fi
+    done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
+    # Content dirs differing only by case would collide on a case-insensitive
+    # filesystem (the symlink/container paths would alias) -- this is a
+    # hazard of the CONFIGURED DIR, not the nook name/slug (slugs embed a
+    # fresh random uuid per init, so two same-named-but-differently-cased
+    # nooks never actually produce colliding slugs; a slug-based check here
+    # would be unreachable dead code). The exact-same-dir case is already
+    # refused by the overlap guard just above, so the != guards against
+    # flagging an identical dir here.
+    local dir_lc other_dir_lc
+    dir_lc=$(printf '%s' "${dir}" | tr '[:upper:]' '[:lower:]')
+    while read -r key other_dir; do
+        [[ -n "${other_dir}" ]] || continue
+        other_dir_lc=$(printf '%s' "${other_dir}" | tr '[:upper:]' '[:lower:]')
+        if [[ "${other_dir_lc}" == "${dir_lc}" && "${other_dir}" != "${dir}" ]]; then
+            err "content dir '${dir}' differs only by case from existing nook dir '${other_dir}' (unsafe on case-insensitive filesystems)"
+            exit 1
         fi
     done < <(git config --get-regexp '^nook\..*\.dir$' 2>/dev/null || true)
 
@@ -929,6 +938,21 @@ cmd_clone() {
 
     if channel_dir "${chosen}" >/dev/null 2>&1; then
         err "nook '${chosen}' already exists locally"; exit 1
+    fi
+
+    # clone's whole purpose is to fetch remote content into a fresh location:
+    # if the target dir already exists with content, materialize_one's
+    # migration path can silently fail to populate the fetched HEAD (it only
+    # moves the pre-existing local files in; it never checks out HEAD when
+    # the checkout is otherwise empty), so the remote content never lands on
+    # disk -- yet clone still reports success. A later `run add --all &&
+    # commit && push` would then publish a commit that DELETES every remote
+    # file upstream. Refuse up front, before any inner repo/config/symlink is
+    # created, so there is nothing to roll back.
+    if [[ -d "${toplevel}/${dir}" ]] && [[ -n "$(ls -A "${toplevel}/${dir}" 2>/dev/null)" ]]; then
+        err "'${dir}/' already exists and is not empty; clone needs an empty or absent dir"
+        err "move your files aside, or use a different --dir, then re-run clone"
+        exit 1
     fi
 
     local files_ref meta_ref gitdir checkout_dir container_dir made_ckout="" made_link=""
