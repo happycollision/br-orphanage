@@ -38,9 +38,21 @@ and a rebuildable collection index:
 
 For each legacy nook `<name>` with content dir `<dir>` and remote `<url>`:
 
-1. Commit and push any pending work on the old nook so the old ref is current:
+**Naming note — read this before running anything:** while old and new nooks
+coexist, `nook.<name>.dir` (the legacy exact config key) and
+`nook.<newslug>.dir` (the new slug) are BOTH configured. `git nook -n <name>`
+does an exact-key match before prefix resolution, so for as long as the legacy
+key exists, `-n <name>` (the bare name) ALWAYS resolves to the OLD/legacy
+nook — never the new one. Always address the new nook by its FULL SLUG (from
+`git nook list`, e.g. `-n <name>.<id3>.<owner>.<repo>`, or an unambiguous
+longer prefix that isn't just `<name>`) for every step below. Only after step
+7 removes the legacy config key does the bare `<name>` become free to resolve
+to the new nook again.
+
+1. Commit and push any pending work on the OLD nook so the old ref is current:
    `git nook -n <name> run status`
-   (commit + push anything outstanding to the old ref).
+   (commit + push anything outstanding to the old ref). This is the one step
+   that is SUPPOSED to hit the legacy nook.
 
 2. Record the old remote URL and old ref:
    `git --git-dir=.git/nook/<name>.git config --get remote.origin.url`
@@ -49,32 +61,47 @@ For each legacy nook `<name>` with content dir `<dir>` and remote `<url>`:
 3. Initialize a NEW nook under the universal identity, into a temporary dir so
    it can't collide with the live one:
    `git nook init <name> <url> --dir <dir>.migrating`
+   Immediately run `git nook list` and note the full slug it was assigned,
+   e.g. `<newslug>` = `<name>.<id3>.<owner>.<repo>`. Use `<newslug>` — never
+   the bare `<name>` — for every remaining step until step 7c below.
 
-4. Import the old history into the new inner repo (find the new slug via
-   `git nook list`):
+4. Import the old history into the new inner repo:
    `git --git-dir=.git/nook/<newslug>.git fetch <url> \
         'refs/nook/<owner>/<project>/<name>:refs/heads/imported'`
    Then set the new main to the imported history (fresh nook has an empty main):
    `git --git-dir=.git/nook/<newslug>.git update-ref refs/heads/main imported`
-   `git nook -n <name> run reset --hard main`
+   `git nook -n <newslug> run reset --hard main`
 
 5. Publish the new refs:
-   `git nook -n <name> run push`
+   `git nook -n <newslug> run push`
    Verify:
    `git ls-remote <url> 'refs/nook/<newslug>/*'`
    `git ls-remote <url> refs/nook/index`
 
-6. Move content into the real dir and drop the temporary one:
-   remove the new nook's temporary `<dir>.migrating` symlink, reconcile the
-   content into `<dir>`, and re-run `git nook materialize` if needed. (Simplest:
-   `git nook -n <name> remove` the temp nook after confirming the ref is good,
-   then `git nook clone <name> <url> --dir <dir>` into the real dir.)
+6. Confirm the new nook's content looks right (diff it against the old
+   content dir, spot-check history, whatever gives confidence) and confirm it
+   is good on ALL machines that use this nook before proceeding — nothing
+   past this point is reversible without the old ref, which is still intact.
 
-7. Once the new nook is confirmed good on ALL machines, delete the OLD ref and
-   OLD local layout:
-   `git push <url> --delete refs/nook/<owner>/<project>/<name>`
-   `rm -rf .git/nook/<name>.git .git/nook/<name>.nook`
-   `git config --remove-section nook.<name>`
+7. Once — and only once — the new nook is confirmed good everywhere, retire
+   the OLD nook and promote the new one into the real content dir, in this
+   order:
+   a. Remove the NEW nook's temporary registration (this deletes only the
+      `.migrating` bookkeeping; the new ref published in step 5 is untouched
+      because it lives on the remote, not in this local checkout):
+      `git nook -n <newslug> remove`
+      then remove the now-unused `<dir>.migrating` symlink/dir if anything
+      remains locally.
+   b. Delete the OLD remote ref (destructive; do this only now):
+      `git push <url> --delete refs/nook/<owner>/<project>/<name>`
+   c. Delete the OLD local layout, freeing the bare `<name>` and the real
+      `<dir>`:
+      `git config --remove-section nook.<name>`
+      `rm -rf .git/nook/<name>.git .git/nook/<name>.nook`
+      remove the old `<dir>` symlink/content if still present.
+   d. Clone the new nook into the now-free real dir (picks up `<newslug>`
+      from the index automatically):
+      `git nook clone <name> <url> --dir <dir>`
 
 8. Rebuild the index to reflect the final state:
    `git nook reindex`

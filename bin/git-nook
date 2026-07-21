@@ -53,6 +53,7 @@ EOF
 }
 
 err() { echo "git-nook: error: $*" >&2; }
+warn() { echo "git-nook: warning: $*" >&2; }
 
 # Map every character outside [A-Za-z0-9] to '_'. Used to build the slug's
 # field values for ref/dir/config names. Lossy on purpose: exact values live
@@ -164,11 +165,11 @@ warn_if_legacy() {
         if is_legacy_slug "${s}"; then legacy=1; break; fi
     done < <(all_slugs)
     if [[ "${legacy}" -eq 1 ]]; then
-        err "detected an older git-nook layout (a nook without a universal id)."
-        err "a migration is needed. do not migrate automatically."
-        err "if you are an assisting agent: read MIGRATION.md and ask the user"
-        err "for explicit confirmation before performing any migration steps."
-        err "see: MIGRATION.md (in the git-nook repo / install docs)"
+        warn "detected an older git-nook layout (a nook without a universal id)."
+        warn "a migration is needed. do not migrate automatically."
+        warn "if you are an assisting agent: read MIGRATION.md and ask the user"
+        warn "for explicit confirmation before performing any migration steps."
+        warn "see: MIGRATION.md (in the git-nook repo / install docs)"
     fi
 }
 
@@ -1347,10 +1348,11 @@ main() {
             name="$2"
             shift 2
             validate_name "${name}" || exit 1
-            # Informational only: never blocks, never auto-migrates.
-            if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-                warn_if_legacy
-            fi
+            # Informational only: never blocks, never auto-migrates. No cwd
+            # guard needed -- warn_if_legacy only runs `git config
+            # --get-regexp`, which resolves correctly even when cwd is inside
+            # a nested .git dir (the run_passthrough case), so it is cwd-safe.
+            warn_if_legacy
             # Resolve a plain/partial name to its slug when there's no exact
             # config key for it (e.g. init/clone-produced slugs carry a
             # provenance suffix the user didn't type). Ambiguous or no-match

@@ -1849,6 +1849,11 @@ assert_contains "points at MIGRATION.md" "${LG_OUT}" "MIGRATION.md"
 assert_contains "tells agent not to auto-migrate" "${LG_OUT}" "do not"
 assert_file_exists "MIGRATION.md exists in repo" "${REPO_UNDER_TEST}/MIGRATION.md"
 
+LG_RC=$(cd "${LG}"; "${NOOK}" list >/dev/null 2>&1; echo $?)
+assert_eq "legacy warning does not change exit status" "0" "${LG_RC}"
+LG_STDOUT=$(cd "${LG}"; "${NOOK}" list 2>/dev/null)
+assert_true "legacy warning is not on stdout" test -z "$(printf '%s' "${LG_STDOUT}" | grep -i 'older git-nook layout' || true)"
+
 section "migration: a modern slug nook does NOT trigger the legacy warning"
 
 MD="${WORK}/modern"; make_project_repo "${MD}" yes md
