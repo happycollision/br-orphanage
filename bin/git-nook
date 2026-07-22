@@ -9,7 +9,10 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 # git-nook — real git for a directory your host repo won't track.
 #
 # A nook is an ordinary git repository whose git-dir hides under the parent
-# repo's .git/ and whose worktree is a content dir the parent excludes.
+# repo's .git/, but whose worktree (the "primary home") is a REAL directory
+# in some worktree of the parent repo -- excluded via that worktree's
+# info/exclude, never nested under .git/ (so .git-path-hostile tools can read
+# it). Every other worktree exposes it via a symlink to that home.
 # 'init' creates a brand-new one; 'clone' adopts an existing one from a
 # remote; every other operation is plain git run against it through the
 # passthrough:
@@ -1296,20 +1299,17 @@ run_passthrough() {
     local name="$1"; shift
     local gitdir checkout_dir
     # Deliberately do NOT call `git rev-parse --show-toplevel` here (nor
-    # anything else that requires a configured work tree). The caller's cwd
-    # may be physically inside the parent's .git dir: the per-worktree
-    # content path is a symlink to the nook's nested work-tree under
-    # <common-git-dir>/nook/<name>.nook/<basename(dir)>, so `cd`-ing into a
-    # nook (directly, or via a shell that resolves symlinks) puts $PWD there.
-    # From such a cwd, git's ambient discovery still resolves
-    # --git-dir/--git-common-dir and config correctly (it just walks up to
-    # the real .git that contains the cwd) but --show-toplevel refuses
-    # ("fatal: this operation must be run in a work tree") because there is
-    # no work tree configured for that location. inner_git_dir only needs
-    # common_git_dir; canonical_worktree additionally reads the
-    # nook.<name>.dir config via channel_dir, which git resolves fine even
-    # from inside .git. Both keep working here — so route everything through
-    # those instead of toplevel.
+    # anything else that requires a configured work tree). A caller's cwd may
+    # be physically inside a nook's checkout (directly, or via a shell that
+    # resolves the per-worktree symlink to the primary home), which need not
+    # be a configured work tree of the PARENT repo. From such a cwd, git's
+    # ambient discovery still resolves --git-dir/--git-common-dir and config
+    # correctly (it just walks up to the real .git that contains the cwd) but
+    # --show-toplevel can refuse ("fatal: this operation must be run in a
+    # work tree"). inner_git_dir only needs common_git_dir; canonical_worktree
+    # resolves the recorded nook.<name>.home (or reads nook.<name>.dir via
+    # channel_dir as a fallback), both of which git resolves fine even from
+    # inside .git. Route everything through those instead of toplevel.
     gitdir=$(inner_git_dir "${name}")
     checkout_dir=$(canonical_worktree "${name}")
     if [[ ! -d "${gitdir}" ]]; then
