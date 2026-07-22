@@ -102,6 +102,14 @@ git nook list                 # see this repo's nooks (expect: beads)
 git nook -n beads run status  # any git command works against the nook
 ```
 
+> **Note:** this repo's own `beads` nook is a **legacy nook** — it was
+> created with the old, pre-slug `add` command, before the universal-identity
+> work landed. As a result, `git nook list` now prints a migration warning
+> for it. Migrating it to the new slug/manifest/index layout is a deliberate,
+> manual procedure documented in `MIGRATION.md` and must **not** be done
+> automatically — do not run any migration step without the human explicitly
+> confirming it first.
+
 The daily beads flow on this repo (**currently blocked by NGI-3 — see warning above**):
 
 ```bash
