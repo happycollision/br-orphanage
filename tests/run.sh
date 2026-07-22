@@ -1191,6 +1191,31 @@ assert_eq "restored content matches HEAD" "x" "$(cat "${MZ}/.beads/f.txt")"
 MZ_STATUS_AFTER_RESTORE=$(cd "${MZ}" && "${NOOK}" -n beads run status --porcelain)
 assert_eq "no phantom deletions after restore" "" "${MZ_STATUS_AFTER_RESTORE}"
 
+section "materialize: HEAD with a legitimately empty tree is a clean no-op, not an error"
+# A nook whose HEAD commit legitimately has an empty tree (every tracked file
+# was deleted and that deletion committed) must not make materialize error.
+# populate_checkout_from_head's old HEAD-exists-only guard let `git checkout
+# -- .` run against an empty index, which fails with "pathspec '.' did not
+# match any file(s)" -- reached via the election branch AND the issue-5
+# empty-home-repopulate branch alike.
+ET=${WORK}/proj-emptytree; make_project_repo "${ET}" yes emptytree-demo
+(cd "${ET}" && "${NOOK}" init beads origin --dir .beads)
+printf 'x\n' > "${ET}/.beads/f.txt"
+(cd "${ET}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
+# Commit the deletion of every tracked file -> HEAD's tree is legitimately empty.
+(cd "${ET}" && "${NOOK}" -n beads run rm -q -r . && "${NOOK}" -n beads run commit -q -m "remove everything")
+ET_TREE=$(git --git-dir="${ET}/.git/nook/$(slug_for_name "${ET}" beads).git" ls-tree -r --name-only HEAD)
+assert_eq "precondition: HEAD's committed tree is empty" "" "${ET_TREE}"
+# Empty the home dir's files too (as if it needed re-materializing) and
+# re-run materialize: it must succeed cleanly, not error.
+rm -f "${ET}/.beads"/*
+run_cmd_in "${ET}" "${NOOK}" materialize
+assert_exit_zero "materialize succeeds against an empty-tree HEAD (no checkout pathspec error)"
+if [[ "${RUN_OUT}" == *"did not match any file"* ]]; then fail "pathspec error leaked"; else pass "no pathspec error"; fi
+assert_true "home dir is (correctly) empty, matching the empty tree" test -z "$(ls -A "${ET}/.beads" 2>/dev/null)"
+ET_STATUS=$(cd "${ET}" && "${NOOK}" -n beads run status --porcelain)
+assert_eq "run status is clean after materialize against an empty tree" "" "${ET_STATUS}"
+
 section "materialize: refuses when the peer's content path and the home both have content"
 # A real dir with content at the peer's configured path, while the primary
 # home also has content -> ambiguous -> refuse (never silently pick a side).

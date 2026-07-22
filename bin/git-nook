@@ -557,11 +557,17 @@ index_remove_entry() {
 # Populate a nook's nested work-tree from the inner repo's committed HEAD.
 # Used only when the work-tree is the source of truth (absent / correct-symlink
 # / empty-real-dir cases) -- NEVER before migrating a legacy real dir, whose
-# on-disk files are themselves the authoritative content. Unborn/empty HEAD is
-# a clean no-op (leave the work-tree empty). Returns 1 on a real checkout error.
+# on-disk files are themselves the authoritative content. Unborn HEAD (no
+# commits yet) and a legitimately EMPTY committed tree (HEAD exists, but every
+# tracked file was since deleted and that deletion committed) are both a
+# clean no-op (leave the work-tree empty) -- `git checkout -- .` errors with
+# "pathspec '.' did not match any file(s)" against an empty tree/index, so
+# detect emptiness ourselves rather than let checkout discover it. Returns 1
+# on a real checkout error.
 populate_checkout_from_head() {
     local gitdir="$1" checkout_dir="$2"
-    if git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    if git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1 \
+        && [[ -n "$(git --git-dir="${gitdir}" ls-tree -r --name-only HEAD)" ]]; then
         if ! git --git-dir="${gitdir}" --work-tree="${checkout_dir}" checkout -- .; then
             err "could not populate the nook checkout at ${checkout_dir}"
             return 1
@@ -609,7 +615,12 @@ materialize_one() {
             # silently violates the whole NGI-3 point of this feature. Refuse
             # cleanly instead, mirroring the primary/peer branches' guards.
             local live_t
-            live_t=$(cd "${content_path}" 2>/dev/null && pwd -P) || live_t=""
+            # `cd` only resolves a symlink that targets a DIRECTORY; a
+            # symlink targeting a regular file (still "live" -- the file
+            # exists) would otherwise print a confusing empty ''. Fall back
+            # to readlink (raw target, unresolved) so the message always
+            # names something.
+            live_t=$(cd "${content_path}" 2>/dev/null && pwd -P) || live_t=$(readlink "${content_path}" 2>/dev/null) || live_t=""
             err "'${dir}' is a symlink to '${live_t}', not a resolvable nook home; refusing to elect through it"
             return 1
         fi
@@ -619,16 +630,22 @@ materialize_one() {
         if [[ -n "${cand_has}" && -n "${head_has}" ]]; then
             # Both have content. If this nook NEVER had a recorded home
             # (home_before empty -- a pre-home nook created before this
-            # feature existed, or a repo that was since moved/renamed), the
-            # existing real dir at cand almost certainly IS the nook's own
-            # checkout (there is nowhere else it could have come from): adopt
-            # it as authoritative rather than dead-ending in "reconcile
-            # manually" forever. This is safe specifically because it is a
-            # REAL directory (never a live symlink -- refused above) and
-            # populate_checkout_from_head is skipped below, so no existing
-            # file is touched. A promotion (home_before WAS recorded and then
-            # vanished) does NOT take this path -- there, independent content
-            # left at a peer's candidate dir is genuinely ambiguous and must
+            # feature existed), the existing real dir at cand almost
+            # certainly IS the nook's own checkout (there is nowhere else it
+            # could have come from): adopt it as authoritative rather than
+            # dead-ending in "reconcile manually" forever. This is safe
+            # specifically because it is a REAL directory (never a live
+            # symlink -- refused above) and populate_checkout_from_head is
+            # skipped below, so no existing file is touched.
+            #
+            # NOTE: a repo dir that was since moved/renamed does NOT reach
+            # here -- it still has its stale (now-unresolvable) recorded
+            # home, so it takes the "home_before WAS recorded" branch below
+            # and correctly REFUSES (recover by re-pointing
+            # nook.<slug>.home to the repo's new path). Likewise, a
+            # promotion (home_before WAS recorded and then vanished) does
+            # NOT take this adoption path -- there, independent content left
+            # at a peer's candidate dir is genuinely ambiguous and must
             # still refuse (see the promotion-clobber-refusal test).
             if [[ -z "${home_before}" ]]; then
                 adopting=1
