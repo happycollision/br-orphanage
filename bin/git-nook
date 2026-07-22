@@ -596,16 +596,46 @@ materialize_one() {
     if [[ -z "${home_before}" ]] || ! home_real=$(resolve_primary "${name}" 2>/dev/null); then
         # ELECT or PROMOTE: this worktree becomes primary. If content_path is
         # a dangling symlink (its old primary vanished), drop it first so it
-        # doesn't get mistaken for existing content below.
+        # doesn't get mistaken for existing content below -- it holds no user
+        # data, so removing it is always safe.
         if [[ -L "${content_path}" ]] && [[ ! -e "${content_path}" ]]; then
             rm -f "${content_path}"
+        elif [[ -L "${content_path}" ]]; then
+            # A LIVE symlink (points somewhere that still exists) must never
+            # be silently elected through: mkdir -p/ls -A/populate would all
+            # follow it, checking content out into whatever it targets and
+            # recording THAT foreign path as the home -- if it happens to
+            # resolve under .git/ (e.g. a stale legacy-container link), that
+            # silently violates the whole NGI-3 point of this feature. Refuse
+            # cleanly instead, mirroring the primary/peer branches' guards.
+            local live_t
+            live_t=$(cd "${content_path}" 2>/dev/null && pwd -P) || live_t=""
+            err "'${dir}' is a symlink to '${live_t}', not a resolvable nook home; refusing to elect through it"
+            return 1
         fi
-        local cand_has="" head_has=""
+        local cand_has="" head_has="" adopting=0
         [[ -d "${cand}" ]] && cand_has=$(ls -A "${cand}" 2>/dev/null)
         git --git-dir="${gitdir}" rev-parse --verify -q HEAD >/dev/null 2>&1 && head_has=1
         if [[ -n "${cand_has}" && -n "${head_has}" ]]; then
-            err "both '${dir}' and the nook have content; reconcile manually"
-            return 1
+            # Both have content. If this nook NEVER had a recorded home
+            # (home_before empty -- a pre-home nook created before this
+            # feature existed, or a repo that was since moved/renamed), the
+            # existing real dir at cand almost certainly IS the nook's own
+            # checkout (there is nowhere else it could have come from): adopt
+            # it as authoritative rather than dead-ending in "reconcile
+            # manually" forever. This is safe specifically because it is a
+            # REAL directory (never a live symlink -- refused above) and
+            # populate_checkout_from_head is skipped below, so no existing
+            # file is touched. A promotion (home_before WAS recorded and then
+            # vanished) does NOT take this path -- there, independent content
+            # left at a peer's candidate dir is genuinely ambiguous and must
+            # still refuse (see the promotion-clobber-refusal test).
+            if [[ -z "${home_before}" ]]; then
+                adopting=1
+            else
+                err "both '${dir}' and the nook have content; reconcile manually"
+                return 1
+            fi
         fi
         mkdir -p "${cand}" || { err "could not create the nook home at ${cand}"; return 1; }
         if [[ -z "${cand_has}" ]]; then
@@ -614,7 +644,11 @@ materialize_one() {
         fi
         set_primary_home "${name}" "${cand}"
         add_exclude_entry "/${dir}"
-        echo "git-nook: materialized ${name} -> ${dir}"
+        if [[ "${adopting}" -eq 1 ]]; then
+            echo "git-nook: materialized ${name} -> ${dir} (adopted existing content as the primary home)"
+        else
+            echo "git-nook: materialized ${name} -> ${dir}"
+        fi
         return 0
     fi
 
@@ -632,6 +666,15 @@ materialize_one() {
             return 1
         fi
         mkdir -p "${content_path}"
+        # The home dir survived but its FILES may not have (e.g. `git clean
+        # -x`, or a manual `rm` of only the contents): repopulate from HEAD
+        # when it's empty, symmetric with the election branch. Safe -- an
+        # empty dir has nothing to clobber. Never repopulate a non-empty home
+        # here; that could stomp legitimate uncommitted work.
+        if [[ -z "$(ls -A "${content_path}" 2>/dev/null)" ]]; then
+            # shellcheck disable=SC2310 # failure handled by the || return
+            populate_checkout_from_head "${gitdir}" "${content_path}" || return 1
+        fi
         add_exclude_entry "/${dir}"
         echo "git-nook: materialized ${name} -> ${dir}"
         return 0
@@ -639,6 +682,14 @@ materialize_one() {
 
     # This worktree is a PEER: content_path must be (or become) a symlink to
     # the home.
+    if [[ -L "${content_path}" ]] && [[ ! -e "${content_path}" ]]; then
+        # Dangling symlink: its old target (a since-dead primary, or a peer
+        # that has since been promoted away from) no longer resolves. It
+        # holds no user data, so drop it and fall through to recreate it
+        # pointing at the (possibly new) home below -- same reasoning as the
+        # election branch's dangling-symlink handling.
+        rm -f "${content_path}"
+    fi
     if [[ -L "${content_path}" ]]; then
         local t
         t=$(cd "${content_path}" 2>/dev/null && pwd -P) || t=""
@@ -1426,6 +1477,21 @@ main() {
                     materialize_one "${name}"
                     ;;
                 remove | destroy | run)
+                    # `run` needs a git repo to resolve anything at all; check
+                    # that FIRST so a bare "not inside a git repository" isn't
+                    # masked by the dangling-primary guard below.
+                    [[ "$1" == "run" ]] && require_git_repo
+                    # Existence check BEFORE the dangling-primary guard: a
+                    # nonexistent nook must get "no nook named", never the
+                    # "was its worktree removed?" hint, which only makes sense
+                    # for a nook that IS configured but whose recorded home is
+                    # gone. Ordering these the other way around (as originally
+                    # landed) misdiagnoses both a nonexistent nook and running
+                    # outside any repo as "materialize it".
+                    if ! channel_dir "${name}" >/dev/null 2>&1; then
+                        err "no nook named '${name}' (see: git nook list)"
+                        exit 1
+                    fi
                     # Dangling-primary guard: abort cleanly with a
                     # re-materialize hint before any child tool (git, br via
                     # run_passthrough) ever sees a missing checkout. materialize
@@ -1441,14 +1507,7 @@ main() {
                         destroy)
                             shift; cmd_destroy "${name}" "$@" ;;
                         run)
-                            shift
-                            require_git_repo
-                            if ! channel_dir "${name}" >/dev/null 2>&1; then
-                                err "no nook named '${name}' (see: git nook list)"
-                                exit 1
-                            fi
-                            run_passthrough "${name}" "$@"
-                            ;;
+                            shift; run_passthrough "${name}" "$@" ;;
                     esac
                     ;;
                 "")

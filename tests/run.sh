@@ -608,6 +608,39 @@ assert_contains "show reports linked state" "${RUN_OUT}" "linked:"
 # recover for any later reuse of this fixture
 (cd "${GONE}" && "${NOOK}" materialize >/dev/null)
 
+section "guard: existence/repo checks run BEFORE the dangling-primary hint (correct diagnosis)"
+# A NONEXISTENT nook under -n ... run must get "no nook named", never the
+# "was its worktree removed?" materialize hint -- that hint only makes sense
+# for a nook that IS configured but whose recorded home died. Without the
+# fix, the guard fired first and misdiagnosed this case (and running the
+# hinted materialize then errored differently: "no nook named").
+run_cmd_in "${GONE}" "${NOOK}" -n totally-bogus-nook run status
+assert_exit_nonzero "run on a nonexistent nook exits nonzero"
+assert_contains "nonexistent nook gets 'no nook named', not the materialize hint" "${RUN_OUT}" "no nook named"
+if [[ "${RUN_OUT}" == *"was its worktree removed"* ]]; then
+    fail "nonexistent nook wrongly got the dangling-primary hint"
+else
+    pass "nonexistent nook did not get the dangling-primary hint"
+fi
+# A genuinely configured-but-dangling nook must STILL get the materialize hint.
+rm -rf "${GONE}/stash"
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
+assert_contains "configured-but-dangling nook still gets the materialize hint" "${RUN_OUT}" "was its worktree removed"
+(cd "${GONE}" && "${NOOK}" materialize >/dev/null)   # recover for later reuse
+
+section "guard: -n <name> materialize is the exact recovery form the guard hints at (dispatch coverage)"
+# Every guard error prescribes `git nook -n <name> materialize`; confirm that
+# exact dispatch path (materialize routed through the -n branch, not just
+# top-level `git nook materialize`) actually works end-to-end.
+rm -rf "${GONE}/stash"
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
+assert_contains "guard hint names the exact -n <name> materialize form" "${RUN_OUT}" "-n ${GONE_SLUG} materialize"
+run_cmd_in "${GONE}" "${NOOK}" -n stash materialize
+assert_exit_zero "'-n <name> materialize' succeeds (the guard's own prescribed recovery)"
+assert_file_exists "'-n <name> materialize' recovered the content" "${GONE}/stash/keeper.txt"
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
+assert_exit_zero "run works again after '-n <name> materialize' recovery"
+
 section "passthrough: ambient git env vars are ignored"
 
 # Wrapper scripts, hooks, and shell prompts export GIT_DIR/GIT_WORK_TREE;
@@ -1143,6 +1176,21 @@ assert_eq "peer worktree parent status clean" "" "$(git -C "${WT}" status --porc
 (cd "${WT}" && "${NOOK}" materialize >/dev/null)
 assert_true "second materialize is a no-op (still a symlink)" test -L "${WT}/.beads"
 
+section "materialize: restores an emptied-but-present primary home (git clean -x recovery)"
+# The home DIR survives but its files were wiped (e.g. `git clean -x`, or a
+# manual `rm` of only the contents). The old code repopulated from HEAD on
+# every materialize; this layout's primary branch only `mkdir -p`s, so
+# without the fix `materialize` prints "materialized" but leaves the dir
+# empty and `run status` then shows every tracked file as deleted --
+# undercutting the "git clean -x is recoverable via re-materialize" story.
+rm -f "${MZ}/.beads"/*
+assert_true "home dir survives, but is now empty" test -z "$(ls -A "${MZ}/.beads" 2>/dev/null)"
+(cd "${MZ}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "committed content restored into the emptied home" "${MZ}/.beads/f.txt"
+assert_eq "restored content matches HEAD" "x" "$(cat "${MZ}/.beads/f.txt")"
+MZ_STATUS_AFTER_RESTORE=$(cd "${MZ}" && "${NOOK}" -n beads run status --porcelain)
+assert_eq "no phantom deletions after restore" "" "${MZ_STATUS_AFTER_RESTORE}"
+
 section "materialize: refuses when the peer's content path and the home both have content"
 # A real dir with content at the peer's configured path, while the primary
 # home also has content -> ambiguous -> refuse (never silently pick a side).
@@ -1174,6 +1222,59 @@ assert_file_exists "committed content restored from inner repo" "${PRW}/.beads/d
 assert_eq "home now points at the promoted worktree" \
     "$(cd "${PRW}/.beads" && pwd -P)" "$(cd "$(git -C "${PR}" config --get "nook.${PR_SLUG}.home")" && pwd -P)"
 
+section "materialize: a peer's dangling symlink re-resolves after another peer promotes (regression)"
+# 3+ worktrees: A=home, B and C are peers. A's dir dies; B promotes (becomes
+# the new real-dir primary). C's symlink now dangles (points at A's dead
+# path). C's materialize must NOT refuse forever -- it should drop the
+# dangling symlink and recreate it pointing at B's (the new) home.
+DP=${WORK}/proj-danglepeer; make_project_repo "${DP}" yes danglepeer-demo
+(cd "${DP}" && "${NOOK}" init beads origin --dir .beads)
+printf 'v1\n' > "${DP}/.beads/data.txt"
+(cd "${DP}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
+DPB=${WORK}/proj-danglepeer-b; git -C "${DP}" worktree add -q "${DPB}" -b featb
+DPC=${WORK}/proj-danglepeer-c; git -C "${DP}" worktree add -q "${DPC}" -b featc
+(cd "${DPB}" && "${NOOK}" materialize >/dev/null)
+(cd "${DPC}" && "${NOOK}" materialize >/dev/null)
+assert_true "B has a peer symlink before promotion" test -L "${DPB}/.beads"
+assert_true "C has a peer symlink before promotion" test -L "${DPC}/.beads"
+# Kill A's home; B promotes (becomes the new real-dir primary).
+rm -rf "${DP}/.beads"
+(cd "${DPB}" && "${NOOK}" materialize >/dev/null)
+if [[ -L "${DPB}/.beads" ]]; then fail "B must be a real dir after promotion"; else pass "B promoted to a real dir"; fi
+# C's symlink is now dangling (still points at A's dead path). Without the
+# fix, C's materialize hits the peer branch, resolves an empty target ('t=""'),
+# and refuses forever ("refusing to clobber").
+run_cmd_in "${DPC}" "${NOOK}" materialize
+assert_exit_zero "C's materialize succeeds despite a dangling symlink to the old home"
+assert_true "C got a fresh symlink" test -L "${DPC}/.beads"
+assert_eq "C's symlink now resolves to B's (the new) home" \
+    "$(cd "${DPB}/.beads" && pwd -P)" "$(cd "${DPC}/.beads" && pwd -P)"
+assert_file_exists "content visible through C's re-resolved symlink" "${DPC}/.beads/data.txt"
+
+section "election: refuses to elect through a live symlink (never records a home under it)"
+# No home recorded yet, and content_path is a LIVE (non-dangling) symlink --
+# e.g. a legacy-container leftover, or any user symlink. Electing through it
+# would follow it (mkdir -p/populate_checkout_from_head all resolve
+# symlinks) and record the FOREIGN target as the home -- if that target
+# happens to resolve under .git/, the home would silently violate NGI-3.
+ELS=${WORK}/proj-elect-livesym; make_project_repo "${ELS}" yes elect-livesym-demo
+(cd "${ELS}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
+ELS_SLUG=$(slug_for_name "${ELS}" beads)
+# Simulate a legacy container under .git/ that a live symlink still points at
+# (the scenario the reviewer called out as worst-case).
+ELS_LEGACY_DIR="${ELS}/.git/legacy-leftover"
+mkdir -p "${ELS_LEGACY_DIR}"; printf 'foreign\n' > "${ELS_LEGACY_DIR}/foreign.txt"
+# Unelect this nook entirely (simulate "no home ever recorded") and replace
+# its content path with a live symlink into the .git-nested legacy dir.
+git -C "${ELS}" config --unset "nook.${ELS_SLUG}.home"
+rm -rf "${ELS}/.beads"
+ln -s "${ELS_LEGACY_DIR}" "${ELS}/.beads"
+run_cmd_in "${ELS}" "${NOOK}" materialize
+assert_exit_nonzero "election refuses a live symlink at the content path"
+assert_contains "refusal names the dir" "${RUN_OUT}" ".beads"
+assert_true "the live symlink itself is left untouched" test -L "${ELS}/.beads"
+assert_true "no home was recorded" test -z "$(git -C "${ELS}" config --get "nook.${ELS_SLUG}.home" 2>/dev/null)"
+
 section "materialize: promotion refuses to clobber independent content at the target"
 PC=${WORK}/proj-promote-clobber; make_project_repo "${PC}" yes promote-clobber
 (cd "${PC}" && "${NOOK}" init beads origin --dir .beads)
@@ -1189,6 +1290,48 @@ mkdir -p "${PCW}/.beads"; printf 'independent\n' > "${PCW}/.beads/other.txt"
 run_cmd_in "${PCW}" "${NOOK}" materialize
 assert_exit_nonzero "promotion refuses when target holds independent content"
 assert_contains "refusal explains the conflict" "${RUN_OUT}" "reconcile manually"
+
+section "materialize: adopts a pre-home nook (created before this feature existed) with commit history"
+# A nook created before nook.<slug>.home existed (or whose repo dir was
+# since moved/renamed) has real, committed content at <toplevel>/<dir> and
+# nook.<slug>.dir set, but NO .home ever recorded. The guard/election must
+# not dead-end at "both '.beads' and the nook have content; reconcile
+# manually" forever -- it should ADOPT the existing dir as the home. This is
+# exactly this repo's own beads nook on merge day, and mirrors the old
+# "upgrades a legacy real-dir nook that has commit history" test from before
+# the worktree-home layout landed.
+UP=${WORK}/proj-upgrade; make_project_repo "${UP}" yes upgrade-demo
+UP_GITDIR="${UP}/.git/nook/legacy.git"
+mkdir -p "${UP}/.git/nook"
+git init -q --bare "${UP_GITDIR}"
+git --git-dir="${UP_GITDIR}" symbolic-ref HEAD refs/heads/main
+git --git-dir="${UP_GITDIR}" config core.bare false
+mkdir -p "${UP}/.legacy"; printf 'issue-1\n' > "${UP}/.legacy/data.txt"
+git --git-dir="${UP_GITDIR}" --work-tree="${UP}/.legacy" add data.txt
+git --git-dir="${UP_GITDIR}" --work-tree="${UP}/.legacy" -c user.email=t@t -c user.name=t commit -q -m "legacy history"
+git -C "${UP}" config nook.legacy.dir .legacy
+printf '/.legacy\n' >> "$(abs_git_path "${UP}" info/exclude)"
+# sanity: real dir, not a symlink, with content + history, NO .home recorded.
+assert_true "precondition: legacy content dir is a real dir" test -d "${UP}/.legacy"
+if [[ -L "${UP}/.legacy" ]]; then fail "precondition violated: already a symlink"; else pass "precondition: not a symlink yet"; fi
+assert_true "precondition: no home recorded yet" test -z "$(git -C "${UP}" config --get nook.legacy.home 2>/dev/null)"
+# ADOPT: materialize must adopt it, not refuse.
+run_cmd_in "${UP}" "${NOOK}" materialize
+assert_eq "materialize succeeds on a pre-home nook with history (out: ${RUN_OUT})" "0" "${RUN_EXIT}"
+assert_contains "materialize reports the adoption" "${RUN_OUT}" "adopted"
+if [[ -L "${UP}/.legacy" ]]; then fail "adopted dir must stay a real dir, not become a symlink"; else pass "adopted dir remains a real dir"; fi
+assert_file_exists "committed history preserved (file still present)" "${UP}/.legacy/data.txt"
+assert_eq "home now recorded at the adopted dir" \
+    "$(cd "${UP}/.legacy" && pwd -P)" "$(cd "$(git -C "${UP}" config --get nook.legacy.home)" && pwd -P)"
+# passthrough works and history is intact.
+UP_LOG=$(cd "${UP}" && "${NOOK}" -n legacy run log --oneline)
+assert_contains "committed history preserved after adoption" "${UP_LOG}" "legacy history"
+UP_STATUS=$(cd "${UP}" && "${NOOK}" -n legacy run status --porcelain)
+assert_eq "clean working tree after adoption" "" "${UP_STATUS}"
+assert_eq "host status clean" "" "$(git -C "${UP}" status --porcelain -- .legacy)"
+# run status works afterward without hitting the dangling-primary guard.
+run_cmd_in "${UP}" "${NOOK}" -n legacy run status
+assert_exit_zero "run status works after adoption (guard does not misfire)"
 
 section "materialize: no nooks configured prints guidance"
 MZE=${WORK}/proj-mz-empty; make_project_repo "${MZE}" no mzempty
