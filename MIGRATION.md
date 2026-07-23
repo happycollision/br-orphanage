@@ -129,23 +129,49 @@ any remote). Only the INNER repo (`.git/nook/<slug>.git`, the object store
 and refs) still lives under `.git/`; the checkout itself does not, and `br`
 now works against it normally.
 
-**The common case — adopting an existing nook.** A nook created before this
-feature has no `nook.<slug>.home` recorded. Migration for it is simply:
+**The common case — adopting an existing nook whose content dir is already a
+real directory.** A nook created before this feature has no
+`nook.<slug>.home` recorded. If `<toplevel>/<dir>` is ALREADY a real
+directory (not a symlink) with content whose history matches the inner
+repo, migration for it is simply:
 
 ```bash
 git nook materialize
 ```
 
-If `<toplevel>/<dir>` is already a real directory with content whose history
-matches the inner repo, `materialize` auto-adopts it in place: it records
-`nook.<slug>.home` pointing at that directory and does nothing else — it does
-not move, recreate, or clobber any file. This is unlike the identity
-migration above (which rewrites refs and reassigns directories); adoption
-only records a piece of local config, so it is safe to run without the
-step-by-step confirmation ceremony required above. **Still check with the
-user before running it on a nook you didn't create**, per this file's general
-posture — but understand that "adoption" itself carries none of the risk that
-the identity migration does.
+`materialize` auto-adopts it in place: it records `nook.<slug>.home` pointing
+at that directory and does nothing else — it does not move, recreate, or
+clobber any file. This is unlike the identity migration above (which
+rewrites refs and reassigns directories); adoption only records a piece of
+local config, so it is safe to run without the step-by-step confirmation
+ceremony required above. **Still check with the user before running it on a
+nook you didn't create**, per this file's general posture — but understand
+that "adoption" itself carries none of the risk that the identity migration
+does.
+
+**The container-symlink case — content dir is a live symlink into the old
+nested-content-dir container.** Many pre-worktree-home nooks are NOT a real
+directory yet: `<toplevel>/<dir>` is a live symlink resolving to
+`.git/nook/<slug>.nook/<base>/` (the container layout from the section
+above). `materialize` correctly REFUSES to elect through a live symlink —
+following it would check content out into that `.git`-nested target and
+record it as the home, silently defeating the entire point of this feature
+(NGI-3 forbids any `.git` path component). "Simply `git nook materialize`"
+is NOT enough here; do this instead (the refusal itself also prints these
+exact steps, with your real paths substituted in):
+
+```bash
+rm <toplevel>/<dir>                                   # the symlink only
+mkdir -p <toplevel>/<dir>
+mv .git/nook/<slug>.nook/<base>/* <toplevel>/<dir>/    # preserves uncommitted work
+git nook materialize                                  # adopts <toplevel>/<dir> as the home
+```
+
+Step 2's `mv` moves the container's content — not the container itself —
+into the new real directory, so any uncommitted edits sitting in the old
+container come along intact. Once `<toplevel>/<dir>` is a real directory
+with that content in it, the third step is the same safe, config-only
+adoption described in the common case above.
 
 **Other worktrees, and a fresh clone.** Run `git nook materialize` in any
 worktree that doesn't yet have the nook's files:

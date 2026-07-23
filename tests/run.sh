@@ -555,14 +555,16 @@ mkdir -p "${PT_PROJ}/src"
 PT_SUB_LOG=$(cd "${PT_PROJ}/src" && "${NOOK}" -n notes run log --oneline)
 assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first nook commit"
 
-# From inside the nook dir, relative pathspecs resolve as expected. The
-# configured path is a symlink into the canonical checkout under .git/, so
-# cwd here is PHYSICALLY inside the parent's .git/ directory. This works
-# because run_passthrough never calls `git rev-parse --show-toplevel` (which
-# refuses from inside .git — no work tree there); it derives the inner
-# git-dir and canonical checkout from git-common-dir, which ambient discovery
-# still resolves correctly even from inside .git, then runs git against
-# explicit --git-dir/--work-tree.
+# From inside the nook dir, relative pathspecs resolve as expected. In this
+# fixture the configured path IS the real primary-home dir (this is the
+# originating worktree), so cwd here is an ordinary work-tree dir, not inside
+# .git/ at all -- but run_passthrough is written to work either way: it
+# never calls `git rev-parse --show-toplevel` (which would refuse from
+# inside .git if cwd ever were there -- e.g. a peer worktree whose content
+# path is a symlink resolving elsewhere); it derives the inner git-dir and
+# checkout from git-common-dir/canonical_worktree, which ambient discovery
+# resolves correctly regardless of where cwd physically is, then runs git
+# against explicit --git-dir/--work-tree.
 printf 'more\n' >> "${PT_PROJ}/notes/first.md"
 run_cmd_in "${PT_PROJ}/notes" "${NOOK}" -n notes run add first.md
 assert_eq "relative pathspec add from inside the nook succeeded" "0" "${RUN_EXIT}"
@@ -1043,6 +1045,31 @@ assert_true "inner git dir removed despite real dir" test ! -e "${RM3}/.git/nook
 assert_true "user real dir left in place" test -f "${RM3_WT}/.beads/keep"
 assert_true "primary home in the OTHER worktree is untouched" test -f "${RM3}/.beads/f"
 
+section "remove: from a peer worktree also removes the primary home (no orphaned real dir)"
+# Pre-worktree-home, cmd_remove tore down the whole container. Now, run from
+# a PEER worktree (whose content path is just a symlink), remove must not
+# leave the primary worktree's real home dir orphaned on disk while its
+# config/exclude/inner-repo are torn down -- that would leave stray
+# untracked `.beads/` debris (and the associated committed data) sitting in
+# the primary worktree's host repo forever.
+RM4="${WORK}/rm4"; make_project_repo "${RM4}" yes rm4
+( cd "${RM4}"; "${NOOK}" init beads origin --dir .beads
+  echo x > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+RM4_SLUG=$(cd "${RM4}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+RM4_WT="${WORK}/rm4-wt"
+git -C "${RM4}" worktree add -q "${RM4_WT}" -b rm4feat
+( cd "${RM4_WT}"; "${NOOK}" materialize >/dev/null )
+assert_true "peer got a symlink" test -L "${RM4_WT}/.beads"
+assert_true "primary home is a real dir before remove" test -d "${RM4}/.beads"
+# Remove FROM THE PEER worktree.
+( cd "${RM4_WT}"; "${NOOK}" -n beads remove )
+assert_true "peer symlink removed" test ! -e "${RM4_WT}/.beads"
+assert_true "primary home dir removed too (no orphan)" test ! -e "${RM4}/.beads"
+assert_eq "primary worktree's host status is clean (no orphan debris)" "" "$(git -C "${RM4}" status --porcelain)"
+assert_true "config removed" test -z "$(cd "${RM4}" && git config --get "nook.${RM4_SLUG}.dir" 2>/dev/null)"
+assert_true "inner git dir removed" test ! -e "${RM4}/.git/nook/${RM4_SLUG}.git"
+
 section "remove: passthrough for a removed nook fails cleanly"
 
 RM_PROJ="${WORK}/proj-remove"
@@ -1299,6 +1326,40 @@ assert_exit_nonzero "election refuses a live symlink at the content path"
 assert_contains "refusal names the dir" "${RUN_OUT}" ".beads"
 assert_true "the live symlink itself is left untouched" test -L "${ELS}/.beads"
 assert_true "no home was recorded" test -z "$(git -C "${ELS}" config --get "nook.${ELS_SLUG}.home" 2>/dev/null)"
+
+section "election: live symlink into THIS nook's own container names the mv-then-materialize recovery"
+# This repo's actual state: a nook whose content path is a live symlink into
+# its own pre-worktree-home container (<common-git-dir>/nook/<slug>.nook/<base>).
+# materialize correctly refuses (NGI-3 guard), but the refusal must also name
+# the concrete recovery (rm the symlink, move the container's content into
+# place, re-materialize to adopt) -- not just refuse and leave the user stuck.
+CSL=${WORK}/proj-container-symlink; make_project_repo "${CSL}" yes container-symlink-demo
+(cd "${CSL}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
+CSL_SLUG=$(slug_for_name "${CSL}" beads)
+CSL_COMMON=$(cd "${CSL}" && git rev-parse --git-common-dir); CSL_COMMON="$(cd "${CSL}/${CSL_COMMON}" && pwd -P)"
+CSL_CONTAINER="${CSL_COMMON}/nook/${CSL_SLUG}.nook"
+CSL_CONTAINER_CONTENT="${CSL_CONTAINER}/.beads"
+mkdir -p "${CSL_CONTAINER_CONTENT}"
+printf 'container-content\n' > "${CSL_CONTAINER_CONTENT}/data.txt"
+# Simulate "never had a home, still on the container-symlink layout":
+# unset .home and replace the real dir with a live symlink into the container.
+git -C "${CSL}" config --unset "nook.${CSL_SLUG}.home"
+rm -rf "${CSL}/.beads"
+ln -s "${CSL_CONTAINER_CONTENT}" "${CSL}/.beads"
+run_cmd_in "${CSL}" "${NOOK}" materialize
+assert_exit_nonzero "materialize still refuses (NGI-3 guard intact)"
+CSL_REAL="$(cd "${CSL}" && pwd -P)"
+assert_contains "refusal names the recovery: rm the symlink" "${RUN_OUT}" "rm '${CSL_REAL}/.beads'"
+assert_contains "refusal names the recovery: mv the container content" "${RUN_OUT}" "mv '${CSL_CONTAINER_CONTENT}'"
+assert_contains "refusal names the recovery: re-run materialize to adopt" "${RUN_OUT}" "git nook materialize"
+assert_contains "refusal points at MIGRATION.md" "${RUN_OUT}" "MIGRATION.md"
+# Follow the prescribed recovery literally and confirm it actually works.
+rm "${CSL}/.beads"
+mkdir -p "${CSL}/.beads"
+( shopt -s dotglob nullglob; mv "${CSL_CONTAINER_CONTENT}"/* "${CSL}/.beads/" )
+(cd "${CSL}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "adopted content present after following the recovery steps" "${CSL}/.beads/data.txt"
+if [[ -L "${CSL}/.beads" ]]; then fail "adopted dir must be real, not a symlink"; else pass "adopted dir is real"; fi
 
 section "materialize: promotion refuses to clobber independent content at the target"
 PC=${WORK}/proj-promote-clobber; make_project_repo "${PC}" yes promote-clobber
@@ -1605,6 +1666,26 @@ run_cmd_in "${HH_PROJ}" bash -c '
   resolve_primary "$1" >/dev/null' "${NOOK}" "${HH_SLUG}"
 assert_exit_nonzero "resolve_primary fails when home dir is missing"
 
+section "unit: home_candidate refuses a candidate with a .git path component (tampered config)"
+# home_candidate is the last line of defense against a hand-edited
+# nook.<slug>.dir pointing under .git/ (init/clone's --dir validation only
+# guards the CLI path; a directly-edited config key bypasses it entirely).
+# Without this guard, electing such a candidate would silently record a home
+# under .git/, defeating the whole NGI-3 point of this feature regardless of
+# how the tampered config got there.
+HC_PROJ="${WORK}/proj-home-candidate-tamper"
+make_project_repo "${HC_PROJ}" yes home-candidate-tamper
+(cd "${HC_PROJ}" && "${NOOK}" init tamperdemo origin --dir .tamperdemo >/dev/null)
+HC_SLUG=$(slug_for_name "${HC_PROJ}" tamperdemo)
+git -C "${HC_PROJ}" config "nook.${HC_SLUG}.dir" ".git/sneaky"
+# shellcheck disable=SC2016 # $0/$1 below are for the bash -c subshell, not this outer shell
+run_cmd_in "${HC_PROJ}" bash -c '
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "$0"
+  home_candidate "$1"' "${NOOK}" "${HC_SLUG}"
+assert_exit_nonzero "home_candidate refuses a .git-nested configured dir"
+assert_true "no candidate path was printed" test -z "${RUN_OUT}"
+
 section "unit: canonical_worktree returns recorded home when set"
 CW_PROJ="${WORK}/proj-cw"; make_project_repo "${CW_PROJ}" yes cw-demo
 (cd "${CW_PROJ}" && "${NOOK}" init cwd origin --dir .cwd >/dev/null)
@@ -1790,6 +1871,30 @@ assert_eq "manifest ref gone after destroy" "" \
 assert_true "local inner dir gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.git"
 assert_true "local container gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.nook"
 assert_true "local config gone" test -z "$(cd "${DS}" && git config --get "nook.${DS_SLUG}.dir" 2>/dev/null)"
+
+section "destroy: from a peer worktree removes the primary home (no stranded local copy)"
+# After destroy deletes the upstream refs, the primary home dir is the ONLY
+# surviving copy of the nook's content. If destroy (run from a peer) only
+# removed the peer's own symlink, that orphaned real dir in the primary
+# worktree would be the sole remaining copy, while the tool claims "destroyed
+# (local + upstream)" -- a stranded, undocumented local copy after a claimed
+# full destroy.
+DS2="${WORK}/ds2"; make_project_repo "${DS2}" yes ds2proj
+( cd "${DS2}"; "${NOOK}" init beads origin --dir .beads
+  echo z > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m seed; "${NOOK}" -n beads run push )
+DS2_SLUG=$(cd "${DS2}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+DS2_ORIGIN="${WORK}/origins/ds2proj.git"
+DS2_WT="${WORK}/ds2-wt"
+git -C "${DS2}" worktree add -q "${DS2_WT}" -b ds2feat
+( cd "${DS2_WT}"; "${NOOK}" materialize >/dev/null )
+assert_true "peer got a symlink before destroy" test -L "${DS2_WT}/.beads"
+assert_true "primary home is a real dir before destroy" test -d "${DS2}/.beads"
+( cd "${DS2_WT}"; "${NOOK}" -n beads destroy --yes )
+assert_eq "files ref gone after destroy" "" "$(git ls-remote "${DS2_ORIGIN}" "refs/nook/${DS2_SLUG}/files")"
+assert_true "peer symlink removed" test ! -e "${DS2_WT}/.beads"
+assert_true "primary home removed too (no stranded local copy)" test ! -e "${DS2}/.beads"
+assert_eq "primary worktree's host status is clean (no orphan debris)" "" "$(git -C "${DS2}" status --porcelain)"
 
 section "destroy: aborts and changes nothing if upstream delete fails"
 DSF="${WORK}/dsf"; make_project_repo "${DSF}" yes dsfproj

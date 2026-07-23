@@ -87,26 +87,30 @@ only the inner repo (objects/refs) does.
 > directory outside `.git/`, so `br` can read and write it normally. This is
 > verified against a fresh home-layout nook.
 >
-> That fix does **not** automatically make THIS repo's own `beads` nook work,
-> because it is a **legacy nook**: created before both the universal-identity
-> work (slug/manifest/index layout) and this worktree-home work. Getting `br`
-> working on it requires BOTH, in order:
-> 1. The identity migration (legacy bare-name -> slug), which is manual,
->    rewrites refs, and requires explicit human confirmation — see
->    `MIGRATION.md`.
-> 2. The worktree-home adoption (`git nook materialize`, once the nook is
->    addressable by its new slug), which is safe and non-destructive (it only
->    records local config) — see the "worktree-home layout" section of
->    `MIGRATION.md`.
+> That fix does **not** automatically make THIS repo's own `beads` nook work.
+> Verified against this repo's actual state: the identity/slug migration is
+> **already done** — `git config --get-regexp '^nook\.'` shows the modern,
+> slug-keyed config (`nook.beads.86d.happycollision.git_nook.dir`), and
+> `git nook list` prints no legacy-layout warning at all. What remains is
+> ONLY the worktree-home checkout relocation: this repo's `.beads` is
+> currently a live symlink into the old nested-content-dir container
+> (`.git/nook/beads.86d.happycollision.git_nook.nook/.beads`), not yet a real
+> directory outside `.git/`. `git nook materialize` correctly REFUSES to
+> elect through that live symlink (electing through it would silently put the
+> recorded home back under `.git/`, defeating the whole point of this fix) —
+> the one remaining step is the manual container-symlink relocation described
+> in MIGRATION.md's "worktree-home layout" section (`rm` the symlink, `mv` the
+> container's content into a real directory at `.beads`, then `git nook
+> materialize` adopts it — safe and non-destructive, it only records local
+> config once the directory is real).
 >
-> Do **not** run either step against this repo's `beads` nook without the
-> human explicitly confirming first — the identity migration in particular is
-> not reversible past its final cleanup step. Until both steps are done here,
-> continue to treat the `br` workflow below (and the session protocol above)
-> as broken for this repo's own beads nook specifically — do not rely on `br`
-> against it, and you cannot file beads issues from this checkout yet.
-> `git nook -n beads run <git...>` passthrough still works fine regardless
-> (it never depended on `br`).
+> Do **not** run that relocation against this repo's `beads` nook without the
+> human explicitly confirming first, per this repo's general migration
+> posture. Until it's done here, continue to treat the `br` workflow below
+> (and the session protocol above) as broken for this repo's own beads nook
+> specifically — do not rely on `br` against it, and you cannot file beads
+> issues from this checkout yet. `git nook -n beads run <git...>` passthrough
+> still works fine regardless (it never depended on `br`).
 >
 > Background: the `feat/nook-nested-content-dir` branch fixed a *separate* `br`
 > guard (directory name must be `.beads`/`_beads`) by nesting the content dir;
@@ -123,17 +127,17 @@ git nook list                 # see this repo's nooks (expect: beads)
 git nook -n beads run status  # any git command works against the nook
 ```
 
-> **Note:** this repo's own `beads` nook is a **legacy nook** — it was
-> created with the old, pre-slug `add` command, before the universal-identity
-> work landed. As a result, `git nook list` now prints a migration warning
-> for it. Migrating it to the new slug/manifest/index layout is a deliberate,
-> manual procedure documented in `MIGRATION.md` and must **not** be done
-> automatically — do not run any migration step without the human explicitly
-> confirming it first.
+> **Note:** the identity/slug migration for this repo's own `beads` nook is
+> **already done** — its config is slug-keyed
+> (`nook.beads.86d.happycollision.git_nook.dir`), and `git nook list` prints
+> no legacy-layout warning for it. What's left is only the one-time checkout
+> relocation out of `.git/` (the worktree-home layout's container-symlink
+> case — see MIGRATION.md), a manual, human-confirmed step — do not run it
+> automatically.
 
 The daily beads flow on this repo (**currently blocked for this repo's own
-beads nook specifically — legacy identity + pre-home checkout; see warning
-above**):
+beads nook specifically — pre-home checkout only, NOT legacy identity; see
+warning above**):
 
 ```bash
 br sync --flush-only          # beads DB -> .beads/issues.jsonl

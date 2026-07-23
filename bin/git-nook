@@ -112,10 +112,16 @@ require_work_tree() {
 
 # Looser than require_work_tree: succeeds anywhere git can resolve a repo,
 # INCLUDING physically inside a .git dir. The passthrough dispatch needs this
-# because a materialized nook's content path is a symlink into the nested
-# work-tree under the parent's .git/, so `cd`-ing into a nook lands cwd inside
-# .git — where --is-inside-work-tree prints "false" but run_passthrough still
-# works (it only needs common_git_dir). Rejecting that would break passthrough.
+# because a caller's cwd may be a nook's content path, physically inside the
+# parent's .git dir if that path happens to still be a legacy live symlink
+# into the pre-worktree-home container (or any other path that resolves
+# there) -- where --is-inside-work-tree prints "false" but run_passthrough
+# still works (it only needs common_git_dir). Rejecting that would break
+# passthrough. In the current worktree-home layout, a nook's content path is
+# ordinarily a real dir (the primary home) or a symlink to one, neither of
+# which is under .git/ -- but this guard stays looser than require_work_tree
+# regardless, since nothing prevents a caller's cwd from being some other
+# path inside .git/.
 require_git_repo() {
     if ! git rev-parse --git-dir >/dev/null 2>&1; then
         err "not inside a git repository"
@@ -239,13 +245,23 @@ primary_home() { git config --get "nook.${1}.home" 2>/dev/null || printf ''; }
 
 # The election target for the CURRENT worktree: <toplevel>/<dir>. Assumes cwd
 # is the work-tree root (callers run cd_to_toplevel first). Uses the
-# configured dir (nook.<slug>.dir); fails if that config is unset.
+# configured dir (nook.<slug>.dir); fails if that config is unset. init/clone
+# already validate --dir against a .git path component on the CLI path (see
+# their `.git | .git/* | */.git | */.git/*` guard), but nook.<slug>.dir is a
+# plain config key -- a directly hand-edited value bypasses that validation
+# entirely. Refuse here too, so this invariant holds regardless of how a
+# tampered config got there (the whole point of the worktree-home layout is
+# that a nook's checkout is NEVER under .git/).
 home_candidate() {
-    local slug="$1" dir
+    local slug="$1" dir cand
     dir=$(channel_dir "${slug}" 2>/dev/null) || dir=""
     dir="${dir%/}"
     [[ -n "${dir}" ]] || return 1
-    printf '%s/%s\n' "$(pwd)" "${dir}"
+    cand=$(printf '%s/%s\n' "$(pwd)" "${dir}")
+    case "${cand}" in
+        */.git | */.git/*) return 1 ;;
+    esac
+    printf '%s\n' "${cand}"
 }
 
 # Record / clear the primary home (local config; never pushed).
@@ -614,7 +630,7 @@ materialize_one() {
             # resolve under .git/ (e.g. a stale legacy-container link), that
             # silently violates the whole NGI-3 point of this feature. Refuse
             # cleanly instead, mirroring the primary/peer branches' guards.
-            local live_t
+            local live_t own_container
             # `cd` only resolves a symlink that targets a DIRECTORY; a
             # symlink targeting a regular file (still "live" -- the file
             # exists) would otherwise print a confusing empty ''. Fall back
@@ -622,6 +638,22 @@ materialize_one() {
             # names something.
             live_t=$(cd "${content_path}" 2>/dev/null && pwd -P) || live_t=$(readlink "${content_path}" 2>/dev/null) || live_t=""
             err "'${dir}' is a symlink to '${live_t}', not a resolvable nook home; refusing to elect through it"
+            # Make the common case actionable: a pre-worktree-home nook's
+            # container is <common-git-dir>/nook/<slug>.nook/, with the
+            # content dir nested under it at <container>/<basename(dir)> --
+            # exactly what content_path's symlink resolves to as live_t.
+            # Detect the resolved target landing under THIS nook's own
+            # container (not just anywhere under .git/) and name the exact
+            # recovery: move that content dir's contents into place, then
+            # materialize adopts it (see the pre-home-adoption branch above).
+            own_container="$(common_git_dir)/nook/${name}.nook"
+            if [[ "${live_t}" == "${own_container}"* ]]; then
+                err "this looks like the pre-worktree-home nested-content-dir layout; to migrate:"
+                err "  rm '${content_path}'"
+                err "  mkdir -p '${cand}' && mv '${live_t}'/* '${live_t}'/.[!.]* '${cand}/' 2>/dev/null"
+                err "  git nook materialize   # adopts '${cand}' as the primary home"
+                err "see MIGRATION.md for the full worktree-home migration procedure"
+            fi
             return 1
         fi
         local cand_has="" head_has="" adopting=0
@@ -743,7 +775,7 @@ materialize_one() {
 # created it -- only then is it safe to rm -rf (never wipe a pre-existing
 # user dir that init/clone merely adopted).
 rollback_add() {
-    local name="$1" dir="$2" toplevel="$3" gitdir="$4" home_dir="$5" made_home="$6"
+    local name="$1" dir="$2" gitdir="$3" home_dir="$4" made_home="$5"
     rm -rf "${gitdir}"
     unset_primary_home "${name}"
     git config --remove-section "nook.${name}" 2>/dev/null || true
@@ -868,7 +900,7 @@ cmd_init() {
 
     [[ -n "$(ls -A "${home_dir}" 2>/dev/null)" ]] || made_home=1
     if ! materialize_one "${slug}"; then
-        rollback_add "${slug}" "${dir}" "${toplevel}" "${gitdir}" "${home_dir}" "${made_home}"
+        rollback_add "${slug}" "${dir}" "${gitdir}" "${home_dir}" "${made_home}"
         err "materializing ${slug} failed; rolled back"; exit 1
     fi
 
@@ -1098,7 +1130,7 @@ cmd_clone() {
     # a fetch failure here is a real error (stale reference, network, auth,
     # remote gone since) -- never silently continue into an empty clone.
     if ! git --git-dir="${gitdir}" fetch -q origin; then
-        rollback_add "${chosen}" "${dir}" "${toplevel}" "${gitdir}" "${home_dir}" "${made_home}"
+        rollback_add "${chosen}" "${dir}" "${gitdir}" "${home_dir}" "${made_home}"
         err "clone: could not fetch ${files_ref} from ${url}; rolled back"; exit 1
     fi
     # The manifest ref may legitimately be absent (e.g. not yet published);
@@ -1115,7 +1147,7 @@ cmd_clone() {
         git --git-dir="${gitdir}" read-tree HEAD
     fi
     if ! materialize_one "${chosen}"; then
-        rollback_add "${chosen}" "${dir}" "${toplevel}" "${gitdir}" "${home_dir}" "${made_home}"
+        rollback_add "${chosen}" "${dir}" "${gitdir}" "${home_dir}" "${made_home}"
         err "clone of ${chosen} failed; rolled back"; exit 1
     fi
     echo "git-nook: cloned ${chosen} -> ${dir}/"
@@ -1237,7 +1269,7 @@ cmd_remove() {
     [[ "${1:-}" == "--force" ]] && force=1
     [[ -n "${partial}" ]] || { err "usage: git nook -n <name> remove [--force]"; exit 1; }
     local slug; slug=$(resolve_slug_prefix "${partial}") || exit 1
-    local dir gitdir toplevel content_path content_real home_real
+    local dir gitdir toplevel content_path content_real home_real orphan_home=""
     dir=$(channel_dir "${slug}")
     gitdir=$(inner_git_dir "${slug}")
     toplevel=$(pwd)
@@ -1248,20 +1280,43 @@ cmd_remove() {
         exit 1
     fi
 
+    # Resolve the primary home BEFORE touching anything, so we know whether
+    # this worktree's content path is the home itself, a valid symlink to a
+    # DIFFERENT worktree's home (peer case), or neither.
+    home_real=$(resolve_primary "${slug}" 2>/dev/null) || home_real=""
+
     # Remove the per-worktree content path defensively: only unlink a symlink
     # (a peer worktree), or remove the real dir when THIS worktree is the
     # recorded primary home. If it is a real directory NOT recorded as the
     # home (manually replaced, or a legacy flat layout), leave it in place
     # rather than risk the user's files, and say so.
     if [[ -L "${content_path}" ]]; then
+        content_real=$(cd "${content_path}" 2>/dev/null && pwd -P) || content_real=""
         rm -f "${content_path}"
+        # Only a symlink that was ACTUALLY resolving to the recorded home
+        # marks this worktree as a genuine peer -- queue that home for
+        # cleanup below. A symlink pointing anywhere else is not this nook's
+        # home; touching it would be an unrelated, unexpected deletion.
+        if [[ -n "${home_real}" && "${content_real}" == "${home_real}" ]]; then
+            orphan_home="${home_real}"
+        fi
     elif [[ -d "${content_path}" ]] \
-        && home_real=$(resolve_primary "${slug}" 2>/dev/null) \
+        && [[ -n "${home_real}" ]] \
         && content_real=$(cd "${content_path}" && pwd -P) \
         && [[ "${content_real}" == "${home_real}" ]]; then
         rm -rf "${content_path}"
     elif [[ -e "${content_path}" ]]; then
         echo "git-nook: note: '${dir}' is not a git-nook symlink; leaving it in place." >&2
+    fi
+
+    # This worktree was a genuine PEER (a valid symlink resolving to the
+    # home): the real home lives in ANOTHER worktree. Removing only the
+    # local symlink above would leave that real home dir orphaned on disk --
+    # untracked debris in its host repo, with the inner repo/config torn down
+    # out from under it. Remove it too, completing the local teardown
+    # everywhere, not just here.
+    if [[ -n "${orphan_home}" ]] && [[ -d "${orphan_home}" ]]; then
+        rm -rf "${orphan_home}"
     fi
 
     git config --remove-section "nook.${slug}" 2>/dev/null || true
@@ -1303,16 +1358,34 @@ cmd_destroy() {
 
     dir=$(channel_dir "${slug}")
     toplevel=$(pwd)
-    local content_path="${toplevel}/${dir}" content_real home_real
+    local content_path="${toplevel}/${dir}" content_real home_real orphan_home=""
+    # Resolve the primary home BEFORE touching anything (see cmd_remove for
+    # the full rationale): after the upstream refs are deleted above, an
+    # orphaned real home dir left in another worktree would become the ONLY
+    # surviving copy of the nook's content -- a stranded local copy directly
+    # contradicting the "destroyed (local + upstream)" message below.
+    home_real=$(resolve_primary "${slug}" 2>/dev/null) || home_real=""
     if [[ -L "${content_path}" ]]; then
+        content_real=$(cd "${content_path}" 2>/dev/null && pwd -P) || content_real=""
         rm -f "${content_path}"
+        # Only a symlink that actually resolved to the recorded home marks
+        # this worktree as a genuine peer -- queue that home for cleanup
+        # below. A symlink pointing anywhere else is unrelated; never touch it.
+        if [[ -n "${home_real}" && "${content_real}" == "${home_real}" ]]; then
+            orphan_home="${home_real}"
+        fi
     elif [[ -d "${content_path}" ]] \
-        && home_real=$(resolve_primary "${slug}" 2>/dev/null) \
+        && [[ -n "${home_real}" ]] \
         && content_real=$(cd "${content_path}" && pwd -P) \
         && [[ "${content_real}" == "${home_real}" ]]; then
         rm -rf "${content_path}"
     elif [[ -e "${content_path}" ]]; then
         echo "git-nook: note: '${dir}' is not a git-nook symlink; leaving it in place." >&2
+    fi
+    # This worktree was a genuine PEER: the real home lives elsewhere. Remove
+    # it too, so no stranded local copy survives a claimed full destroy.
+    if [[ -n "${orphan_home}" ]] && [[ -d "${orphan_home}" ]]; then
+        rm -rf "${orphan_home}"
     fi
     git config --remove-section "nook.${slug}" 2>/dev/null || true
     unset_primary_home "${slug}"
