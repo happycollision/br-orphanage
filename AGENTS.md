@@ -73,27 +73,21 @@ git push                          # Push code
 ...develops `git-nook` ("git for a hidden directory"): real git tracking for
 files the host repo cannot track, hidden in an inner repository under
 `.git/nook/<name>.git` and published to a custom ref (`refs/nook/...`) that
-never appears in branch listings or default clones.
+never appears in branch listings or default clones. The nook's *checkout*
+(the actual files) no longer lives under `.git/` — see "Worktrees" below;
+only the inner repo (objects/refs) does.
 
-> **⚠️ BEADS IS CURRENTLY BROKEN IN THIS REPO (as of 2026-07-20).** `br`
-> refuses to operate against the beads nook because the nook's checkout lives
-> under `.git/`, and `br` v0.2.16 enforces a hard "never touch `.git/`"
-> invariant (**NGI-3**): `br ready`/`sync`/`create`/`where`-then-read all fail
-> with *"Path '.../.git/nook/beads.nook/.beads/issues.jsonl' targets git
-> internals - sync never accesses .git/ (safety invariant NGI-3)"*. There is no
-> `br` toggle for it. **Consequence:** the entire `br` workflow below (and the
-> session protocol above) does NOT work here right now — do not rely on `br`,
-> and you cannot file beads issues from this checkout. `git nook -n beads run
-> <git...>` passthrough still works fine (the break is br-side, not nook-side).
->
-> Background: the `feat/nook-nested-content-dir` branch fixed a *separate* `br`
-> guard (directory name must be `.beads`/`_beads`) by nesting the content dir;
-> clearing that guard surfaced NGI-3 underneath. See
-> `docs/superpowers/specs/2026-07-19-nook-nested-content-dir-FINDINGS.md` for the
-> full write-up and the follow-up Discoveries that could not be filed in beads.
-> **Resolving NGI-3 (relocate nook checkouts outside `.git/`, or patch/upstream
-> `br`) is deferred to a new session.** Until then, track project work outside
-> beads.
+> **Note (worktree-home layout, as of 2026-07-22).** The `br` workflow and
+> session protocol above operate normally against this repo's `beads` nook.
+> Two caveats while the worktree-home fix is unmerged:
+> 1. The fix lives on branch **`feat/nook-worktree-home`** (not yet merged to
+>    master), and the **installed** `git-nook` predates it. Run nook commands
+>    via **`./bin/git-nook`** from the repo root, NOT the installed `git nook`,
+>    until the branch merges and you reinstall via `./install.sh`.
+> 2. The `.beads` checkout is a real directory at `<repo>/.beads`, home recorded
+>    in local-only `nook.<slug>.home`. Other machines/clones must upgrade to the
+>    worktree-home git-nook and run `git nook materialize` before touching beads
+>    there.
 
 This project's own issues (beads) are tracked in exactly such a nook:
 
@@ -102,22 +96,22 @@ git nook list                 # see this repo's nooks (expect: beads)
 git nook -n beads run status  # any git command works against the nook
 ```
 
-> **Note:** this repo's own `beads` nook is a **legacy nook** — it was
-> created with the old, pre-slug `add` command, before the universal-identity
-> work landed. As a result, `git nook list` now prints a migration warning
-> for it. Migrating it to the new slug/manifest/index layout is a deliberate,
-> manual procedure documented in `MIGRATION.md` and must **not** be done
-> automatically — do not run any migration step without the human explicitly
-> confirming it first.
+> **Note:** this repo's own `beads` nook is fully migrated as of 2026-07-22 —
+> both the identity/slug layout (config is slug-keyed
+> `nook.beads.86d.happycollision.git_nook.dir`) and the worktree-home checkout
+> relocation (`.beads` is now a real directory outside `.git/`, home recorded
+> in local-only `nook.<slug>.home`). `br` works here. Use `./bin/git-nook`
+> until `feat/nook-worktree-home` merges (see warning above).
 
-The daily beads flow on this repo (**currently blocked by NGI-3 — see warning above**):
+The daily beads flow on this repo (working again — use `./bin/git-nook` until
+the branch merges; substitute `git nook` once reinstalled):
 
 ```bash
 br sync --flush-only          # beads DB -> .beads/issues.jsonl
-git nook -n beads run add --all
-git nook -n beads run commit -m "issues"
-git nook -n beads run pull --no-rebase   # only needed when another machine pushed
-git nook -n beads run push
+./bin/git-nook -n beads run add issues.jsonl
+./bin/git-nook -n beads run commit -m "issues"
+./bin/git-nook -n beads run pull --no-rebase   # only needed when another machine pushed
+./bin/git-nook -n beads run push
 ```
 
 If a pull merges `issues.jsonl` from another machine, do NOT hand-resolve
@@ -127,11 +121,27 @@ real `br` (per-issue, newest-wins, tombstone-protected).
 
 ### Worktrees
 
-The beads nook (and any nook) lives once under `.git/nook/<name>.nook/` in the
-common git dir, shared by every worktree. After a fresh `git clone`, or after
-`git worktree add <path>`, run `git nook materialize` in that working tree to
-create the symlink(s) that expose the nook's files there. Thereafter `git nook`
-and `br` work normally from that worktree. All worktrees share one nook state.
+A nook's inner repo (`.git/nook/<slug>.git`, the objects/refs) lives once in
+the common git dir and is shared by every worktree. Its *checkout* — the
+actual files — is a real directory (the "primary home") at `<toplevel>/<dir>`
+in whichever worktree first created or adopted it; that location is recorded
+in local-only git config `nook.<slug>.home` and is never pushed to a remote.
+Every other worktree exposes the same nook as a symlink to that home instead
+of a second copy — there is still exactly one live checkout.
+
+After a fresh `git clone`, or after `git worktree add <path>`, run
+`git nook materialize` in that working tree:
+
+- If that worktree is the recorded home, it ensures the real directory is
+  present (restoring content from the inner repo if the dir was emptied).
+- If another worktree owns the recorded home, it creates a symlink here to
+  that home.
+- If the recorded home has vanished (its worktree was removed, or its content
+  dir was deleted), it **promotes** this worktree: re-checks-out HEAD from the
+  surviving inner repo and re-records `nook.<slug>.home` to point here.
+
+Thereafter `git nook` and `br` work normally from that worktree. All
+worktrees still share one nook state — one inner repo, one live checkout.
 
 ## Planning (designs and implementation plans)
 

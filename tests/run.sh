@@ -393,15 +393,15 @@ assert_dir_exists "inner git dir hidden under parent .git" "${ADD_GITDIR}"
 assert_eq "parent config maps slug -> dir" \
     "notes" "$(git -C "${ADD_PROJ}" config --get "nook.${NOTES_SLUG}.dir")"
 ADD_EXCLUDE=$(abs_git_path "${ADD_PROJ}" info/exclude)
-assert_true "content dir excluded (anchored, no trailing slash: it is a symlink) in parent info/exclude" \
+assert_true "content dir excluded (anchored, no trailing slash) in parent info/exclude" \
     grep -qxF '/notes' "${ADD_EXCLUDE}"
 
-assert_true "content path is a symlink" test -L "${ADD_PROJ}/notes"
-ADD_CANON=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
-ADD_CANON="$(cd "${ADD_PROJ}/${ADD_CANON}" && pwd)/nook/${NOTES_SLUG}.nook/notes"
-assert_dir_exists "nested work-tree dir exists" "${ADD_CANON}"
-assert_eq "symlink points at nested work-tree" \
-    "$(cd "${ADD_PROJ}/notes" && pwd -P)" "$(cd "${ADD_CANON}" && pwd -P)"
+# After init in the originating worktree, the content dir is a REAL directory
+# (the primary home), NOT a symlink, and home is recorded.
+assert_true "content path is a real directory (primary home)" test -d "${ADD_PROJ}/notes"
+if [[ -L "${ADD_PROJ}/notes" ]]; then fail "originating worktree content path must not be a symlink"; else pass "originating content path is a real dir, not a symlink"; fi
+assert_eq "init recorded home = <toplevel>/notes" "$(cd "${ADD_PROJ}/notes" && pwd -P)" "$(cd "$(git -C "${ADD_PROJ}" config --get "nook.${NOTES_SLUG}.home")" && pwd -P)"
+if [[ "${ADD_PROJ}/notes" == *"/.git/"* ]]; then fail "home under .git"; else pass "home has no .git component"; fi
 
 ADD_ORIGIN_URL=$(git -C "${ADD_PROJ}" remote get-url origin)
 ADD_REF="refs/nook/${NOTES_SLUG}/files"
@@ -422,15 +422,11 @@ assert_eq "push refspec publishes main to the slug's /files ref" \
 assert_dir_exists "custom --dir honored" "${ADD_PROJ}/tmp/scratch"
 assert_true "custom dir excluded" grep -qxF '/tmp/scratch' "${ADD_EXCLUDE}"
 
-# multi-segment --dir: symlink lives at tmp/scratch, work-tree leaf is the basename only
-assert_true "multi-segment content path is a symlink" test -L "${ADD_PROJ}/tmp/scratch"
-SCRATCH_WT=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
-SCRATCH_WT="$(cd "${ADD_PROJ}/${SCRATCH_WT}" && pwd)/nook/${SCRATCH_SLUG}.nook/scratch"
-assert_dir_exists "multi-segment nested work-tree dir exists" "${SCRATCH_WT}"
-assert_eq "multi-segment symlink target basename is the leaf (scratch)" \
-    "scratch" "$(basename "$(cd "${ADD_PROJ}/tmp/scratch" && pwd -P)")"
-assert_eq "multi-segment symlink resolves to nook/<slug>.nook/scratch" \
-    "$(cd "${ADD_PROJ}/tmp/scratch" && pwd -P)" "$(cd "${SCRATCH_WT}" && pwd -P)"
+# multi-segment --dir: the home is the real dir at the FULL configured path
+# (tmp/scratch), not nested under any container.
+if [[ -L "${ADD_PROJ}/tmp/scratch" ]]; then fail "multi-segment content path must not be a symlink in the originating worktree"; else pass "multi-segment content path is a real dir"; fi
+assert_eq "multi-segment home recorded at the full --dir path" \
+    "$(cd "${ADD_PROJ}/tmp/scratch" && pwd -P)" "$(cd "$(git -C "${ADD_PROJ}" config --get "nook.${SCRATCH_SLUG}.home")" && pwd -P)"
 
 section "init: explicit dotted --dir is still honored"
 
@@ -438,12 +434,9 @@ section "init: explicit dotted --dir is still honored"
 SECRET_SLUG=$(slug_for_name "${ADD_PROJ}" secret)
 assert_dir_exists "explicit dotted --dir honored" "${ADD_PROJ}/.secret"
 assert_true "explicit dotted dir excluded" grep -qxF '/.secret' "${ADD_EXCLUDE}"
-assert_true "explicit dotted dir is a symlink" test -L "${ADD_PROJ}/.secret"
-SECRET_CANON=$(cd "${ADD_PROJ}" && git rev-parse --git-common-dir)
-SECRET_CANON="$(cd "${ADD_PROJ}/${SECRET_CANON}" && pwd)/nook/${SECRET_SLUG}.nook/.secret"
-assert_dir_exists "nested work-tree dir exists" "${SECRET_CANON}"
-assert_eq "symlink points at nested work-tree" \
-    "$(cd "${ADD_PROJ}/.secret" && pwd -P)" "$(cd "${SECRET_CANON}" && pwd -P)"
+if [[ -L "${ADD_PROJ}/.secret" ]]; then fail "explicit dotted dir must not be a symlink in the originating worktree"; else pass "explicit dotted dir is a real dir"; fi
+assert_eq "dotted --dir home recorded" \
+    "$(cd "${ADD_PROJ}/.secret" && pwd -P)" "$(cd "$(git -C "${ADD_PROJ}" config --get "nook.${SECRET_SLUG}.home")" && pwd -P)"
 
 section "exclude: entry has no trailing slash and remove cleans legacy forms"
 EX=${WORK}/proj-exclude
@@ -532,12 +525,9 @@ make_project_repo "${PT_PROJ}" yes "pt-demo"
 (cd "${PT_PROJ}" && "${NOOK}" init notes origin)
 PT_SLUG=$(slug_for_name "${PT_PROJ}" notes)
 
-assert_true "content path is a symlink" test -L "${PT_PROJ}/notes"
-PT_CANON=$(cd "${PT_PROJ}" && git rev-parse --git-common-dir)
-PT_CANON="$(cd "${PT_PROJ}/${PT_CANON}" && pwd)/nook/${PT_SLUG}.nook/notes"
-assert_dir_exists "nested work-tree dir exists" "${PT_CANON}"
-assert_eq "symlink points at nested work-tree" \
-    "$(cd "${PT_PROJ}/notes" && pwd -P)" "$(cd "${PT_CANON}" && pwd -P)"
+if [[ -L "${PT_PROJ}/notes" ]]; then fail "originating worktree content path must not be a symlink"; else pass "content path is a real dir (primary home)"; fi
+assert_eq "home recorded at the content path" \
+    "$(cd "${PT_PROJ}/notes" && pwd -P)" "$(cd "$(git -C "${PT_PROJ}" config --get "nook.${PT_SLUG}.home")" && pwd -P)"
 
 printf 'hello nook\n' > "${PT_PROJ}/notes/first.md"
 mkdir -p "${PT_PROJ}/notes/deep/nested"
@@ -565,14 +555,16 @@ mkdir -p "${PT_PROJ}/src"
 PT_SUB_LOG=$(cd "${PT_PROJ}/src" && "${NOOK}" -n notes run log --oneline)
 assert_contains "passthrough works from a parent subdir" "${PT_SUB_LOG}" "first nook commit"
 
-# From inside the nook dir, relative pathspecs resolve as expected. The
-# configured path is a symlink into the canonical checkout under .git/, so
-# cwd here is PHYSICALLY inside the parent's .git/ directory. This works
-# because run_passthrough never calls `git rev-parse --show-toplevel` (which
-# refuses from inside .git — no work tree there); it derives the inner
-# git-dir and canonical checkout from git-common-dir, which ambient discovery
-# still resolves correctly even from inside .git, then runs git against
-# explicit --git-dir/--work-tree.
+# From inside the nook dir, relative pathspecs resolve as expected. In this
+# fixture the configured path IS the real primary-home dir (this is the
+# originating worktree), so cwd here is an ordinary work-tree dir, not inside
+# .git/ at all -- but run_passthrough is written to work either way: it
+# never calls `git rev-parse --show-toplevel` (which would refuse from
+# inside .git if cwd ever were there -- e.g. a peer worktree whose content
+# path is a symlink resolving elsewhere); it derives the inner git-dir and
+# checkout from git-common-dir/canonical_worktree, which ambient discovery
+# resolves correctly regardless of where cwd physically is, then runs git
+# against explicit --git-dir/--work-tree.
 printf 'more\n' >> "${PT_PROJ}/notes/first.md"
 run_cmd_in "${PT_PROJ}/notes" "${NOOK}" -n notes run add first.md
 assert_eq "relative pathspec add from inside the nook succeeded" "0" "${RUN_EXIT}"
@@ -589,32 +581,67 @@ printf 'branchy\n' > "${PT_PROJ}/notes/branch-file.txt"
 assert_file_absent "branch switch updates the nook worktree" "${PT_PROJ}/notes/branch-file.txt"
 assert_eq "parent status STILL clean after branch dance" "" "$(git -C "${PT_PROJ}" status --porcelain)"
 
-section "passthrough: works without a materialized symlink; missing checkout points at materialize"
+section "guard: nook subcommands abort cleanly when the primary home is gone"
 
 GONE=${WORK}/proj-gone; make_project_repo "${GONE}" yes gone
 (cd "${GONE}" && "${NOOK}" init stash origin >/dev/null)
 GONE_SLUG=$(slug_for_name "${GONE}" stash)
 printf 'keep\n' > "${GONE}/stash/keeper.txt"
 (cd "${GONE}" && "${NOOK}" -n stash run add --all && "${NOOK}" -n stash run commit -q -m keeper)
-# remove the worktree SYMLINK but not the canonical checkout
-rm "${GONE}/stash"
-# passthrough still works (targets the canonical checkout directly)
 GONE_LOG=$(cd "${GONE}" && "${NOOK}" -n stash run log --oneline)
-assert_contains "passthrough works without symlink (targets canonical checkout)" "${GONE_LOG}" "keeper"
-# now remove the canonical checkout -> clean error at materialize, NO mkdir footgun
-CGONE=$(cd "${GONE}" && git rev-parse --git-common-dir); CGONE="$(cd "${GONE}/${CGONE}" && pwd)/nook/${GONE_SLUG}.nook"
-rm -rf "${CGONE}"
+assert_contains "passthrough works while the primary home is intact" "${GONE_LOG}" "keeper"
+# Destroy the primary home (as if its worktree was removed).
+rm -rf "${GONE}/stash"
+# run must abort with the materialize hint, and must NOT reach git (no raw git error).
 run_cmd_in "${GONE}" "${NOOK}" -n stash run status
-assert_exit_nonzero "missing canonical checkout exits nonzero"
-assert_contains "error points at materialize" "${RUN_OUT}" "git nook materialize"
+assert_exit_nonzero "run aborts when primary home missing"
+assert_contains "run error points at materialize" "${RUN_OUT}" "git nook -n ${GONE_SLUG} materialize"
+if [[ "${RUN_OUT}" == *"fatal:"* ]]; then fail "raw git error leaked (guard fired too late)"; else pass "no raw git error (guard fired before passthrough)"; fi
 if [[ "${RUN_OUT}" == *"mkdir"* ]]; then fail "error still suggests the mkdir footgun"; else pass "no mkdir footgun in error"; fi
-# recovery via materialize works
+# materialize itself is EXEMPT: it recovers by re-checkout from the inner repo.
 (cd "${GONE}" && "${NOOK}" materialize >/dev/null)
-assert_file_exists "materialize restored the checkout content" "${GONE}/stash/keeper.txt"
+assert_file_exists "materialize recovered the content" "${GONE}/stash/keeper.txt"
+# show is exempt (diagnostic): reports not-linked instead of aborting.
+rm -rf "${GONE}/stash"
+run_cmd_in "${GONE}" "${NOOK}" -n stash show
+assert_exit_zero "show does not abort on missing home (diagnostic)"
+assert_contains "show reports home" "${RUN_OUT}" "home:"
+assert_contains "show reports linked state" "${RUN_OUT}" "linked:"
+# recover for any later reuse of this fixture
+(cd "${GONE}" && "${NOOK}" materialize >/dev/null)
 
-SHOW=$(cd "${GONE}" && "${NOOK}" -n stash show)
-assert_contains "show reports the canonical checkout" "${SHOW}" "checkout:"
-assert_contains "show reports linked state" "${SHOW}" "linked:"
+section "guard: existence/repo checks run BEFORE the dangling-primary hint (correct diagnosis)"
+# A NONEXISTENT nook under -n ... run must get "no nook named", never the
+# "was its worktree removed?" materialize hint -- that hint only makes sense
+# for a nook that IS configured but whose recorded home died. Without the
+# fix, the guard fired first and misdiagnosed this case (and running the
+# hinted materialize then errored differently: "no nook named").
+run_cmd_in "${GONE}" "${NOOK}" -n totally-bogus-nook run status
+assert_exit_nonzero "run on a nonexistent nook exits nonzero"
+assert_contains "nonexistent nook gets 'no nook named', not the materialize hint" "${RUN_OUT}" "no nook named"
+if [[ "${RUN_OUT}" == *"was its worktree removed"* ]]; then
+    fail "nonexistent nook wrongly got the dangling-primary hint"
+else
+    pass "nonexistent nook did not get the dangling-primary hint"
+fi
+# A genuinely configured-but-dangling nook must STILL get the materialize hint.
+rm -rf "${GONE}/stash"
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
+assert_contains "configured-but-dangling nook still gets the materialize hint" "${RUN_OUT}" "was its worktree removed"
+(cd "${GONE}" && "${NOOK}" materialize >/dev/null)   # recover for later reuse
+
+section "guard: -n <name> materialize is the exact recovery form the guard hints at (dispatch coverage)"
+# Every guard error prescribes `git nook -n <name> materialize`; confirm that
+# exact dispatch path (materialize routed through the -n branch, not just
+# top-level `git nook materialize`) actually works end-to-end.
+rm -rf "${GONE}/stash"
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
+assert_contains "guard hint names the exact -n <name> materialize form" "${RUN_OUT}" "-n ${GONE_SLUG} materialize"
+run_cmd_in "${GONE}" "${NOOK}" -n stash materialize
+assert_exit_zero "'-n <name> materialize' succeeds (the guard's own prescribed recovery)"
+assert_file_exists "'-n <name> materialize' recovered the content" "${GONE}/stash/keeper.txt"
+run_cmd_in "${GONE}" "${NOOK}" -n stash run status
+assert_exit_zero "run works again after '-n <name> materialize' recovery"
 
 section "passthrough: ambient git env vars are ignored"
 
@@ -701,7 +728,9 @@ BS_B_OUT=$(cd "${BS_B}" && "${NOOK}" clone notes origin)
 assert_contains "clone reports success" "${BS_B_OUT}" "cloned"
 assert_file_exists "content materialized" "${BS_B}/notes/shared.md"
 assert_file_exists "nested content materialized" "${BS_B}/notes/sub/inner.md"
-assert_true "clone left a symlink" test -L "${BS_B}/notes"
+assert_true "clone made the content dir the real primary home" test -d "${BS_B}/notes"
+if [[ -L "${BS_B}/notes" ]]; then fail "clone in fresh repo must leave a real dir, not a symlink"; else pass "clone left a real primary-home dir"; fi
+assert_eq "clone recorded home" "$(cd "${BS_B}/notes" && pwd -P)" "$(cd "$(git -C "${BS_B}" config --get "nook.$(slug_for_name "${BS_B}" notes).home")" && pwd -P)"
 assert_eq "nook clean right after clone" \
     "" "$(cd "${BS_B}" && "${NOOK}" -n notes run status --porcelain)"
 BS_B_LOG=$(cd "${BS_B}" && "${NOOK}" -n notes run log --oneline)
@@ -752,17 +781,16 @@ else
         if git -C "${BS_D}" config --get-regexp '^nook\.' >/dev/null 2>&1; then
             fail "config not rolled back after clone fetch failure"
         else
-            pass "config rolled back after clone fetch failure"
+            pass "config (incl. .home) rolled back after clone fetch failure"
         fi
         assert_file_absent "inner repo rolled back" "${BS_D}/.git/nook/${BS_D_SLUG}.git"
-        assert_file_absent "canonical container rolled back" "${BS_D}/.git/nook/${BS_D_SLUG}.nook"
         BS_D_EXCLUDE=$(abs_git_path "${BS_D}" info/exclude)
         if grep -qxF '/notes' "${BS_D_EXCLUDE}" 2>/dev/null; then
             fail "exclude entry not rolled back after clone fetch failure"
         else
             pass "exclude entry rolled back after clone fetch failure"
         fi
-        assert_file_absent "no leftover symlink after rollback" "${BS_D}/notes"
+        assert_file_absent "elected home dir removed on rollback" "${BS_D}/notes"
 
         # Once the object is readable again, the same clone succeeds (nothing
         # stale left behind by the rollback).
@@ -774,7 +802,7 @@ else
     fi
 fi
 
-section "bootstrap: nested --dir rollback removes the symlink and canonical checkout"
+section "bootstrap: nested --dir rollback removes the elected home dir"
 
 # Publisher for a distinct nook name/target so its ref differs from the ones
 # above; seed real published data so ls-remote succeeds and the code
@@ -790,17 +818,14 @@ printf 'nested seed\n' > "${BS_E_PUB}/deep/nested/path/seed.md"
 # Second machine: none of deep/, deep/nested/, deep/nested/path/ exist yet.
 # Force fetch to fail deterministically by making the target's objects
 # unreadable after ls-remote would already see the ref (ls-remote only needs
-# refs, not object data). On failure, rollback must remove the per-worktree
-# symlink (deep/nested/path, never created as a real dir here) and the
-# canonical checkout under the common git dir -- not a nested real dir tree,
-# since cmd_clone never creates one.
+# refs, not object data). On failure, rollback must remove the elected
+# primary-home dir (deep/nested/path, a real dir under the new model) --
+# not just an ancestor symlink.
 BS_E="${WORK}/proj-bs-e"
 git clone -q "${WORK}/origins/bs-nested.git" "${BS_E}"
 BS_E_BARE="${WORK}/origins/bs-nested.git"
 BS_E_REF="refs/nook/${BS_E_SLUG}/files"
 BS_E_TIP=$(git -C "${BS_E_BARE}" rev-parse "${BS_E_REF}")
-BS_E_CANON=$(cd "${BS_E}" && git rev-parse --git-common-dir)
-BS_E_CANON="$(cd "${BS_E}/${BS_E_CANON}" && pwd)/nook/${BS_E_SLUG}.nook"
 # ls-remote only lists refs (succeeds even if the object is unreadable), but
 # fetch must actually transfer the commit object, so making just that one
 # loose object unreadable fails fetch specifically, after ls-remote passed.
@@ -811,15 +836,12 @@ if [[ -f "${BS_E_OBJPATH}" ]]; then
     chmod 644 "${BS_E_OBJPATH}"
     if [[ "${RUN_EXIT}" -ne 0 ]] && [[ "${RUN_OUT}" == *"rolled back"* ]]; then
         pass "nested --dir clone fetch failure rolls back"
-        # cmd_clone tracks no "created_root" ancestor to rm -rf: the
-        # per-worktree path is a symlink (materialize_one's mkdir -p only
-        # creates the ANCESTOR dirs of the symlink, e.g. deep/nested/, as a
-        # side effect of `ln -s`), and rollback removes the symlink leaf
-        # itself plus the canonical checkout -- not the ancestor directory
-        # tree. Assert the leaf symlink and the checkout are gone (the
-        # rollback's actual job), not that the whole deep/ tree vanished.
-        assert_file_absent "nested symlink leaf removed" "${BS_E}/deep/nested/path"
-        assert_file_absent "canonical checkout removed" "${BS_E_CANON}"
+        assert_file_absent "elected home dir removed" "${BS_E}/deep/nested/path"
+        if git -C "${BS_E}" config --get-regexp '^nook\.' >/dev/null 2>&1; then
+            fail "config (incl. .home) not rolled back for nested --dir"
+        else
+            pass "config (incl. .home) rolled back for nested --dir"
+        fi
     else
         echo "  [SKIP] nested --dir rollback test: could not force a deterministic fetch failure in this environment (exit=${RUN_EXIT}, out='${RUN_OUT}')"
     fi
@@ -827,15 +849,14 @@ else
     echo "  [SKIP] nested --dir rollback test: tip commit is not a loose object (already packed) in this environment"
 fi
 
-section "init: migrates a pre-existing untracked dir into the canonical checkout"
+section "init: adopts a pre-existing untracked dir as the primary home"
 AM=${WORK}/proj-add-migrate; make_project_repo "${AM}" yes addmig
 mkdir -p "${AM}/.data"; printf 'pre\n' > "${AM}/.data/pre.txt"
 (cd "${AM}" && "${NOOK}" init data origin --dir .data >/dev/null)
 AM_SLUG=$(slug_for_name "${AM}" data)
-assert_true "init migrated pre-existing dir to a symlink" test -L "${AM}/.data"
-AM_CANON=$(cd "${AM}" && git rev-parse --git-common-dir); AM_CANON="$(cd "${AM}/${AM_CANON}" && pwd)/nook/${AM_SLUG}.nook/.data"
-assert_file_exists "pre-existing content moved into nested work-tree" "${AM_CANON}/pre.txt"
-assert_file_exists "pre-existing content reachable via symlink" "${AM}/.data/pre.txt"
+if [[ -L "${AM}/.data" ]]; then fail "init must leave a real dir (the primary home), not a symlink"; else pass "init left a real dir"; fi
+assert_file_exists "pre-existing content preserved in place" "${AM}/.data/pre.txt"
+assert_eq "pre-existing dir recorded as the home" "$(cd "${AM}/.data" && pwd -P)" "$(cd "$(git -C "${AM}" config --get "nook.${AM_SLUG}.home")" && pwd -P)"
 
 # --- two clones: concurrency and conflicts ----------------------------------------
 
@@ -988,8 +1009,7 @@ assert_contains "files ref on upstream before remove" \
 ( cd "${RM_REPO}"; "${NOOK}" -n beads remove )
 assert_true "config section gone" test -z "$(cd "${RM_REPO}" && git config --get "nook.${RM_SLUG}.dir" 2>/dev/null)"
 assert_true "inner git dir removed" test ! -e "${RM_REPO}/.git/nook/${RM_SLUG}.git"
-assert_true "container removed" test ! -e "${RM_REPO}/.git/nook/${RM_SLUG}.nook"
-assert_true "symlink removed" test ! -e "${RM_REPO}/.beads"
+assert_true "primary home (real dir) removed" test ! -e "${RM_REPO}/.beads"
 assert_contains "upstream files ref survives remove" \
     "$(git ls-remote "${RM_ORIGIN}" "refs/nook/${RM_SLUG}/files")" "refs/nook/${RM_SLUG}/files"
 
@@ -1005,18 +1025,50 @@ assert_true "still configured after refusal" test -n "$(cd "${RM2}" && git confi
 ( cd "${RM2}"; "${NOOK}" -n notes remove --force )
 assert_true "force removes despite unpushed" test -z "$(cd "${RM2}" && git config --get-regexp '^nook\..*\.dir$')"
 
-section "remove: real dir at content path is left in place, no stranded state"
+section "remove: in a peer worktree, a real dir replacing the symlink is left in place"
 RM3="${WORK}/rm3"; make_project_repo "${RM3}" yes rm3
 ( cd "${RM3}"; "${NOOK}" init beads origin --dir .beads
   echo x > .beads/f; "${NOOK}" -n beads run add --all
   "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
 RM3_SLUG=$(cd "${RM3}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
-# Replace the symlink with a real directory.
-( cd "${RM3}"; rm -f .beads; mkdir .beads; echo manual > .beads/keep )
-( cd "${RM3}"; "${NOOK}" -n beads remove )
-assert_true "config removed despite real dir" test -z "$(cd "${RM3}" && git config --get "nook.${RM3_SLUG}.dir" 2>/dev/null)"
+# Peer worktree: materialize gets a symlink to the primary home. Then a user
+# manually replaces that symlink with an independent real dir -- remove must
+# leave it in place (never risk the user's files) rather than clobber it.
+RM3_WT="${WORK}/rm3-wt"
+git -C "${RM3}" worktree add -q "${RM3_WT}" -b rm3feat
+( cd "${RM3_WT}"; "${NOOK}" materialize >/dev/null )
+assert_true "peer got a symlink before the manual replacement" test -L "${RM3_WT}/.beads"
+( cd "${RM3_WT}"; rm -f .beads; mkdir .beads; echo manual > .beads/keep )
+( cd "${RM3_WT}"; "${NOOK}" -n beads remove )
+assert_true "config removed despite real dir" test -z "$(cd "${RM3_WT}" && git config --get "nook.${RM3_SLUG}.dir" 2>/dev/null)"
 assert_true "inner git dir removed despite real dir" test ! -e "${RM3}/.git/nook/${RM3_SLUG}.git"
-assert_true "user real dir left in place" test -f "${RM3}/.beads/keep"
+assert_true "user real dir left in place" test -f "${RM3_WT}/.beads/keep"
+assert_true "primary home in the OTHER worktree is untouched" test -f "${RM3}/.beads/f"
+
+section "remove: from a peer worktree also removes the primary home (no orphaned real dir)"
+# Pre-worktree-home, cmd_remove tore down the whole container. Now, run from
+# a PEER worktree (whose content path is just a symlink), remove must not
+# leave the primary worktree's real home dir orphaned on disk while its
+# config/exclude/inner-repo are torn down -- that would leave stray
+# untracked `.beads/` debris (and the associated committed data) sitting in
+# the primary worktree's host repo forever.
+RM4="${WORK}/rm4"; make_project_repo "${RM4}" yes rm4
+( cd "${RM4}"; "${NOOK}" init beads origin --dir .beads
+  echo x > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
+RM4_SLUG=$(cd "${RM4}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+RM4_WT="${WORK}/rm4-wt"
+git -C "${RM4}" worktree add -q "${RM4_WT}" -b rm4feat
+( cd "${RM4_WT}"; "${NOOK}" materialize >/dev/null )
+assert_true "peer got a symlink" test -L "${RM4_WT}/.beads"
+assert_true "primary home is a real dir before remove" test -d "${RM4}/.beads"
+# Remove FROM THE PEER worktree.
+( cd "${RM4_WT}"; "${NOOK}" -n beads remove )
+assert_true "peer symlink removed" test ! -e "${RM4_WT}/.beads"
+assert_true "primary home dir removed too (no orphan)" test ! -e "${RM4}/.beads"
+assert_eq "primary worktree's host status is clean (no orphan debris)" "" "$(git -C "${RM4}" status --porcelain)"
+assert_true "config removed" test -z "$(cd "${RM4}" && git config --get "nook.${RM4_SLUG}.dir" 2>/dev/null)"
+assert_true "inner git dir removed" test ! -e "${RM4}/.git/nook/${RM4_SLUG}.git"
 
 section "remove: passthrough for a removed nook fails cleanly"
 
@@ -1125,57 +1177,216 @@ git config --global --unset core.autocrlf
 
 # --- materialize: linking configured nooks into other worktrees -------------------
 
-section "materialize: linked worktree gets its own symlink"
+section "materialize: peer worktree symlinks to the primary home"
 MZ=${WORK}/proj-materialize; make_project_repo "${MZ}" yes materialize-demo
 (cd "${MZ}" && "${NOOK}" init beads origin --dir .beads)
 MZ_SLUG=$(slug_for_name "${MZ}" beads)
+assert_true "originating worktree has a REAL primary-home dir" test -d "${MZ}/.beads"
+if [[ -L "${MZ}/.beads" ]]; then fail "originating worktree must be a real dir"; else pass "originating is a real dir"; fi
 printf 'x\n' > "${MZ}/.beads/f.txt"
 (cd "${MZ}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
-# linked worktree (sibling dir), new branch
 WT=${WORK}/proj-materialize-wt
 git -C "${MZ}" worktree add -q "${WT}" -b feat
-assert_file_absent "linked worktree has no nook symlink before materialize" "${WT}/.beads"
+assert_file_absent "peer worktree has no nook symlink before materialize" "${WT}/.beads"
 MZ_OUT=$(cd "${WT}" && "${NOOK}" materialize)
 assert_contains "materialize reports the nook" "${MZ_OUT}" "materialized ${MZ_SLUG}"
-assert_true "symlink created in linked worktree" test -L "${WT}/.beads"
+assert_true "peer worktree got a symlink" test -L "${WT}/.beads"
+# The peer symlink resolves to the ORIGINATING worktree's real dir (the home).
+assert_eq "peer symlink resolves to the primary home" "$(cd "${MZ}/.beads" && pwd -P)" "$(cd "${WT}/.beads" && pwd -P)"
+assert_file_exists "content visible through the peer symlink" "${WT}/.beads/f.txt"
+# NGI-3: the resolved target has no .git component.
+if [[ "$(cd "${WT}/.beads" && pwd -P)" == *"/.git/"* ]]; then fail "peer symlink resolves under .git"; else pass "peer symlink target has no .git component"; fi
 MZ_LOG=$(cd "${WT}" && "${NOOK}" -n beads run log --oneline)
-assert_contains "passthrough works from linked worktree after materialize" "${MZ_LOG}" "c1"
-assert_file_exists "content visible through the symlink" "${WT}/.beads/f.txt"
-assert_eq "linked worktree parent status clean" "" "$(git -C "${WT}" status --porcelain)"
+assert_contains "passthrough works from peer worktree after materialize" "${MZ_LOG}" "c1"
+assert_eq "peer worktree parent status clean" "" "$(git -C "${WT}" status --porcelain)"
 # idempotent
 (cd "${WT}" && "${NOOK}" materialize >/dev/null)
 assert_true "second materialize is a no-op (still a symlink)" test -L "${WT}/.beads"
 
-section "materialize: refuses when both real dir and checkout have content"
-# Legacy-style real dir at the configured path in the MAIN tree, while the
-# canonical checkout already has committed content -> ambiguous -> refuse.
-rm "${MZ}/.beads"                       # remove the main-tree symlink from add
-mkdir -p "${MZ}/.beads"; printf 'legacy\n' > "${MZ}/.beads/old.txt"
-run_cmd_in "${MZ}" "${NOOK}" materialize
-assert_exit_nonzero "materialize refuses when both real dir and checkout have content"
+section "materialize: restores an emptied-but-present primary home (git clean -x recovery)"
+# The home DIR survives but its files were wiped (e.g. `git clean -x`, or a
+# manual `rm` of only the contents). The old code repopulated from HEAD on
+# every materialize; this layout's primary branch only `mkdir -p`s, so
+# without the fix `materialize` prints "materialized" but leaves the dir
+# empty and `run status` then shows every tracked file as deleted --
+# undercutting the "git clean -x is recoverable via re-materialize" story.
+rm -f "${MZ}/.beads"/*
+assert_true "home dir survives, but is now empty" test -z "$(ls -A "${MZ}/.beads" 2>/dev/null)"
+(cd "${MZ}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "committed content restored into the emptied home" "${MZ}/.beads/f.txt"
+assert_eq "restored content matches HEAD" "x" "$(cat "${MZ}/.beads/f.txt")"
+MZ_STATUS_AFTER_RESTORE=$(cd "${MZ}" && "${NOOK}" -n beads run status --porcelain)
+assert_eq "no phantom deletions after restore" "" "${MZ_STATUS_AFTER_RESTORE}"
+
+section "materialize: HEAD with a legitimately empty tree is a clean no-op, not an error"
+# A nook whose HEAD commit legitimately has an empty tree (every tracked file
+# was deleted and that deletion committed) must not make materialize error.
+# populate_checkout_from_head's old HEAD-exists-only guard let `git checkout
+# -- .` run against an empty index, which fails with "pathspec '.' did not
+# match any file(s)" -- reached via the election branch AND the issue-5
+# empty-home-repopulate branch alike.
+ET=${WORK}/proj-emptytree; make_project_repo "${ET}" yes emptytree-demo
+(cd "${ET}" && "${NOOK}" init beads origin --dir .beads)
+printf 'x\n' > "${ET}/.beads/f.txt"
+(cd "${ET}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
+# Commit the deletion of every tracked file -> HEAD's tree is legitimately empty.
+(cd "${ET}" && "${NOOK}" -n beads run rm -q -r . && "${NOOK}" -n beads run commit -q -m "remove everything")
+ET_TREE=$(git --git-dir="${ET}/.git/nook/$(slug_for_name "${ET}" beads).git" ls-tree -r --name-only HEAD)
+assert_eq "precondition: HEAD's committed tree is empty" "" "${ET_TREE}"
+# Empty the home dir's files too (as if it needed re-materializing) and
+# re-run materialize: it must succeed cleanly, not error.
+rm -f "${ET}/.beads"/*
+run_cmd_in "${ET}" "${NOOK}" materialize
+assert_exit_zero "materialize succeeds against an empty-tree HEAD (no checkout pathspec error)"
+if [[ "${RUN_OUT}" == *"did not match any file"* ]]; then fail "pathspec error leaked"; else pass "no pathspec error"; fi
+assert_true "home dir is (correctly) empty, matching the empty tree" test -z "$(ls -A "${ET}/.beads" 2>/dev/null)"
+ET_STATUS=$(cd "${ET}" && "${NOOK}" -n beads run status --porcelain)
+assert_eq "run status is clean after materialize against an empty tree" "" "${ET_STATUS}"
+
+section "materialize: refuses when the peer's content path and the home both have content"
+# A real dir with content at the peer's configured path, while the primary
+# home also has content -> ambiguous -> refuse (never silently pick a side).
+rm "${WT}/.beads"
+mkdir -p "${WT}/.beads"; printf 'independent\n' > "${WT}/.beads/other.txt"
+run_cmd_in "${WT}" "${NOOK}" materialize
+assert_exit_nonzero "materialize refuses when peer content and home both have content"
+assert_contains "refusal explains the conflict" "${RUN_OUT}" "reconcile manually"
+rm -rf "${WT}/.beads"   # clean up for reuse below
+
+section "materialize: promotes a surviving worktree when the primary home is gone"
+PR=${WORK}/proj-promote; make_project_repo "${PR}" yes promote-demo
+(cd "${PR}" && "${NOOK}" init beads origin --dir .beads)
+PR_SLUG=$(slug_for_name "${PR}" beads)
+printf 'v1\n' > "${PR}/.beads/data.txt"
+(cd "${PR}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
+# Peer worktree materializes as a symlink.
+PRW=${WORK}/proj-promote-wt
+git -C "${PR}" worktree add -q "${PRW}" -b feat
+(cd "${PRW}" && "${NOOK}" materialize >/dev/null)
+assert_true "peer symlink exists before promotion" test -L "${PRW}/.beads"
+# Simulate the primary home worktree being removed: delete the real dir.
+rm -rf "${PR}/.beads"
+# materialize in the peer PROMOTES it: re-checkout HEAD into the peer's dir.
+(cd "${PRW}" && "${NOOK}" materialize >/dev/null)
+assert_true "promoted worktree now has a REAL dir" test -d "${PRW}/.beads"
+if [[ -L "${PRW}/.beads" ]]; then fail "promoted worktree must be a real dir, not a symlink"; else pass "promoted worktree is a real dir"; fi
+assert_file_exists "committed content restored from inner repo" "${PRW}/.beads/data.txt"
+assert_eq "home now points at the promoted worktree" \
+    "$(cd "${PRW}/.beads" && pwd -P)" "$(cd "$(git -C "${PR}" config --get "nook.${PR_SLUG}.home")" && pwd -P)"
+
+section "materialize: a peer's dangling symlink re-resolves after another peer promotes (regression)"
+# 3+ worktrees: A=home, B and C are peers. A's dir dies; B promotes (becomes
+# the new real-dir primary). C's symlink now dangles (points at A's dead
+# path). C's materialize must NOT refuse forever -- it should drop the
+# dangling symlink and recreate it pointing at B's (the new) home.
+DP=${WORK}/proj-danglepeer; make_project_repo "${DP}" yes danglepeer-demo
+(cd "${DP}" && "${NOOK}" init beads origin --dir .beads)
+printf 'v1\n' > "${DP}/.beads/data.txt"
+(cd "${DP}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
+DPB=${WORK}/proj-danglepeer-b; git -C "${DP}" worktree add -q "${DPB}" -b featb
+DPC=${WORK}/proj-danglepeer-c; git -C "${DP}" worktree add -q "${DPC}" -b featc
+(cd "${DPB}" && "${NOOK}" materialize >/dev/null)
+(cd "${DPC}" && "${NOOK}" materialize >/dev/null)
+assert_true "B has a peer symlink before promotion" test -L "${DPB}/.beads"
+assert_true "C has a peer symlink before promotion" test -L "${DPC}/.beads"
+# Kill A's home; B promotes (becomes the new real-dir primary).
+rm -rf "${DP}/.beads"
+(cd "${DPB}" && "${NOOK}" materialize >/dev/null)
+if [[ -L "${DPB}/.beads" ]]; then fail "B must be a real dir after promotion"; else pass "B promoted to a real dir"; fi
+# C's symlink is now dangling (still points at A's dead path). Without the
+# fix, C's materialize hits the peer branch, resolves an empty target ('t=""'),
+# and refuses forever ("refusing to clobber").
+run_cmd_in "${DPC}" "${NOOK}" materialize
+assert_exit_zero "C's materialize succeeds despite a dangling symlink to the old home"
+assert_true "C got a fresh symlink" test -L "${DPC}/.beads"
+assert_eq "C's symlink now resolves to B's (the new) home" \
+    "$(cd "${DPB}/.beads" && pwd -P)" "$(cd "${DPC}/.beads" && pwd -P)"
+assert_file_exists "content visible through C's re-resolved symlink" "${DPC}/.beads/data.txt"
+
+section "election: refuses to elect through a live symlink (never records a home under it)"
+# No home recorded yet, and content_path is a LIVE (non-dangling) symlink --
+# e.g. a legacy-container leftover, or any user symlink. Electing through it
+# would follow it (mkdir -p/populate_checkout_from_head all resolve
+# symlinks) and record the FOREIGN target as the home -- if that target
+# happens to resolve under .git/, the home would silently violate NGI-3.
+ELS=${WORK}/proj-elect-livesym; make_project_repo "${ELS}" yes elect-livesym-demo
+(cd "${ELS}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
+ELS_SLUG=$(slug_for_name "${ELS}" beads)
+# Simulate a legacy container under .git/ that a live symlink still points at
+# (the scenario the reviewer called out as worst-case).
+ELS_LEGACY_DIR="${ELS}/.git/legacy-leftover"
+mkdir -p "${ELS_LEGACY_DIR}"; printf 'foreign\n' > "${ELS_LEGACY_DIR}/foreign.txt"
+# Unelect this nook entirely (simulate "no home ever recorded") and replace
+# its content path with a live symlink into the .git-nested legacy dir.
+git -C "${ELS}" config --unset "nook.${ELS_SLUG}.home"
+rm -rf "${ELS}/.beads"
+ln -s "${ELS_LEGACY_DIR}" "${ELS}/.beads"
+run_cmd_in "${ELS}" "${NOOK}" materialize
+assert_exit_nonzero "election refuses a live symlink at the content path"
+assert_contains "refusal names the dir" "${RUN_OUT}" ".beads"
+assert_true "the live symlink itself is left untouched" test -L "${ELS}/.beads"
+assert_true "no home was recorded" test -z "$(git -C "${ELS}" config --get "nook.${ELS_SLUG}.home" 2>/dev/null)"
+
+section "election: live symlink into THIS nook's own container names the mv-then-materialize recovery"
+# This repo's actual state: a nook whose content path is a live symlink into
+# its own pre-worktree-home container (<common-git-dir>/nook/<slug>.nook/<base>).
+# materialize correctly refuses (NGI-3 guard), but the refusal must also name
+# the concrete recovery (rm the symlink, move the container's content into
+# place, re-materialize to adopt) -- not just refuse and leave the user stuck.
+CSL=${WORK}/proj-container-symlink; make_project_repo "${CSL}" yes container-symlink-demo
+(cd "${CSL}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
+CSL_SLUG=$(slug_for_name "${CSL}" beads)
+CSL_COMMON=$(cd "${CSL}" && git rev-parse --git-common-dir); CSL_COMMON="$(cd "${CSL}/${CSL_COMMON}" && pwd -P)"
+CSL_CONTAINER="${CSL_COMMON}/nook/${CSL_SLUG}.nook"
+CSL_CONTAINER_CONTENT="${CSL_CONTAINER}/.beads"
+mkdir -p "${CSL_CONTAINER_CONTENT}"
+printf 'container-content\n' > "${CSL_CONTAINER_CONTENT}/data.txt"
+# Simulate "never had a home, still on the container-symlink layout":
+# unset .home and replace the real dir with a live symlink into the container.
+git -C "${CSL}" config --unset "nook.${CSL_SLUG}.home"
+rm -rf "${CSL}/.beads"
+ln -s "${CSL_CONTAINER_CONTENT}" "${CSL}/.beads"
+run_cmd_in "${CSL}" "${NOOK}" materialize
+assert_exit_nonzero "materialize still refuses (NGI-3 guard intact)"
+CSL_REAL="$(cd "${CSL}" && pwd -P)"
+assert_contains "refusal names the recovery: rm the symlink" "${RUN_OUT}" "rm '${CSL_REAL}/.beads'"
+assert_contains "refusal names the recovery: mv the container content" "${RUN_OUT}" "mv '${CSL_CONTAINER_CONTENT}'"
+assert_contains "refusal names the recovery: re-run materialize to adopt" "${RUN_OUT}" "git nook materialize"
+assert_contains "refusal points at MIGRATION.md" "${RUN_OUT}" "MIGRATION.md"
+# Follow the prescribed recovery literally and confirm it actually works.
+rm "${CSL}/.beads"
+mkdir -p "${CSL}/.beads"
+( shopt -s dotglob nullglob; mv "${CSL_CONTAINER_CONTENT}"/* "${CSL}/.beads/" )
+(cd "${CSL}" && "${NOOK}" materialize >/dev/null)
+assert_file_exists "adopted content present after following the recovery steps" "${CSL}/.beads/data.txt"
+if [[ -L "${CSL}/.beads" ]]; then fail "adopted dir must be real, not a symlink"; else pass "adopted dir is real"; fi
+
+section "materialize: promotion refuses to clobber independent content at the target"
+PC=${WORK}/proj-promote-clobber; make_project_repo "${PC}" yes promote-clobber
+(cd "${PC}" && "${NOOK}" init beads origin --dir .beads)
+printf 'committed\n' > "${PC}/.beads/c.txt"
+(cd "${PC}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
+PCW=${WORK}/proj-promote-clobber-wt
+git -C "${PC}" worktree add -q "${PCW}" -b feat
+(cd "${PCW}" && "${NOOK}" materialize >/dev/null)   # peer symlink
+# Kill the primary; then put INDEPENDENT real content where the peer symlink was.
+rm -rf "${PC}/.beads"
+rm -f "${PCW}/.beads"                                 # drop the now-dangling symlink
+mkdir -p "${PCW}/.beads"; printf 'independent\n' > "${PCW}/.beads/other.txt"
+run_cmd_in "${PCW}" "${NOOK}" materialize
+assert_exit_nonzero "promotion refuses when target holds independent content"
 assert_contains "refusal explains the conflict" "${RUN_OUT}" "reconcile manually"
 
-section "materialize: migrates a legacy real dir when the checkout is empty"
-MZ2=${WORK}/proj-migrate-ok; make_project_repo "${MZ2}" yes migrate-ok
-(cd "${MZ2}" && "${NOOK}" init docs origin --dir docsdir)   # no leading period on purpose
-MZ2_SLUG=$(slug_for_name "${MZ2}" docs)
-rm "${MZ2}/docsdir"                     # remove the symlink init created
-CDIR=$(cd "${MZ2}" && git rev-parse --git-common-dir); CDIR="$(cd "${MZ2}/${CDIR}" && pwd)/nook/${MZ2_SLUG}.nook/docsdir"
-rm -rf "${CDIR:?}/"* 2>/dev/null || true  # ensure nested work-tree is empty
-mkdir -p "${MZ2}/docsdir"; printf 'legacy\n' > "${MZ2}/docsdir/old.txt"
-(cd "${MZ2}" && "${NOOK}" materialize >/dev/null)
-assert_true "migrated real dir becomes a symlink" test -L "${MZ2}/docsdir"
-assert_file_exists "legacy content moved into nested work-tree" "${CDIR}/old.txt"
-assert_file_exists "legacy content reachable via symlink" "${MZ2}/docsdir/old.txt"
-
-section "materialize: upgrades a legacy real-dir nook that has commit history"
-# The realistic upgrade case every prior test missed: an OLD-layout nook is a
-# real content dir with COMMITTED history and NO symlink. materialize must
-# migrate it, not refuse -- the real dir IS the authoritative content, and the
-# inner repo's HEAD already points at that same committed history.
+section "materialize: adopts a pre-home nook (created before this feature existed) with commit history"
+# A nook created before nook.<slug>.home existed (or whose repo dir was
+# since moved/renamed) has real, committed content at <toplevel>/<dir> and
+# nook.<slug>.dir set, but NO .home ever recorded. The guard/election must
+# not dead-end at "both '.beads' and the nook have content; reconcile
+# manually" forever -- it should ADOPT the existing dir as the home. This is
+# exactly this repo's own beads nook on merge day, and mirrors the old
+# "upgrades a legacy real-dir nook that has commit history" test from before
+# the worktree-home layout landed.
 UP=${WORK}/proj-upgrade; make_project_repo "${UP}" yes upgrade-demo
-# Build the OLD layout by hand: inner bare repo with history, real content dir,
-# config + exclude, NO symlink.
 UP_GITDIR="${UP}/.git/nook/legacy.git"
 mkdir -p "${UP}/.git/nook"
 git init -q --bare "${UP_GITDIR}"
@@ -1185,23 +1396,28 @@ mkdir -p "${UP}/.legacy"; printf 'issue-1\n' > "${UP}/.legacy/data.txt"
 git --git-dir="${UP_GITDIR}" --work-tree="${UP}/.legacy" add data.txt
 git --git-dir="${UP_GITDIR}" --work-tree="${UP}/.legacy" -c user.email=t@t -c user.name=t commit -q -m "legacy history"
 git -C "${UP}" config nook.legacy.dir .legacy
-printf '/.legacy/\n' >> "$(abs_git_path "${UP}" info/exclude)"
-# sanity: it's a real dir, not a symlink, with content + history
+printf '/.legacy\n' >> "$(abs_git_path "${UP}" info/exclude)"
+# sanity: real dir, not a symlink, with content + history, NO .home recorded.
 assert_true "precondition: legacy content dir is a real dir" test -d "${UP}/.legacy"
-assert_true "precondition: not a symlink yet" bash -c '[ ! -L "'"${UP}"'/.legacy" ]'
-# UPGRADE: materialize must migrate it, not refuse
-UP_OUT=$(cd "${UP}" && "${NOOK}" materialize 2>&1); UP_RC=$?
-assert_eq "materialize succeeds on a legacy nook with history (out: ${UP_OUT})" "0" "${UP_RC}"
-assert_true "legacy dir became a symlink" test -L "${UP}/.legacy"
-UP_CANON=$(cd "${UP}" && git rev-parse --git-common-dir); UP_CANON="$(cd "${UP}/${UP_CANON}" && pwd)/nook/legacy.nook/.legacy"
-assert_file_exists "legacy content migrated into nested work-tree" "${UP_CANON}/data.txt"
-assert_file_exists "legacy content reachable via symlink" "${UP}/.legacy/data.txt"
-# passthrough works and history is intact
+if [[ -L "${UP}/.legacy" ]]; then fail "precondition violated: already a symlink"; else pass "precondition: not a symlink yet"; fi
+assert_true "precondition: no home recorded yet" test -z "$(git -C "${UP}" config --get nook.legacy.home 2>/dev/null)"
+# ADOPT: materialize must adopt it, not refuse.
+run_cmd_in "${UP}" "${NOOK}" materialize
+assert_eq "materialize succeeds on a pre-home nook with history (out: ${RUN_OUT})" "0" "${RUN_EXIT}"
+assert_contains "materialize reports the adoption" "${RUN_OUT}" "adopted"
+if [[ -L "${UP}/.legacy" ]]; then fail "adopted dir must stay a real dir, not become a symlink"; else pass "adopted dir remains a real dir"; fi
+assert_file_exists "committed history preserved (file still present)" "${UP}/.legacy/data.txt"
+assert_eq "home now recorded at the adopted dir" \
+    "$(cd "${UP}/.legacy" && pwd -P)" "$(cd "$(git -C "${UP}" config --get nook.legacy.home)" && pwd -P)"
+# passthrough works and history is intact.
 UP_LOG=$(cd "${UP}" && "${NOOK}" -n legacy run log --oneline)
-assert_contains "committed history preserved after upgrade" "${UP_LOG}" "legacy history"
+assert_contains "committed history preserved after adoption" "${UP_LOG}" "legacy history"
 UP_STATUS=$(cd "${UP}" && "${NOOK}" -n legacy run status --porcelain)
-assert_eq "clean working tree after upgrade migration" "" "${UP_STATUS}"
-assert_eq "host status clean (symlink excluded)" "" "$(git -C "${UP}" status --porcelain -- .legacy)"
+assert_eq "clean working tree after adoption" "" "${UP_STATUS}"
+assert_eq "host status clean" "" "$(git -C "${UP}" status --porcelain -- .legacy)"
+# run status works afterward without hitting the dangling-primary guard.
+run_cmd_in "${UP}" "${NOOK}" -n legacy run status
+assert_exit_zero "run status works after adoption (guard does not misfire)"
 
 section "materialize: no nooks configured prints guidance"
 MZE=${WORK}/proj-mz-empty; make_project_repo "${MZE}" no mzempty
@@ -1223,9 +1439,11 @@ LM=${WORK}/proj-listmark; make_project_repo "${LM}" yes listmark
 (cd "${LM}" && "${NOOK}" init data origin --dir .data >/dev/null)
 LM_OK=$(cd "${LM}" && "${NOOK}" list)
 if [[ "${LM_OK}" == *"not linked here"* ]]; then fail "materialized nook wrongly flagged"; else pass "materialized nook not flagged"; fi
-# Remove the symlink to simulate an unmaterialized worktree; list must flag it.
-rm "${LM}/.data"
-LM_FLAG=$(cd "${LM}" && "${NOOK}" list)
+# Simulate an unmaterialized worktree via a peer worktree that hasn't run
+# materialize yet: list there must flag it "not linked here".
+LM_WT=${WORK}/proj-listmark-wt
+git -C "${LM}" worktree add -q "${LM_WT}" -b listfeat
+LM_FLAG=$(cd "${LM_WT}" && "${NOOK}" list)
 assert_contains "unmaterialized nook is flagged" "${LM_FLAG}" "not linked here"
 
 # --- bare/all-worktrees layout: no originating work tree ---------------------------
@@ -1241,9 +1459,10 @@ git clone -q --bare "${BL_ORIGIN}" "${BL_BARE}"
 WA=${WORK}/bl-wt-a; WB=${WORK}/bl-wt-b
 git -C "${BL_BARE}" worktree add -q "${WA}" main
 git -C "${BL_BARE}" worktree add -q -b other "${WB}" main
-# Add a nook FROM a linked worktree (there is no main work tree).
+# Add a nook FROM a linked worktree (there is no main work tree). This
+# worktree ELECTS itself as the primary home: a real dir, not a symlink.
 (cd "${WA}" && "${NOOK}" init beads origin --dir .beads)
-assert_true "nook symlink created in the adding worktree" test -L "${WA}/.beads"
+if [[ -L "${WA}/.beads" ]]; then fail "adding worktree (the elected home) must not be a symlink"; else pass "adding worktree got a real dir (the primary home)"; fi
 printf 'y\n' > "${WA}/.beads/f.txt"
 (cd "${WA}" && "${NOOK}" -n beads run add --all && "${NOOK}" -n beads run commit -q -m c1)
 # Peer worktree: list flags it unmaterialized; materialize links it.
@@ -1252,9 +1471,9 @@ assert_contains "list flags unmaterialized nook in peer worktree" "${LIST_B}" "n
 (cd "${WB}" && "${NOOK}" materialize >/dev/null)
 assert_true "peer worktree now has the symlink" test -L "${WB}/.beads"
 assert_file_exists "peer worktree sees the shared content" "${WB}/.beads/f.txt"
-# Both symlinks resolve to the SAME canonical checkout under the bare common dir.
+# The peer's symlink resolves to the SAME real dir as the adding worktree's home.
 RA=$(cd "${WA}/.beads" && pwd -P); RB=$(cd "${WB}/.beads" && pwd -P)
-assert_eq "both worktrees share one canonical checkout" "${RA}" "${RB}"
+assert_eq "both worktrees resolve to the one primary home" "${RA}" "${RB}"
 # After materialize, list no longer flags it.
 LIST_B2=$(cd "${WB}" && "${NOOK}" list)
 if [[ "${LIST_B2}" == *"not linked here"* ]]; then fail "list still flags a materialized nook"; else pass "list no longer flags materialized nook"; fi
@@ -1264,17 +1483,16 @@ printf 'z\n' > "${WA}/.beads/g.txt"
 LOG_B=$(cd "${WB}" && "${NOOK}" -n beads run log --oneline)
 assert_contains "commit from peer A visible from peer B" "${LOG_B}" "c2"
 
-section "nested: show reports the nested work-tree path (not the container)"
+section "home: show reports the primary home path (not a .git container)"
 NEST=${WORK}/proj-nested
 make_project_repo "${NEST}" yes nested-demo
 (cd "${NEST}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-NEST_SLUG=$(slug_for_name "${NEST}" beads)
 NEST_SHOW=$(cd "${NEST}" && "${NOOK}" -n beads show)
-NEST_COMMON=$(cd "${NEST}" && git rev-parse --git-common-dir)
-NEST_WT="$(cd "${NEST}/${NEST_COMMON}" && pwd -P)/nook/${NEST_SLUG}.nook/.beads"
-assert_contains "show checkout: is the nested work-tree" "${NEST_SHOW}" "checkout: ${NEST_WT}/"
+NEST_HOME="$(cd "${NEST}/.beads" && pwd -P)"
+assert_contains "show reports home: as the real primary-home dir" "${NEST_SHOW}" "home:     ${NEST_HOME}"
+if [[ "${NEST_HOME}" == *"/.git/"* ]]; then fail "home under .git"; else pass "home has no .git component"; fi
 
-section "nested: passthrough commits tracked paths bare (no basename prefix)"
+section "home: passthrough commits tracked paths bare (no basename prefix)"
 NESTPT=${WORK}/proj-nested-pt
 make_project_repo "${NESTPT}" yes nested-pt-demo
 (cd "${NESTPT}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
@@ -1285,158 +1503,54 @@ NESTPT_TREE=$(cd "${NESTPT}" && "${NOOK}" -n beads run ls-tree --name-only -r HE
 assert_eq "tracked path is bare issues.jsonl (no .beads/ prefix)" \
     "issues.jsonl" "${NESTPT_TREE}"
 
-section "nested: init materializes symlink to the nested work-tree"
+section "home: init materializes the primary home as a real dir"
 NESTM=${WORK}/proj-nested-mat
 make_project_repo "${NESTM}" yes nested-mat-demo
 (cd "${NESTM}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
 NESTM_SLUG=$(slug_for_name "${NESTM}" beads)
-assert_true "content path is a symlink" test -L "${NESTM}/.beads"
-NESTM_COMMON=$(cd "${NESTM}" && git rev-parse --git-common-dir)
-NESTM_WT="$(cd "${NESTM}/${NESTM_COMMON}" && pwd)/nook/${NESTM_SLUG}.nook/.beads"
-assert_dir_exists "nested work-tree dir exists" "${NESTM_WT}"
-assert_eq "symlink target basename is .beads" ".beads" "$(basename "$(cd "${NESTM}/.beads" && pwd -P)")"
-assert_eq "symlink resolves to the nested work-tree" \
-    "$(cd "${NESTM}/.beads" && pwd -P)" "$(cd "${NESTM_WT}" && pwd -P)"
+if [[ -L "${NESTM}/.beads" ]]; then fail "originating worktree content path must not be a symlink"; else pass "content path is a real dir"; fi
+assert_dir_exists "primary home dir exists" "${NESTM}/.beads"
+assert_eq "home recorded at the content path" \
+    "$(cd "${NESTM}/.beads" && pwd -P)" "$(cd "$(git -C "${NESTM}" config --get "nook.${NESTM_SLUG}.home")" && pwd -P)"
 
-section "nested: materialize migrates an old flat checkout to nested layout"
-MIG=${WORK}/proj-migrate-nested
-make_project_repo "${MIG}" yes migrate-nested-demo
-(cd "${MIG}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-MIG_SLUG=$(slug_for_name "${MIG}" beads)
-MIG_COMMON=$(cd "${MIG}" && git rev-parse --git-common-dir)
-MIG_CONTAINER="$(cd "${MIG}/${MIG_COMMON}" && pwd)/nook/${MIG_SLUG}.nook"
-MIG_WT="${MIG_CONTAINER}/.beads"
-# Simulate the OLD flat layout: content directly in the container, symlink -> container.
-rm "${MIG}/.beads"
-( shopt -s dotglob nullglob; for e in "${MIG_WT}"/*; do mv "${e}" "${MIG_CONTAINER}/"; done )
-rmdir "${MIG_WT}"
-ln -s "${MIG_CONTAINER}" "${MIG}/.beads"
-echo '{"id":"mig1"}' > "${MIG_CONTAINER}/issues.jsonl"
-mkdir -p "${MIG_CONTAINER}/.br_history"; echo hist > "${MIG_CONTAINER}/.br_history/h1"
-(cd "${MIG}" && "${NOOK}" materialize >/dev/null)
-assert_true "post-migration content path is a symlink" test -L "${MIG}/.beads"
-assert_eq "symlink now resolves to the nested work-tree" \
-    "$(cd "${MIG}/.beads" && pwd -P)" "$(cd "${MIG_WT}" && pwd -P)"
-assert_file_exists "flat file migrated into nested work-tree" "${MIG_WT}/issues.jsonl"
-assert_file_exists "flat subdir file migrated too" "${MIG_WT}/.br_history/h1"
-assert_file_absent "no leftover issues.jsonl at container top level" "${MIG_CONTAINER}/issues.jsonl"
-(cd "${MIG}" && "${NOOK}" materialize >/dev/null)
-assert_eq "second materialize keeps nested target" \
-    "$(cd "${MIG}/.beads" && pwd -P)" "$(cd "${MIG_WT}" && pwd -P)"
-assert_file_exists "content still present after idempotent re-run" "${MIG_WT}/issues.jsonl"
+section "invariant: no checkout path or symlink target contains a .git component"
+NG=${WORK}/proj-ngi3; make_project_repo "${NG}" yes ngi3-demo
+(cd "${NG}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
+NG_SLUG=$(slug_for_name "${NG}" beads)
+NG_HOME=$(git -C "${NG}" config --get "nook.${NG_SLUG}.home")
+if [[ "/${NG_HOME}/" == *"/.git/"* ]]; then fail "primary home under .git"; else pass "primary home has no .git component"; fi
+NG_WT=$( cd "${NG}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  canonical_worktree "${NG_SLUG}" )
+if [[ "/${NG_WT}/" == *"/.git/"* ]]; then fail "canonical_worktree under .git"; else pass "canonical_worktree has no .git component"; fi
 
-section "nested: migration handles a tracked entry named basename(dir)"
-COL=${WORK}/proj-migrate-collision
-make_project_repo "${COL}" yes migrate-collision-demo
-(cd "${COL}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-COL_SLUG=$(slug_for_name "${COL}" beads)
-COL_COMMON=$(cd "${COL}" && git rev-parse --git-common-dir)
-COL_CONTAINER="$(cd "${COL}/${COL_COMMON}" && pwd)/nook/${COL_SLUG}.nook"
-COL_WT="${COL_CONTAINER}/.beads"
-rm "${COL}/.beads"
-( shopt -s dotglob nullglob; for e in "${COL_WT}"/*; do mv "${e}" "${COL_CONTAINER}/"; done )
-rmdir "${COL_WT}"
-ln -s "${COL_CONTAINER}" "${COL}/.beads"
-# tracked content includes a dir literally named .beads (same as basename(dir))
-mkdir -p "${COL_CONTAINER}/.beads"; echo inner > "${COL_CONTAINER}/.beads/nested.txt"
-echo top > "${COL_CONTAINER}/top.txt"
-(cd "${COL}" && "${NOOK}" materialize >/dev/null)
-assert_true "collision: content path is a symlink" test -L "${COL}/.beads"
-assert_file_exists "collision: top-level tracked file migrated" "${COL_WT}/top.txt"
-assert_file_exists "collision: same-named tracked dir migrated intact" "${COL_WT}/.beads/nested.txt"
+section "invariant: nook.<slug>.home never travels to the remote"
+# nook.<slug>.home is local git config, never tracked content or a ref, so it
+# cannot be pushed by construction -- confirm it is absent from a fresh clone
+# of the same origin (a real, not merely theoretical, check of "local-only").
+NG_CLONE=${WORK}/proj-ngi3-clone
+git clone -q "$(git -C "${NG}" remote get-url origin)" "${NG_CLONE}"
+if git -C "${NG_CLONE}" config --get-regexp '^nook\..*\.home$' >/dev/null 2>&1; then
+    fail "nook.<slug>.home leaked into a fresh clone"
+else
+    pass "nook.<slug>.home is local-only (absent from a fresh clone)"
+fi
 
-section "nested: interrupted migration re-run preserves staged data"
-INTR=${WORK}/proj-migrate-interrupted
-make_project_repo "${INTR}" yes migrate-intr-demo
-(cd "${INTR}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-INTR_SLUG=$(slug_for_name "${INTR}" beads)
-INTR_COMMON=$(cd "${INTR}" && git rev-parse --git-common-dir)
-INTR_CONTAINER="$(cd "${INTR}/${INTR_COMMON}" && pwd)/nook/${INTR_SLUG}.nook"
-INTR_WT="${INTR_CONTAINER}/.beads"
-INTR_STAGE="${INTR_CONTAINER}/.git-nook-migrate"
-# Simulate a migration interrupted BETWEEN the two move loops:
-# stage populated with UNTRACKED content, work-tree dir created, symlink still -> container.
-rm "${INTR}/.beads"
-( shopt -s dotglob nullglob; for e in "${INTR_WT}"/*; do mv "${e}" "${INTR_CONTAINER}/"; done )
-rmdir "${INTR_WT}"
-ln -s "${INTR_CONTAINER}" "${INTR}/.beads"
-mkdir -p "${INTR_STAGE}"
-printf 'uncommitted-precious\n' > "${INTR_STAGE}/issues.jsonl"   # untracked, only in the stage
-# Re-run materialize: it must NOT delete the staged file; it must land in the work-tree.
-(cd "${INTR}" && "${NOOK}" materialize >/dev/null)
-assert_file_exists "interrupted-migration: staged untracked file preserved into work-tree" "${INTR_WT}/issues.jsonl"
-assert_eq "interrupted-migration: staged content intact" \
-    "uncommitted-precious" "$(cat "${INTR_WT}/issues.jsonl")"
-assert_true "interrupted-migration: symlink resolves to nested work-tree" \
-    test "$(cd "${INTR}/.beads" && pwd -P)" = "$(cd "${INTR_WT}" && pwd -P)"
-
-section "nested: interrupted migration with staged leftovers resumes, not orphans (regression)"
-ORPH=${WORK}/proj-migrate-orphan
-make_project_repo "${ORPH}" yes migrate-orphan-demo
-(cd "${ORPH}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-ORPH_SLUG=$(slug_for_name "${ORPH}" beads)
-ORPH_COMMON=$(cd "${ORPH}" && git rev-parse --git-common-dir)
-ORPH_CONTAINER="$(cd "${ORPH}/${ORPH_COMMON}" && pwd)/nook/${ORPH_SLUG}.nook"
-ORPH_WT="${ORPH_CONTAINER}/.beads"
-ORPH_STAGE="${ORPH_CONTAINER}/.git-nook-migrate"
-# Simulate a migration INTERRUPTED mid loop-2: staged leftover (untracked, precious),
-# a (possibly partial) work-tree dir, and the stale symlink still -> container.
-rm "${ORPH}/.beads"
-( shopt -s dotglob nullglob; for e in "${ORPH_WT}"/*; do mv "${e}" "${ORPH_CONTAINER}/"; done )
-rmdir "${ORPH_WT}"
-ln -s "${ORPH_CONTAINER}" "${ORPH}/.beads"
-mkdir -p "${ORPH_STAGE}"
-printf 'staged-precious\n' > "${ORPH_STAGE}/leftover.txt"   # untracked leftover from the interrupted run
-mkdir -p "${ORPH_WT}"
-printf 'partial\n' > "${ORPH_WT}/already-moved.txt"          # partial work-tree, non-empty (triggers the buggy detection path)
-(cd "${ORPH}" && "${NOOK}" materialize >/dev/null)
-assert_file_absent "orphan: stage dir cleaned up (not orphaned)" "${ORPH_STAGE}"
-assert_file_exists "orphan: staged leftover swept into work-tree" "${ORPH_WT}/leftover.txt"
-assert_eq "orphan: staged content intact" "staged-precious" "$(cat "${ORPH_WT}/leftover.txt")"
-assert_true "orphan: symlink resolves to work-tree" \
-    test "$(cd "${ORPH}/.beads" && pwd -P)" = "$(cd "${ORPH_WT}" && pwd -P)"
-
-section "nested: migration preserves uncommitted edits to tracked files (C1)"
-C1=${WORK}/proj-migrate-c1
-make_project_repo "${C1}" yes migrate-c1-demo
-(cd "${C1}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-C1_SLUG=$(slug_for_name "${C1}" beads)
-C1_COMMON=$(cd "${C1}" && git rev-parse --git-common-dir)
-C1_CONTAINER="$(cd "${C1}/${C1_COMMON}" && pwd)/nook/${C1_SLUG}.nook"
-C1_WT="${C1_CONTAINER}/.beads"
-# commit a tracked file through the nook
-echo 'v1-committed' > "${C1}/.beads/file.txt"
-(cd "${C1}" && "${NOOK}" -n beads run add --all >/dev/null && "${NOOK}" -n beads run commit -q -m v1 >/dev/null)
-# simulate OLD FLAT layout WITH an uncommitted edit to that tracked file
-rm "${C1}/.beads"
-( shopt -s dotglob nullglob; for e in "${C1_WT}"/*; do mv "${e}" "${C1_CONTAINER}/"; done )
-rmdir "${C1_WT}"
-ln -s "${C1_CONTAINER}" "${C1}/.beads"
-echo 'v2-uncommitted-precious' > "${C1_CONTAINER}/file.txt"    # dirty tracked file
-(cd "${C1}" && "${NOOK}" materialize >/dev/null)
-assert_file_exists "C1: migrated file present in work-tree" "${C1_WT}/file.txt"
-assert_eq "C1: uncommitted edit PRESERVED (not clobbered to HEAD)" \
-    "v2-uncommitted-precious" "$(cat "${C1_WT}/file.txt")"
-
-section "nested: stale flat symlink on an already-migrated container just repoints (C2)"
-C2=${WORK}/proj-migrate-c2
-make_project_repo "${C2}" yes migrate-c2-demo
-(cd "${C2}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
-C2_SLUG=$(slug_for_name "${C2}" beads)
-C2_COMMON=$(cd "${C2}" && git rev-parse --git-common-dir)
-C2_CONTAINER="$(cd "${C2}/${C2_COMMON}" && pwd)/nook/${C2_SLUG}.nook"
-C2_WT="${C2_CONTAINER}/.beads"
-echo 'shared' > "${C2}/.beads/data.txt"
-(cd "${C2}" && "${NOOK}" -n beads run add --all >/dev/null && "${NOOK}" -n beads run commit -q -m d >/dev/null)
-# the container is ALREADY migrated (nested .beads work-tree exists).
-# Simulate a SECOND worktree's stale symlink: replace the good symlink with one -> container.
-rm "${C2}/.beads"
-ln -s "${C2_CONTAINER}" "${C2}/.beads"     # stale flat-style symlink -> container
-(cd "${C2}" && "${NOOK}" materialize >/dev/null)
-assert_true "C2: symlink resolves to the nested work-tree (repointed)" \
-    test "$(cd "${C2}/.beads" && pwd -P)" = "$(cd "${C2_WT}" && pwd -P)"
-assert_file_absent "C2: no double-nested work-tree" "${C2_WT}/.beads"
-assert_file_exists "C2: content intact at the single nesting level" "${C2_WT}/data.txt"
+section "acceptance: br operates against a home-layout nook (NGI-3 unblocked)"
+if command -v br >/dev/null 2>&1; then
+    BR=${WORK}/proj-br; make_project_repo "${BR}" yes br-demo
+    (cd "${BR}" && "${NOOK}" init beads origin --dir .beads >/dev/null)
+    run_cmd_in "${BR}/.beads" br init
+    assert_exit_zero "br init succeeds in the home dir (no NGI-3)"
+    if [[ "${RUN_OUT}" == *"NGI-3"* || "${RUN_OUT}" == *"targets git internals"* ]]; then
+        fail "br still hit NGI-3 against the home layout"
+    else
+        pass "br did not hit NGI-3"
+    fi
+else
+    echo "  [SKIP] br not installed; NGI-3 acceptance not exercised here"
+fi
 
 # --- shellcheck (optional, skipped gracefully if unavailable) --------------------
 
@@ -1505,15 +1619,85 @@ make_project_repo "${PH_REPO}" yes ph
   SLUG="beads.a3f.alice.proj"
   git config "nook.${SLUG}.dir" ".beads"
   gd=$(inner_git_dir "${SLUG}")
-  cdir=$(canonical_container "${SLUG}")
   wt=$(canonical_worktree "${SLUG}")
   case "${gd}" in *"/nook/${SLUG}.git") echo GDOK;; *) echo "GDBAD:${gd}";; esac
-  case "${cdir}" in *"/nook/${SLUG}.nook") echo CDOK;; *) echo "CDBAD:${cdir}";; esac
-  case "${wt}" in *"/nook/${SLUG}.nook/.beads") echo WTOK;; *) echo "WTBAD:${wt}";; esac
+  # No home recorded yet -> canonical_worktree falls back to the election
+  # candidate: <toplevel>/.beads (never a .git path). Compare via `pwd`
+  # (not -P) on both sides: no symlink is involved here, just normalizing
+  # any double-slash noise from a trailing-slash $TMPDIR.
+  case "${wt}" in "$(pwd)/.beads") echo WTOK;; *) echo "WTBAD:${wt}";; esac
 ) > "${WORK}/ph.out" 2>&1
 assert_contains "inner_git_dir uses slug" "$(cat "${WORK}/ph.out")" "GDOK"
-assert_contains "canonical_container uses slug" "$(cat "${WORK}/ph.out")" "CDOK"
-assert_contains "canonical_worktree nests basename" "$(cat "${WORK}/ph.out")" "WTOK"
+assert_contains "canonical_worktree falls back to the election candidate" "$(cat "${WORK}/ph.out")" "WTOK"
+
+section "unit: primary-home helpers"
+# Source the tool's helpers without running main; established pattern is
+# GIT_NOOK_LIB=1 . "${NOOK}" in a subshell after cd-ing into a real repo.
+HH_PROJ="${WORK}/proj-home-helpers"
+make_project_repo "${HH_PROJ}" yes home-helpers
+(cd "${HH_PROJ}" && "${NOOK}" init hdemo origin --dir .hdemo >/dev/null)
+HH_SLUG=$(slug_for_name "${HH_PROJ}" hdemo)
+
+# home_candidate: the election target for THIS worktree = <toplevel>/<dir>
+HH_CAND=$( cd "${HH_PROJ}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  home_candidate "${HH_SLUG}" )
+assert_eq "home_candidate is <toplevel>/<dir>" "$(cd "${HH_PROJ}" && pwd)/.hdemo" "${HH_CAND}"
+
+# After init, primary_home is recorded and equals the candidate.
+HH_HOME=$(git -C "${HH_PROJ}" config --get "nook.${HH_SLUG}.home")
+assert_eq "init recorded nook.<slug>.home = <toplevel>/<dir>" "$(cd "${HH_PROJ}/.hdemo" && pwd -P)" "$(cd "${HH_HOME}" && pwd -P)"
+
+# resolve_primary succeeds (home exists as a directory)
+# shellcheck disable=SC2016 # $0/$1 below are for the bash -c subshell, not this outer shell
+run_cmd_in "${HH_PROJ}" bash -c '
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "$0"
+  resolve_primary "$1" >/dev/null' "${NOOK}" "${HH_SLUG}"
+assert_exit_zero "resolve_primary succeeds when home dir exists"
+
+# resolve_primary fails when home is gone
+rm -rf "${HH_HOME}" "${HH_PROJ}/.hdemo"
+# shellcheck disable=SC2016 # $0/$1 below are for the bash -c subshell, not this outer shell
+run_cmd_in "${HH_PROJ}" bash -c '
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "$0"
+  resolve_primary "$1" >/dev/null' "${NOOK}" "${HH_SLUG}"
+assert_exit_nonzero "resolve_primary fails when home dir is missing"
+
+section "unit: home_candidate refuses a candidate with a .git path component (tampered config)"
+# home_candidate is the last line of defense against a hand-edited
+# nook.<slug>.dir pointing under .git/ (init/clone's --dir validation only
+# guards the CLI path; a directly-edited config key bypasses it entirely).
+# Without this guard, electing such a candidate would silently record a home
+# under .git/, defeating the whole NGI-3 point of this feature regardless of
+# how the tampered config got there.
+HC_PROJ="${WORK}/proj-home-candidate-tamper"
+make_project_repo "${HC_PROJ}" yes home-candidate-tamper
+(cd "${HC_PROJ}" && "${NOOK}" init tamperdemo origin --dir .tamperdemo >/dev/null)
+HC_SLUG=$(slug_for_name "${HC_PROJ}" tamperdemo)
+git -C "${HC_PROJ}" config "nook.${HC_SLUG}.dir" ".git/sneaky"
+# shellcheck disable=SC2016 # $0/$1 below are for the bash -c subshell, not this outer shell
+run_cmd_in "${HC_PROJ}" bash -c '
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "$0"
+  home_candidate "$1"' "${NOOK}" "${HC_SLUG}"
+assert_exit_nonzero "home_candidate refuses a .git-nested configured dir"
+assert_true "no candidate path was printed" test -z "${RUN_OUT}"
+
+section "unit: canonical_worktree returns recorded home when set"
+CW_PROJ="${WORK}/proj-cw"; make_project_repo "${CW_PROJ}" yes cw-demo
+(cd "${CW_PROJ}" && "${NOOK}" init cwd origin --dir .cwd >/dev/null)
+CW_SLUG=$(slug_for_name "${CW_PROJ}" cwd)
+# canonical_worktree must equal the recorded home (a real dir in the work-tree),
+# and must NOT contain a .git path component.
+CW=$( cd "${CW_PROJ}"
+  # shellcheck source=/dev/null
+  GIT_NOOK_LIB=1 . "${NOOK}"
+  canonical_worktree "${CW_SLUG}" )
+assert_eq "canonical_worktree == recorded home" "$(cd "${CW_PROJ}/.cwd" && pwd -P)" "$(cd "${CW}" && pwd -P)"
+if [[ "/${CW}/" == *"/.git/"* ]]; then fail "canonical_worktree still under .git"; else pass "canonical_worktree has no .git component"; fi
 
 section "unit: resolve_slug_prefix matches minimal left-anchored prefix"
 
@@ -1601,7 +1785,7 @@ assert_eq "push refspec targets /files" \
 assert_eq "fetch refspec reads /files" \
     "+refs/nook/${IN_SLUG}/files:refs/remotes/origin/main" \
     "$(git --git-dir="${IN_GD}" config --get remote.origin.fetch)"
-assert_true "symlink materialized" test -L "${IN_REPO}/.beads"
+if [[ -L "${IN_REPO}/.beads" ]]; then fail "originating worktree content path must not be a symlink"; else pass "primary home materialized as a real dir"; fi
 assert_eq "manifest name is the exact name" "beads" \
     "$(git --git-dir="${IN_GD}" show refs/nook-meta/manifest:manifest.json | grep '"name"' | sed -E 's/.*: *"(.*)".*/\1/')"
 assert_contains "manifest ref published to remote at init" \
@@ -1630,7 +1814,7 @@ make_project_repo "${CLONE_CONS}" no cons
 ( cd "${CLONE_CONS}"
   "${NOOK}" clone beads "${CLONE_SHARED}" --dir .beads
 )
-assert_true "consumer has a symlinked .beads" test -L "${CLONE_CONS}/.beads"
+if [[ -L "${CLONE_CONS}/.beads" ]]; then fail "consumer's fresh clone must elect a real dir, not a symlink"; else pass "consumer has a real primary-home dir"; fi
 assert_contains "cloned content present" "$(cat "${CLONE_CONS}/.beads/issues.jsonl" 2>/dev/null)" "hi"
 
 section "clone refusals: tracked dir and bad --dir"
@@ -1687,6 +1871,30 @@ assert_eq "manifest ref gone after destroy" "" \
 assert_true "local inner dir gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.git"
 assert_true "local container gone" test ! -e "${DS}/.git/nook/${DS_SLUG}.nook"
 assert_true "local config gone" test -z "$(cd "${DS}" && git config --get "nook.${DS_SLUG}.dir" 2>/dev/null)"
+
+section "destroy: from a peer worktree removes the primary home (no stranded local copy)"
+# After destroy deletes the upstream refs, the primary home dir is the ONLY
+# surviving copy of the nook's content. If destroy (run from a peer) only
+# removed the peer's own symlink, that orphaned real dir in the primary
+# worktree would be the sole remaining copy, while the tool claims "destroyed
+# (local + upstream)" -- a stranded, undocumented local copy after a claimed
+# full destroy.
+DS2="${WORK}/ds2"; make_project_repo "${DS2}" yes ds2proj
+( cd "${DS2}"; "${NOOK}" init beads origin --dir .beads
+  echo z > .beads/f; "${NOOK}" -n beads run add --all
+  "${NOOK}" -n beads run commit -m seed; "${NOOK}" -n beads run push )
+DS2_SLUG=$(cd "${DS2}" && git config --get-regexp '^nook\..*\.dir$' | sed -E 's/^nook\.(.*)\.dir .*/\1/')
+DS2_ORIGIN="${WORK}/origins/ds2proj.git"
+DS2_WT="${WORK}/ds2-wt"
+git -C "${DS2}" worktree add -q "${DS2_WT}" -b ds2feat
+( cd "${DS2_WT}"; "${NOOK}" materialize >/dev/null )
+assert_true "peer got a symlink before destroy" test -L "${DS2_WT}/.beads"
+assert_true "primary home is a real dir before destroy" test -d "${DS2}/.beads"
+( cd "${DS2_WT}"; "${NOOK}" -n beads destroy --yes )
+assert_eq "files ref gone after destroy" "" "$(git ls-remote "${DS2_ORIGIN}" "refs/nook/${DS2_SLUG}/files")"
+assert_true "peer symlink removed" test ! -e "${DS2_WT}/.beads"
+assert_true "primary home removed too (no stranded local copy)" test ! -e "${DS2}/.beads"
+assert_eq "primary worktree's host status is clean (no orphan debris)" "" "$(git -C "${DS2}" status --porcelain)"
 
 section "destroy: aborts and changes nothing if upstream delete fails"
 DSF="${WORK}/dsf"; make_project_repo "${DSF}" yes dsfproj
@@ -1799,7 +2007,7 @@ CL_OUT=$( cd "${CL_CC}"; printf '2\n' | "${NOOK}" clone notes "${CL_SHARED}" --d
 # The picker must show provenance from the index (repo_dir + owner), which
 # ls-remote alone cannot provide.
 assert_contains "picker shows a repo_dir from the index" "${CL_OUT}" "repo-"
-assert_true "clone produced a symlink" test -L "${CL_CC}/notes"
+if [[ -L "${CL_CC}/notes" ]]; then fail "clone into a fresh repo must elect a real dir, not a symlink"; else pass "clone produced a real primary-home dir"; fi
 # Content of whichever candidate was chosen must be present.
 assert_true "cloned content nonempty" test -s "${CL_CC}/notes/x"
 # The index appends entries in push order (p1/alice/repo-one pushed first,
@@ -1828,7 +2036,7 @@ assert_eq "index ref deleted from origin" "" "$(git ls-remote "${NI_SHARED}" ref
 
 NI_CC="${WORK}/ni-cons"; make_project_repo "${NI_CC}" no nicc
 NI_OUT=$( cd "${NI_CC}"; "${NOOK}" clone stash "${NI_SHARED}" --dir stash 2>&1 ) || true
-assert_true "no-index clone succeeds" test -L "${NI_CC}/stash"
+if [[ -L "${NI_CC}/stash" ]]; then fail "no-index clone into a fresh repo must elect a real dir, not a symlink"; else pass "no-index clone produced a real primary-home dir"; fi
 assert_eq "no-index clone content matches producer" "stashed" "$(cat "${NI_CC}/stash/y" 2>/dev/null)"
 assert_true "no-index clone reports success" test -z "$(printf '%s' "${NI_OUT}" | grep -i 'error\|refuse' || true)"
 
@@ -1936,14 +2144,16 @@ RDP="${WORK}/rd-prod"; make_project_repo "${RDP}" no rdp
   "${NOOK}" -n beads run commit -m s; "${NOOK}" -n beads run push )
 RDC="${WORK}/rd-cons"; make_project_repo "${RDC}" no rdc
 ( cd "${RDC}"; "${NOOK}" clone beads "${RDS}" )   # NO --dir
-assert_true "clone landed at the recorded .beads (not ./beads)" test -L "${RDC}/.beads"
+assert_dir_exists "clone landed at the recorded .beads (not ./beads)" "${RDC}/.beads"
+if [[ -L "${RDC}/.beads" ]]; then fail "clone into a fresh repo must elect a real dir, not a symlink"; else pass "clone at recorded dir is a real primary-home dir"; fi
 assert_true "clone did NOT use the bare name dir" test ! -e "${RDC}/beads"
 assert_contains "cloned content present at recorded dir" "$(cat "${RDC}/.beads/f" 2>/dev/null)" "hi"
 
 section "record-dir: explicit --dir still overrides the recorded dir"
 RDC2="${WORK}/rd-cons2"; make_project_repo "${RDC2}" no rdc2
 ( cd "${RDC2}"; "${NOOK}" clone beads "${RDS}" --dir elsewhere )
-assert_true "explicit --dir wins" test -L "${RDC2}/elsewhere"
+assert_dir_exists "explicit --dir wins" "${RDC2}/elsewhere"
+if [[ -L "${RDC2}/elsewhere" ]]; then fail "clone into a fresh repo must elect a real dir, not a symlink"; else pass "clone at explicit --dir is a real primary-home dir"; fi
 assert_true "recorded dir not used when --dir given" test ! -e "${RDC2}/.beads"
 
 section "record-dir: clone against a dir-less index entry falls back to name (no JSON-named dir)"
@@ -1965,7 +2175,8 @@ git --git-dir="${RDLT}" push -q -f "${RDL_SHARED}" refs/nook/index:refs/nook/ind
 # Clone with no --dir: must fall back to the bare name 'beads', NOT a JSON-named dir.
 RDLC="${WORK}/rdl-cons"; make_project_repo "${RDLC}" no rdlc
 ( cd "${RDLC}"; "${NOOK}" clone beads "${RDL_SHARED}" )
-assert_true "fell back to bare-name dir" test -L "${RDLC}/beads"
+assert_dir_exists "fell back to bare-name dir" "${RDLC}/beads"
+if [[ -L "${RDLC}/beads" ]]; then fail "clone into a fresh repo must elect a real dir, not a symlink"; else pass "clone at fallback dir is a real primary-home dir"; fi
 RDLC_JSON_NAMED=""
 for f in "${RDLC}"/*; do
     case "$(basename "${f}")" in *"{"*) RDLC_JSON_NAMED="${f}" ;; esac
