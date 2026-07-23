@@ -77,37 +77,17 @@ never appears in branch listings or default clones. The nook's *checkout*
 (the actual files) no longer lives under `.git/` — see "Worktrees" below;
 only the inner repo (objects/refs) does.
 
-> **✅ `br` WORKS on this repo's own beads nook again (as of 2026-07-22).**
-> The root cause that broke `br` everywhere — a nook's checkout living under
-> `.git/`, which trips `br` v0.2.16's hard "never touch `.git/`" invariant
-> (**NGI-3**): *"Path '.../.git/nook/.../issues.jsonl' targets git internals -
-> sync never accesses .git/ (safety invariant NGI-3)"* — is fixed by the
-> worktree-home layout (see "Worktrees" below): a nook's checkout is now a real
-> directory OUTSIDE `.git/`, so `br` reads and writes it normally. This repo's
-> own `beads` nook was migrated to that layout on 2026-07-22, and `br ready` /
-> `br create` / `br sync` / `br where` all work here now. The full `br`
-> workflow and session protocol above are live again.
->
-> **Two caveats while the fix is unmerged:**
+> **Note (worktree-home layout, as of 2026-07-22).** The `br` workflow and
+> session protocol above operate normally against this repo's `beads` nook.
+> Two caveats while the worktree-home fix is unmerged:
 > 1. The fix lives on branch **`feat/nook-worktree-home`** (not yet merged to
->    master). The **installed** `git-nook` is stale (`post-v0.3.0-dev`, from
->    before the branch) and still uses the old `.git/`-checkout behavior — so
->    run nook commands via **`./bin/git-nook`** from the repo root, NOT the
->    installed `git nook`, until the branch merges and you reinstall via
->    `./install.sh`. (A plain installed `git nook materialize` would try to put
->    the checkout back under `.git/`.)
-> 2. The migrated `.beads` checkout is a real directory at `<repo>/.beads`
->    (home recorded in local-only `nook.<slug>.home`). Other machines/clones
->    must upgrade to the worktree-home git-nook and run `git nook materialize`
->    before touching beads there.
->
-> Background: the `feat/nook-nested-content-dir` branch fixed a *separate* `br`
-> guard (directory name must be `.beads`/`_beads`) by nesting the content dir;
-> clearing that guard surfaced NGI-3 underneath, which the worktree-home layout
-> (this section) resolved at the tool level. See
-> `docs/superpowers/specs/2026-07-19-nook-nested-content-dir-FINDINGS.md` for
-> the original write-up; its follow-up Discoveries are now filed in beads
-> (`br-orphanage-vs4`, `-mrt`).
+>    master), and the **installed** `git-nook` predates it. Run nook commands
+>    via **`./bin/git-nook`** from the repo root, NOT the installed `git nook`,
+>    until the branch merges and you reinstall via `./install.sh`.
+> 2. The `.beads` checkout is a real directory at `<repo>/.beads`, home recorded
+>    in local-only `nook.<slug>.home`. Other machines/clones must upgrade to the
+>    worktree-home git-nook and run `git nook materialize` before touching beads
+>    there.
 
 This project's own issues (beads) are tracked in exactly such a nook:
 
