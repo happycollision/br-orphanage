@@ -77,48 +77,37 @@ never appears in branch listings or default clones. The nook's *checkout*
 (the actual files) no longer lives under `.git/` — see "Worktrees" below;
 only the inner repo (objects/refs) does.
 
-> **⚠️ `br` on THIS repo's own beads nook needs a manual migration before it
-> works (as of 2026-07-22).** The root cause that used to break `br`
-> everywhere — a nook's checkout living under `.git/`, which trips `br`
-> v0.2.16's hard "never touch `.git/`" invariant (**NGI-3**): *"Path
-> '.../.git/nook/beads.nook/.beads/issues.jsonl' targets git internals - sync
-> never accesses .git/ (safety invariant NGI-3)"* — **is now fixed** by the
-> worktree-home layout (see "Worktrees" below): a nook's checkout is a real
-> directory outside `.git/`, so `br` can read and write it normally. This is
-> verified against a fresh home-layout nook.
+> **✅ `br` WORKS on this repo's own beads nook again (as of 2026-07-22).**
+> The root cause that broke `br` everywhere — a nook's checkout living under
+> `.git/`, which trips `br` v0.2.16's hard "never touch `.git/`" invariant
+> (**NGI-3**): *"Path '.../.git/nook/.../issues.jsonl' targets git internals -
+> sync never accesses .git/ (safety invariant NGI-3)"* — is fixed by the
+> worktree-home layout (see "Worktrees" below): a nook's checkout is now a real
+> directory OUTSIDE `.git/`, so `br` reads and writes it normally. This repo's
+> own `beads` nook was migrated to that layout on 2026-07-22, and `br ready` /
+> `br create` / `br sync` / `br where` all work here now. The full `br`
+> workflow and session protocol above are live again.
 >
-> That fix does **not** automatically make THIS repo's own `beads` nook work.
-> Verified against this repo's actual state: the identity/slug migration is
-> **already done** — `git config --get-regexp '^nook\.'` shows the modern,
-> slug-keyed config (`nook.beads.86d.happycollision.git_nook.dir`), and
-> `git nook list` prints no legacy-layout warning at all. What remains is
-> ONLY the worktree-home checkout relocation: this repo's `.beads` is
-> currently a live symlink into the old nested-content-dir container
-> (`.git/nook/beads.86d.happycollision.git_nook.nook/.beads`), not yet a real
-> directory outside `.git/`. `git nook materialize` correctly REFUSES to
-> elect through that live symlink (electing through it would silently put the
-> recorded home back under `.git/`, defeating the whole point of this fix) —
-> the one remaining step is the manual container-symlink relocation described
-> in MIGRATION.md's "worktree-home layout" section (`rm` the symlink, `mv` the
-> container's content into a real directory at `.beads`, then `git nook
-> materialize` adopts it — safe and non-destructive, it only records local
-> config once the directory is real).
->
-> Do **not** run that relocation against this repo's `beads` nook without the
-> human explicitly confirming first, per this repo's general migration
-> posture. Until it's done here, continue to treat the `br` workflow below
-> (and the session protocol above) as broken for this repo's own beads nook
-> specifically — do not rely on `br` against it, and you cannot file beads
-> issues from this checkout yet. `git nook -n beads run <git...>` passthrough
-> still works fine regardless (it never depended on `br`).
+> **Two caveats while the fix is unmerged:**
+> 1. The fix lives on branch **`feat/nook-worktree-home`** (not yet merged to
+>    master). The **installed** `git-nook` is stale (`post-v0.3.0-dev`, from
+>    before the branch) and still uses the old `.git/`-checkout behavior — so
+>    run nook commands via **`./bin/git-nook`** from the repo root, NOT the
+>    installed `git nook`, until the branch merges and you reinstall via
+>    `./install.sh`. (A plain installed `git nook materialize` would try to put
+>    the checkout back under `.git/`.)
+> 2. The migrated `.beads` checkout is a real directory at `<repo>/.beads`
+>    (home recorded in local-only `nook.<slug>.home`). Other machines/clones
+>    must upgrade to the worktree-home git-nook and run `git nook materialize`
+>    before touching beads there.
 >
 > Background: the `feat/nook-nested-content-dir` branch fixed a *separate* `br`
 > guard (directory name must be `.beads`/`_beads`) by nesting the content dir;
-> clearing that guard surfaced NGI-3 underneath, which the worktree-home
-> layout (this section) now resolves at the tool level. See
+> clearing that guard surfaced NGI-3 underneath, which the worktree-home layout
+> (this section) resolved at the tool level. See
 > `docs/superpowers/specs/2026-07-19-nook-nested-content-dir-FINDINGS.md` for
-> the original write-up and the follow-up Discoveries that could not be filed
-> in beads at the time.
+> the original write-up; its follow-up Discoveries are now filed in beads
+> (`br-orphanage-vs4`, `-mrt`).
 
 This project's own issues (beads) are tracked in exactly such a nook:
 
@@ -127,24 +116,22 @@ git nook list                 # see this repo's nooks (expect: beads)
 git nook -n beads run status  # any git command works against the nook
 ```
 
-> **Note:** the identity/slug migration for this repo's own `beads` nook is
-> **already done** — its config is slug-keyed
-> (`nook.beads.86d.happycollision.git_nook.dir`), and `git nook list` prints
-> no legacy-layout warning for it. What's left is only the one-time checkout
-> relocation out of `.git/` (the worktree-home layout's container-symlink
-> case — see MIGRATION.md), a manual, human-confirmed step — do not run it
-> automatically.
+> **Note:** this repo's own `beads` nook is fully migrated as of 2026-07-22 —
+> both the identity/slug layout (config is slug-keyed
+> `nook.beads.86d.happycollision.git_nook.dir`) and the worktree-home checkout
+> relocation (`.beads` is now a real directory outside `.git/`, home recorded
+> in local-only `nook.<slug>.home`). `br` works here. Use `./bin/git-nook`
+> until `feat/nook-worktree-home` merges (see warning above).
 
-The daily beads flow on this repo (**currently blocked for this repo's own
-beads nook specifically — pre-home checkout only, NOT legacy identity; see
-warning above**):
+The daily beads flow on this repo (working again — use `./bin/git-nook` until
+the branch merges; substitute `git nook` once reinstalled):
 
 ```bash
 br sync --flush-only          # beads DB -> .beads/issues.jsonl
-git nook -n beads run add --all
-git nook -n beads run commit -m "issues"
-git nook -n beads run pull --no-rebase   # only needed when another machine pushed
-git nook -n beads run push
+./bin/git-nook -n beads run add issues.jsonl
+./bin/git-nook -n beads run commit -m "issues"
+./bin/git-nook -n beads run pull --no-rebase   # only needed when another machine pushed
+./bin/git-nook -n beads run push
 ```
 
 If a pull merges `issues.jsonl` from another machine, do NOT hand-resolve
